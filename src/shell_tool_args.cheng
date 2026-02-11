@@ -1,0 +1,141 @@
+# Shell tool argument parsing
+
+import system
+import seqs
+type
+    ShellToolArgs =
+        commandText: str
+        commandTokens: seq[str]
+        workdir: str
+        sandboxPermissions: str
+        justification: str
+        timeoutMs: int32
+        login: bool
+        hasLogin: bool
+
+fn jsonExtractStringArrayAfter(payload: str, key: str, startIdx: int32): seq[str] =
+    var outVal: seq[str] = newSeq[str]()
+    let keyIdx = jsonFindKeyAfter(payload, key, startIdx)
+    if keyIdx < 0:
+        return outVal
+    var idx: int32 = indexOfSubstr(payload, ":", keyIdx + len(key) + 2)
+    if idx < 0:
+        return outVal
+    idx = jsonSkipSpaces(payload, idx + 1)
+    if idx >= len(payload) || payload[idx] != '[':
+        return outVal
+    idx = idx + 1
+    while idx < len(payload):
+        idx = jsonSkipSpaces(payload, idx)
+        if idx >= len(payload):
+            break
+        let ch = payload[idx]
+        if ch == ']':
+            break
+        if ch != '"':
+            break
+        idx = idx + 1
+        var value = ""
+        while idx < len(payload):
+            let c = payload[idx]
+            if c == '\\' && idx + 1 < len(payload):
+                let next = payload[idx + 1]
+                if next == 'n':
+                    value = value + "\n"
+                elif next == 'r':
+                    value = value + "\r"
+                elif next == 't':
+                    value = value + "\t"
+                else:
+                    value = value + $ next
+                idx = idx + 2
+                continue
+            if c == '"':
+                idx = idx + 1
+                break
+            value = value + $ c
+            idx = idx + 1
+        seqAdd(outVal, value)
+        while idx < len(payload):
+            let sep = payload[idx]
+            if sep == ',':
+                idx = idx + 1
+                break
+            if sep == ']':
+                break
+            idx = idx + 1
+    return outVal
+
+fn jsonExtractBool(payload: str, key: str, defaultValue: bool): bool =
+    let keyIdx = jsonFindKeyAfter(payload, key, 0)
+    if keyIdx < 0:
+        return defaultValue
+    var idx: int32 = indexOfSubstr(payload, ":", keyIdx + len(key) + 2)
+    if idx < 0:
+        return defaultValue
+    idx = jsonSkipSpaces(payload, idx + 1)
+    if idx >= len(payload):
+        return defaultValue
+    if hasPrefix(__cheng_slice_string(payload, idx, len(payload) - 1, false), "true"):
+        return true
+    if hasPrefix(__cheng_slice_string(payload, idx, len(payload) - 1, false), "false"):
+        return false
+    return defaultValue
+
+fn parseShellToolArgs(arguments: str): ShellToolArgs =
+    var args = ShellToolArgs(commandText: "", commandTokens: newSeq[str](), workdir: "", sandboxPermissions: "", justification: "", timeoutMs: -1, login: false, hasLogin: false)
+    let cmdTokens = jsonExtractStringArray(arguments, "command")
+    if len(cmdTokens) > 0:
+        args.commandTokens = cmdTokens
+        var cmdText = ""
+        var i: int32 = 0
+        while i < len(cmdTokens):
+            let part = shellQuote(cmdTokens[i])
+            if len(cmdText) == 0:
+                cmdText = part
+            else:
+                cmdText = cmdText + " " + part
+            i = i + 1
+        args.commandText = cmdText
+    else:
+        let cmdText = jsonExtractString(arguments, "command")
+        var alt: str = ""
+        if len(cmdText) > 0:
+            alt = cmdText
+        else:
+            alt = jsonExtractString(arguments, "cmd")
+        args.commandText = alt
+        if len(alt) > 0:
+            var tokens: seq[str]
+            var splitErr = ""
+            if splitCommandTokens(alt, tokens, splitErr):
+                args.commandTokens = tokens
+    let workdir = jsonExtractString(arguments, "workdir")
+    if len(workdir) > 0:
+        args.workdir = workdir
+    else:
+        args.workdir = jsonExtractString(arguments, "cwd")
+    let perm = jsonExtractString(arguments, "sandbox_permissions")
+    if len(perm) > 0:
+        args.sandboxPermissions = perm
+    else:
+        args.sandboxPermissions = jsonExtractString(arguments, "sandboxPermissions")
+    args.justification = jsonExtractString(arguments, "justification")
+    if len(args.justification) == 0:
+        args.justification = jsonExtractString(arguments, "reason")
+    let timeoutVal = jsonExtractInt(arguments, "timeout_ms", -1)
+    if timeoutVal >= 0:
+        args.timeoutMs = timeoutVal
+    else:
+        let timeoutAlt = jsonExtractInt(arguments, "timeout", -1)
+        if timeoutAlt >= 0:
+            args.timeoutMs = timeoutAlt
+        else:
+            let timeoutCamel = jsonExtractInt(arguments, "timeoutMs", -1)
+            if timeoutCamel >= 0:
+                args.timeoutMs = timeoutCamel
+    let loginKey = jsonFindKeyAfter(arguments, "login", 0)
+    if loginKey >= 0:
+        args.login = jsonExtractBool(arguments, "login", true)
+        args.hasLogin = true
+    return args

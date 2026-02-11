@@ -1,0 +1,126 @@
+# Shell snapshot helpers (environment snapshot for login shells)
+
+import system
+import std/os
+import seqs
+var shellSnapshotPathCache = ""
+var shellSnapshotLoaded = false
+var shellSnapshotCounter: int32 = 0
+
+fn shellSnapshotFeatureEnabled(): bool =
+    return configBoolValue("features.shell_snapshot", false)
+
+fn isValidEnvKey(key: str): bool =
+    if len(key) == 0:
+        return false
+    let first = key[0]
+    if ! ((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first == '_'):
+        return false
+    var i: int32 = 1
+    while i < len(key):
+        let ch = key[i]
+        if ! ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_'):
+            return false
+        i = i + 1
+    return true
+
+fn splitLinesSnapshot(text: str): seq[str] =
+    var out: seq[str] = newSeq[str]()
+    if text == nil:
+        return out
+    var start: int32 = 0
+    var i: int32 = 0
+    while i < len(text):
+        if text[i] == '\n':
+            var endIdx: int32 = i - 1
+            if endIdx >= start && text[endIdx] == '\r':
+                endIdx = endIdx - 1
+            if endIdx >= start:
+                seqAdd(out, __cheng_slice_string(text, start, endIdx, false))
+            else:
+                seqAdd(out, "")
+            start = i + 1
+        i = i + 1
+    if start <= len(text) - 1:
+        seqAdd(out, __cheng_slice_string(text, start, len(text) - 1, false))
+    elif start == len(text):
+        seqAdd(out, "")
+    return out
+
+fn buildSnapshotScript(envText: str): str =
+    var lines: seq[str] = splitLinesSnapshot(envText)
+    var exportsParts: seq[str] = newSeq[str]()
+    var exportsCount: int32 = 0
+    var idx: int32 = 0
+    while idx < len(lines):
+        let line: str = lines[idx]
+        let eq: int32 = indexOfSubstr(line, "=", 0)
+        if eq > 0:
+            let key: str = __cheng_slice_string(line, 0, eq - 1, false)
+            var value: str = ""
+            if eq + 1 <= len(line) - 1:
+                value = __cheng_slice_string(line, eq + 1, len(line) - 1, false)
+            if isValidEnvKey(key):
+                seqAdd(exportsParts, "export ")
+                seqAdd(exportsParts, key)
+                seqAdd(exportsParts, "=")
+                seqAdd(exportsParts, shellQuote(value))
+                seqAdd(exportsParts, "\n")
+                exportsCount = exportsCount + 1
+        idx = idx + 1
+    let exportsBody: str = joinPartsBalanced(exportsParts)
+    # Build incrementally to avoid deep temporary chains.
+    var header: str = "# Snapshot file\n# exports "
+    header = header + intToStr(exportsCount)
+    header = header + "\n"
+    return header + exportsBody
+
+fn writeShellSnapshotFile(shellPath: str): str =
+    if len(shellPath) == 0:
+        return ""
+    # Build incrementally to avoid deep temporary chains.
+    var cmd: str = shellQuote(shellPath)
+    cmd = cmd + " -lc "
+    cmd = cmd + shellQuote("env")
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let res = os.execCmdEx(cmd, opts, os.getCurrentDir())
+    var envText: str = ""
+    if res.output != nil:
+        envText = res.output
+    if len(envText) == 0:
+        return ""
+    let script = buildSnapshotScript(envText)
+    if len(script) == 0:
+        return ""
+    let base = codexHomeDir()
+    if len(base) == 0:
+        return ""
+    let dir = os.joinPath(base, "shell_snapshots")
+    if ! os.dirExists(dir):
+        os.createDir(dir)
+    shellSnapshotCounter = shellSnapshotCounter + 1
+    let stamp: str = int64ToStr(getTime().unix)
+    # Build incrementally to avoid deep temporary chains.
+    var filename: str = "snapshot-"
+    filename = filename + intToStr(shellSnapshotCounter)
+    filename = filename + "-"
+    filename = filename + stamp
+    filename = filename + ".sh"
+    let path: str = os.joinPath(dir, filename)
+    os.writeFile(path, script)
+    return path
+
+fn ensureShellSnapshot(shellPath: str): str =
+    if ! shellSnapshotFeatureEnabled():
+        shellSnapshotLoaded = true
+        shellSnapshotPathCache = ""
+        return ""
+    if shellSnapshotLoaded:
+        if len(shellSnapshotPathCache) > 0 && os.fileExists(shellSnapshotPathCache):
+            return shellSnapshotPathCache
+        if len(shellSnapshotPathCache) == 0:
+            return ""
+    let path = writeShellSnapshotFile(shellPath)
+    shellSnapshotPathCache = path
+    shellSnapshotLoaded = true
+    return path

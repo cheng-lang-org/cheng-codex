@@ -1,0 +1,405 @@
+# Command safety helpers for execpolicy + approvals
+
+import system
+import std/os
+import seqs
+type
+    CommandSplitResult =
+        ok: bool
+        tokens: seq[str]
+        err: str
+
+fn isSpaceLocal(ch: char): bool =
+    ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'
+
+fn trimSpacesLocal(text: str): str =
+    if text == nil:
+        return ""
+    var start: int32 = 0
+    var stop: int32 = len(text) - 1
+    while start <= stop && isSpaceLocal(text[start]):
+        start = start + 1
+    while stop >= start && isSpaceLocal(text[stop]):
+        stop = stop - 1
+    if start > stop:
+        return ""
+    return __cheng_slice_string(text, start, stop, false)
+
+fn extractProgramName(path: str): str =
+    if path == nil || len(path) == 0:
+        return ""
+    let parts = splitFile(path)
+    if len(parts.ext) > 0:
+        return parts.name + parts.ext
+    return parts.name
+
+fn splitCommandTokens(text: str, outTokens: var seq[str], err: var str): bool =
+    err = ""
+    outTokens = newSeq[str]()
+    if text == nil:
+        err = "empty command"
+        return false
+    var i: int32 = 0
+    var current = ""
+    var inSingle = false
+    var inDouble = false
+    while i < len(text):
+        let ch = text[i]
+        if inSingle:
+            if ch == '\'':
+                inSingle = false
+            else:
+                current = current + $ ch
+            i = i + 1
+            continue
+        if inDouble:
+            if ch == '"':
+                inDouble = false
+                i = i + 1
+                continue
+            if ch == '\\' && i + 1 < len(text):
+                let next = text[i + 1]
+                if next == 'n':
+                    current = current + "\n"
+                elif next == 'r':
+                    current = current + "\r"
+                elif next == 't':
+                    current = current + "\t"
+                else:
+                    current = current + $ next
+                i = i + 2
+                continue
+            current = current + $ ch
+            i = i + 1
+            continue
+        if isSpaceLocal(ch):
+            if len(current) > 0:
+                seqAdd(outTokens, current)
+                current = ""
+            i = i + 1
+            continue
+        if ch == '"':
+            inDouble = true
+            i = i + 1
+            continue
+        if ch == '\'':
+            inSingle = true
+            i = i + 1
+            continue
+        if ch == '\\' && i + 1 < len(text):
+            let next = text[i + 1]
+            current = current + $ next
+            i = i + 2
+            continue
+        current = current + $ ch
+        i = i + 1
+    if inSingle || inDouble:
+        err = "unterminated quote"
+        return false
+    if len(current) > 0:
+        seqAdd(outTokens, current)
+    if len(outTokens) == 0:
+        err = "empty command"
+        return false
+    return true
+
+fn isLinuxLocal(): bool =
+    let env = normalizePolicy(os.getEnv("OSTYPE"))
+    if indexOfSubstr(env, "linux", 0) >= 0:
+        return true
+    if os.dirExists("/fn") && os.dirExists("/sys"):
+        return true
+    return false
+
+fn flushSegmentLocal(segments: var seq[str], current: str): str =
+    let trimmed = trimSpacesLocal(current)
+    if len(trimmed) > 0:
+        seqAdd(segments, trimmed)
+    return ""
+
+fn parseWordOnlyCommandsSequence(script: str, outCommands: var seq[seq[str]], err: var str): bool =
+    err = ""
+    outCommands = newSeq[seq[str]]()
+    if script == nil || len(script) == 0:
+        err = "empty script"
+        return false
+    var segments: seq[str] = newSeq[str]()
+    var current = ""
+    var i: int32 = 0
+    var inSingle = false
+    var inDouble = false
+    while i < len(script):
+        let ch = script[i]
+        if inSingle:
+            if ch == '\'':
+                inSingle = false
+            else:
+                current = current + $ ch
+            i = i + 1
+            continue
+        if inDouble:
+            if ch == '"':
+                inDouble = false
+                i = i + 1
+                continue
+            if ch == '\\' && i + 1 < len(script):
+                let next = script[i + 1]
+                if next == 'n':
+                    current = current + "\n"
+                elif next == 'r':
+                    current = current + "\r"
+                elif next == 't':
+                    current = current + "\t"
+                else:
+                    current = current + $ next
+                i = i + 2
+                continue
+            if ch == '$':
+                err = "unsupported expansion"
+                return false
+            current = current + $ ch
+            i = i + 1
+            continue
+        if ch == '\'':
+            inSingle = true
+            i = i + 1
+            continue
+        if ch == '"':
+            inDouble = true
+            i = i + 1
+            continue
+        if ch == '\\' && i + 1 < len(script):
+            let next = script[i + 1]
+            current = current + $ next
+            i = i + 2
+            continue
+        if ch == '&':
+            if i + 1 < len(script) && script[i + 1] == '&':
+                current = flushSegmentLocal(segments, current)
+                i = i + 2
+                continue
+            err = "unsupported operator"
+            return false
+        if ch == '|':
+            if i + 1 < len(script) && script[i + 1] == '|':
+                current = flushSegmentLocal(segments, current)
+                i = i + 2
+                continue
+            current = flushSegmentLocal(segments, current)
+            i = i + 1
+            continue
+        if ch == ';' || ch == '\n' || ch == '\r':
+            current = flushSegmentLocal(segments, current)
+            i = i + 1
+            continue
+        if ch == '<' || ch == '>' || ch == '(' || ch == ')' || ch == '{' || ch == '}' || ch == '`':
+            err = "unsupported operator"
+            return false
+        if ch == '$':
+            err = "unsupported expansion"
+            return false
+        current = current + $ ch
+        i = i + 1
+    if inSingle || inDouble:
+        err = "unterminated quote"
+        return false
+    current = flushSegmentLocal(segments, current)
+    if len(segments) == 0:
+        err = "empty script"
+        return false
+    var sidx: int32 = 0
+    while sidx < len(segments):
+        var tokens: seq[str]
+        var splitErr = ""
+        if ! splitCommandTokens(segments[sidx], tokens, splitErr):
+            err = splitErr
+            return false
+        seqAdd(outCommands, tokens)
+        sidx = sidx + 1
+    return len(outCommands) > 0
+
+fn parseShellLcPlainCommands(commandTokens: seq[str]): seq[seq[str]] =
+    var empty: seq[seq[str]] = newSeq[seq[str]]()
+    if len(commandTokens) < 3:
+        return empty
+    let program = extractProgramName(commandTokens[0])
+    if program != "bash" && program != "zsh" && program != "sh":
+        return empty
+    let flag = commandTokens[1]
+    if flag != "-lc" && flag != "-c":
+        return empty
+    let script = commandTokens[2]
+    var commands: seq[seq[str]]
+    var err = ""
+    if ! parseWordOnlyCommandsSequence(script, commands, err):
+        return empty
+    return commands
+
+fn isValidSedNArg(arg: str): bool =
+    if len(arg) == 0:
+        return false
+    if arg[len(arg) - 1] != 'p':
+        return false
+    let core = __cheng_slice_string(arg, 0, len(arg) - 2, false)
+    if len(core) == 0:
+        return false
+    var parts: seq[str] = newSeq[str]()
+    var start: int32 = 0
+    var i: int32 = 0
+    while i <= len(core):
+        if i == len(core) || core[i] == ',':
+            if i >= start:
+                seqAdd(parts, __cheng_slice_string(core, start, i - 1, false))
+            start = i + 1
+        i = i + 1
+    if len(parts) == 0 || len(parts) > 2:
+        return false
+    var pidx: int32 = 0
+    while pidx < len(parts):
+        let part = parts[pidx]
+        if len(part) == 0:
+            return false
+        var j: int32 = 0
+        while j < len(part):
+            let ch = part[j]
+            if ch < '0' || ch > '9':
+                return false
+            j = j + 1
+        pidx = pidx + 1
+    return true
+
+fn isSafeToCallWithExec(commandTokens: seq[str]): bool =
+    if len(commandTokens) == 0:
+        return false
+    let cmd0 = extractProgramName(commandTokens[0])
+    if len(cmd0) == 0:
+        return false
+    if isLinuxLocal() && (cmd0 == "numfmt" || cmd0 == "tac"):
+        return true
+    if cmd0 == "cat" || cmd0 == "cd" || cmd0 == "cut" || cmd0 == "echo" || cmd0 == "expr" || cmd0 == "false" || cmd0 == "grep" || cmd0 == "head" || cmd0 == "id" || cmd0 == "ls" || cmd0 == "nl" || cmd0 == "paste" || cmd0 == "pwd" || cmd0 == "rev" || cmd0 == "seq" || cmd0 == "stat" || cmd0 == "tail" || cmd0 == "tr" || cmd0 == "true" || cmd0 == "uname" || cmd0 == "uniq" || cmd0 == "wc" || cmd0 == "which" || cmd0 == "whoami":
+        return true
+    if cmd0 == "base64":
+        var i: int32 = 1
+        while i < len(commandTokens):
+            let arg = commandTokens[i]
+            if arg == "-o" || arg == "--output" || hasPrefix(arg, "--output=") || (hasPrefix(arg, "-o") && arg != "-o"):
+                return false
+            i = i + 1
+        return true
+    if cmd0 == "find":
+        var i: int32 = 0
+        while i < len(commandTokens):
+            let arg = commandTokens[i]
+            if arg == "-exec" || arg == "-execdir" || arg == "-ok" || arg == "-okdir" || arg == "-delete" || arg == "-fls" || arg == "-fprint" || arg == "-fprint0" || arg == "-fprintf":
+                return false
+            i = i + 1
+        return true
+    if cmd0 == "rg":
+        var i: int32 = 0
+        while i < len(commandTokens):
+            let arg = commandTokens[i]
+            if arg == "--search-zip" || arg == "-z":
+                return false
+            if arg == "--pre" || arg == "--hostname-bin" || hasPrefix(arg, "--pre=") || hasPrefix(arg, "--hostname-bin="):
+                return false
+            i = i + 1
+        return true
+    if cmd0 == "git":
+        if len(commandTokens) > 1:
+            let sub = commandTokens[1]
+            return sub == "branch" || sub == "status" || sub == "log" || sub == "diff" || sub == "show"
+        return false
+    if cmd0 == "cargo":
+        return len(commandTokens) > 1 && commandTokens[1] == "check"
+    if cmd0 == "sed":
+        if len(commandTokens) <= 4 && len(commandTokens) >= 3 && commandTokens[1] == "-n" && isValidSedNArg(commandTokens[2]):
+            return true
+        return false
+    return false
+
+fn isKnownSafeCommand(commandTokens: seq[str]): bool =
+    if len(commandTokens) == 0:
+        return false
+    var tokens: seq[str] = newSeq[str]()
+    var i: int32 = 0
+    while i < len(commandTokens):
+        let token = commandTokens[i]
+        if i == 0 && token == "zsh":
+            seqAdd(tokens, "bash")
+        else:
+            seqAdd(tokens, token)
+        i = i + 1
+    if isSafeToCallWithExec(tokens):
+        return true
+    let scriptCommands = parseShellLcPlainCommands(tokens)
+    if len(scriptCommands) == 0:
+        return false
+    var allSafe = true
+    i = 0
+    while i < len(scriptCommands):
+        if ! isSafeToCallWithExec(scriptCommands[i]):
+            allSafe = false
+            break
+        i = i + 1
+    return allSafe
+
+fn isDangerousToCallWithExec(commandTokens: seq[str]): bool =
+    if len(commandTokens) == 0:
+        return false
+    let cmd0 = extractProgramName(commandTokens[0])
+    if cmd0 == "git":
+        if len(commandTokens) > 1:
+            let sub = commandTokens[1]
+            return sub == "reset" || sub == "rm"
+        return false
+    if cmd0 == "rm":
+        if len(commandTokens) > 1:
+            let sub = commandTokens[1]
+            return sub == "-f" || sub == "-rf"
+        return false
+    if cmd0 == "sudo":
+        if len(commandTokens) > 1:
+            var rest: seq[str] = newSeq[str]()
+            var i: int32 = 1
+            while i < len(commandTokens):
+                seqAdd(rest, commandTokens[i])
+                i = i + 1
+            return isDangerousToCallWithExec(rest)
+        return false
+    return false
+
+fn commandMightBeDangerous(commandTokens: seq[str]): bool =
+    if len(commandTokens) == 0:
+        return true
+    if isDangerousToCallWithExec(commandTokens):
+        return true
+    let scriptCommands = parseShellLcPlainCommands(commandTokens)
+    var i: int32 = 0
+    while i < len(scriptCommands):
+        if isDangerousToCallWithExec(scriptCommands[i]):
+            return true
+        i = i + 1
+    return false
+
+fn sandboxPermissionsRequiresEscalated(value: str): bool =
+    let normalized = normalizePolicy(trimSpacesLocal(value))
+    if normalized == "require_escalated" || normalized == "require-escalated" || normalized == "requireescalated":
+        return true
+    return false
+
+fn requiresInitialApproval(policy: str, sandboxMode: str, commandTokens: seq[str], sandboxPermissions: str): bool =
+    if isKnownSafeCommand(commandTokens):
+        return false
+    let normalized = normalizePolicy(trimSpacesLocal(policy))
+    if normalized == "never" || normalized == "on-failure" || normalized == "onfailure":
+        return false
+    if normalized == "on-request" || normalized == "onrequest":
+        let sb = normalizePolicy(trimSpacesLocal(sandboxMode))
+        if sb == "danger-full-access" || sb == "dangerfullaccess" || sb == "external-sandbox" || sb == "externalsandbox":
+            return commandMightBeDangerous(commandTokens)
+        if sandboxPermissionsRequiresEscalated(sandboxPermissions):
+            return true
+        return commandMightBeDangerous(commandTokens)
+    if normalized == "untrusted" || normalized == "unlesstrusted":
+        return ! isKnownSafeCommand(commandTokens)
+    return false

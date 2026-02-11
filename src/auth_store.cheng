@@ -1,0 +1,1528 @@
+# Auth storage + JWT helpers (ChatGPT + API key)
+
+import system
+import std/os
+import std/times
+import cheng/web/std/web_url as web_url
+import cheng/decentralized/json_parse
+import seqs
+import cheng/runtime/json_ast as json
+
+const
+    DefaultAuthIssuer = "https://auth.openai.com"
+    DefaultAuthClientId = "app_EMoamEEZ73f0CkXaXp7hrann"
+    Base64UrlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+type
+    AuthTokens =
+        idToken: str
+        accessToken: str
+        refreshToken: str
+        accountId: str
+        lastRefresh: int64
+
+    AuthAccount =
+        email: str
+        planType: str
+        accountId: str
+
+    AuthHttpResult =
+        ok: bool
+        status: int32
+        contentType: str
+        body: str
+        error: str
+
+    ChatgptAuthInfo =
+        ok: bool
+        token: str
+        accountId: str
+
+var authTempSeq: int32 = 0
+
+fn ord(ch: char): int32 =
+    return int32(ch)
+
+fn resetAuthTokens(tokens: var AuthTokens) =
+    tokens.idToken = ""
+    tokens.accessToken = ""
+    tokens.refreshToken = ""
+    tokens.accountId = ""
+    tokens.lastRefresh = 0
+
+fn authLogPath(): str =
+    let path = os.getEnv("CHENG_CODEX_LOGIN_LOG")
+    if len(path) == 0:
+        let envHome = os.getEnv("CODEX_HOME")
+        if len(envHome) > 0:
+            return os.joinPath(envHome, "login.log")
+        let home = os.getEnv("HOME")
+        if len(home) > 0:
+            let preferred = os.joinPath(home, ".codex-cheng")
+            let legacy = os.joinPath(home, ".codex")
+            if os.dirExists(preferred) || os.fileExists(os.joinPath(preferred, "config.toml")):
+                return os.joinPath(preferred, "login.log")
+            if os.dirExists(legacy) || os.fileExists(os.joinPath(legacy, "config.toml")):
+                return os.joinPath(legacy, "login.log")
+            return os.joinPath(preferred, "login.log")
+        return os.joinPath(os.getCurrentDir(), ".codex-cheng/login.log")
+    return path
+
+fn authLogSanitize(text: str): str =
+    var out = ""
+    var i: int32 = 0
+    let limit: int32 = 512
+    while i < len(text) && i < limit:
+        let ch = text[i]
+        if ch == '\n' || ch == '\r' || ch == '\t':
+            out = out + " "
+        else:
+            # Avoid charToStr (unstable in some compiler/runtime combos); use `$` conversion.
+            out = out + $ ch
+        i = i + 1
+    if len(text) > limit:
+        out = out + "..."
+    return out
+
+fn authLog(line: str) =
+    let path = authLogPath()
+    if len(path) == 0 || len(line) == 0:
+        return
+    let dir = os.parentDir(path)
+    if len(dir) > 0 && ! os.dirExists(dir):
+        os.createDir(dir)
+    var payload = line
+    if payload[len(payload) - 1] != '\n':
+        payload = payload + "\n"
+    var prior = ""
+    if os.fileExists(path):
+        prior = os.readFile(path)
+        if len(prior) > 65536:
+            prior = __cheng_slice_string(prior, (len(prior) - 65536), len(prior) - 1, false)
+    os.writeFile(path, prior + payload)
+
+fn traceAuthLocal(msg: str) =
+    let enabled = normalizePolicy(trimLine(os.getEnv("CODEX_TRACE_AUTH")))
+    if enabled == "1" || enabled == "true" || enabled == "yes":
+        printErr("[auth] " + msg)
+
+fn copyAuthTokens(dst: var AuthTokens, src: AuthTokens) =
+    dst.idToken = src.idToken
+    dst.accessToken = src.accessToken
+    dst.refreshToken = src.refreshToken
+    dst.accountId = src.accountId
+    dst.lastRefresh = src.lastRefresh
+
+fn copyAuthTokensRef(dst: var AuthTokens, src: var AuthTokens) =
+    dst.idToken = src.idToken
+    dst.accessToken = src.accessToken
+    dst.refreshToken = src.refreshToken
+    dst.accountId = src.accountId
+    dst.lastRefresh = src.lastRefresh
+
+fn splitByCharLocal(text: str, sep: char): seq[str] =
+    var outVal: seq[str] = newSeq[str]()
+    if text == nil:
+        return outVal
+    var start: int32 = 0
+    var i: int32 = 0
+    while i < len(text):
+        if text[i] == sep:
+            if i >= start:
+                seqAdd(outVal, __cheng_slice_string(text, start, i - 1, false))
+            else:
+                seqAdd(outVal, "")
+            start = i + 1
+        i = i + 1
+    if start <= len(text) - 1:
+        seqAdd(outVal, __cheng_slice_string(text, start, len(text) - 1, false))
+    elif start == len(text):
+        seqAdd(outVal, "")
+    return outVal
+
+fn joinWithAmpersand(items: seq[str]): str =
+    var out = ""
+    var i: int32 = 0
+    while i < len(items):
+        if i == 0:
+            out = items[i]
+        else:
+            out = out + "&" + items[i]
+        i = i + 1
+    return out
+
+fn authIssuerDefault(): str =
+    let env = os.getEnv("CODEX_AUTH_ISSUER")
+    if len(env) > 0:
+        return env
+    return DefaultAuthIssuer
+
+fn authClientIdDefault(): str =
+    let env = os.getEnv("CODEX_AUTH_CLIENT_ID")
+    if len(env) > 0:
+        return env
+    return DefaultAuthClientId
+
+fn authOriginatorDefault(): str =
+    let override = os.getEnv("CODEX_INTERNAL_ORIGINATOR_OVERRIDE")
+    if len(override) > 0:
+        return override
+    let env = os.getEnv("CODEX_ORIGINATOR")
+    if len(env) > 0:
+        return env
+    return "codex_cli_rs"
+
+fn parseInt64Simple(text: str, defaultValue: int64): int64 =
+    if len(text) == 0:
+        return defaultValue
+    var i: int32 = 0
+    var sign: int64 = 1
+    if text[0] == '-':
+        sign = -1
+        i = i + 1
+    var value: int64 = 0
+    var saw = false
+    while i < len(text):
+        let ch = text[i]
+        if ch < '0' || ch > '9':
+            break
+        let digit = ord(ch) - ord('0')
+        value = value * 10 + int64(digit)
+        saw = true
+        i = i + 1
+    if ! saw:
+        return defaultValue
+    return value * sign
+
+fn authNextTempPath(prefix: str, suffix: str): str =
+    authTempSeq = authTempSeq + 1
+    let home = codexHomeDir()
+    var base: str = "/tmp"
+    if len(home) > 0:
+        base = os.joinPath(home, "tmp")
+    if ! os.dirExists(base):
+        os.createDir(base)
+    let ts = int64ToStr(times.toUnix(times.now()))
+    # Build incrementally to avoid deep temporary chains.
+    var name: str = prefix
+    name = name + "-"
+    name = name + ts
+    name = name + "-"
+    name = name + intToStr(authTempSeq)
+    name = name + suffix
+    return os.joinPath(base, name)
+
+fn splitLinesRaw(text: str): seq[str] =
+    var out: seq[str] = newSeq[str]()
+    if text == nil:
+        return out
+    var start: int32 = 0
+    var i: int32 = 0
+    while i < len(text):
+        if text[i] == '\n':
+            var endIdx: int32 = i - 1
+            if endIdx >= start && text[endIdx] == '\r':
+                endIdx = endIdx - 1
+            if endIdx >= start:
+                seqAdd(out, __cheng_slice_string(text, start, endIdx, false))
+            else:
+                seqAdd(out, "")
+            start = i + 1
+        i = i + 1
+    if start <= len(text) - 1:
+        seqAdd(out, __cheng_slice_string(text, start, len(text) - 1, false))
+    elif start == len(text):
+        seqAdd(out, "")
+    return out
+
+fn authParseStatusCode(headersText: str): int32 =
+    let lines = splitLinesRaw(headersText)
+    var i: int32 = 0
+    while i < len(lines):
+        let line = lines[i]
+        if hasPrefix(line, "HTTP/"):
+            let sp = indexOfSubstr(line, " ", 0)
+            if sp >= 0 && sp + 1 < len(line):
+                return int32(parseInt64Simple(trimLine(__cheng_slice_string(line, sp + 1, len(line) - 1, false)), 0))
+        i = i + 1
+    return 0
+
+fn authParseHeaderValue(headersText: str, key: str): str =
+    let keyLower = normalizePolicy(key)
+    let lines = splitLinesRaw(headersText)
+    var i: int32 = 0
+    while i < len(lines):
+        let line = lines[i]
+        let colon = indexOfSubstr(line, ":", 0)
+        if colon > 0:
+            let k = normalizePolicy(trimLine(__cheng_slice_string(line, 0, colon - 1, false)))
+            if k == keyLower:
+                return trimLine(__cheng_slice_string(line, colon + 1, len(line) - 1, false))
+        i = i + 1
+    return ""
+
+fn authHttpRequest(method: str, url: str, body: str, contentType: str): AuthHttpResult =
+    var out: AuthHttpResult
+    if len(url) == 0:
+        out.error = "missing url"
+        return out
+    let hdrPath = authNextTempPath("auth_hdr", ".txt")
+    let bodyPath = authNextTempPath("auth_body", ".txt")
+    # Build the curl command incrementally to avoid deep temporary chains.
+    var cmd: str = "curl -sS --connect-timeout 3 --max-time 8 --retry 0 -X "
+    cmd = cmd + method
+    cmd = cmd + " -D "
+    cmd = cmd + shellQuote(hdrPath)
+    cmd = cmd + " -o "
+    cmd = cmd + shellQuote(bodyPath)
+    if len(body) > 0:
+        let reqPath = authNextTempPath("auth_req", ".txt")
+        os.writeFile(reqPath, body)
+        if len(contentType) > 0:
+            cmd = cmd + " -H "
+            var ctLine: str = "Content-Type: "
+            ctLine = ctLine + contentType
+            cmd = cmd + shellQuote(ctLine)
+        cmd = cmd + " --data @"
+        cmd = cmd + shellQuote(reqPath)
+    cmd = cmd + " "
+    cmd = cmd + shellQuote(url)
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let res = os.execCmdEx(cmd, opts, os.getCurrentDir())
+    if res.exitCode != 0:
+        out.error = ""
+        if res.output != nil:
+            out.error = res.output
+        return out
+    var headersText: str = ""
+    if os.fileExists(hdrPath):
+        let tmp = os.readFile(hdrPath)
+        if tmp != nil:
+            headersText = tmp
+    out.status = authParseStatusCode(headersText)
+    out.contentType = authParseHeaderValue(headersText, "content-type")
+    out.body = ""
+    if os.fileExists(bodyPath):
+        let tmp = os.readFile(bodyPath)
+        if tmp != nil:
+            out.body = tmp
+    out.ok = out.status >= 200 && out.status < 300
+    if ! out.ok:
+        if len(out.body) > 0:
+            var msg: str = "HTTP "
+            msg = msg + intToStr(out.status)
+            msg = msg + ": "
+            msg = msg + out.body
+            out.error = msg
+        elif out.status > 0:
+            out.error = "HTTP " + intToStr(out.status)
+        elif len(out.error) == 0:
+            out.error = "request failed"
+        var msg: str = "http "
+        msg = msg + method
+        msg = msg + " "
+        msg = msg + url
+        msg = msg + " status="
+        msg = msg + intToStr(out.status)
+        msg = msg + " err="
+        msg = msg + authLogSanitize(out.error)
+        authLog(msg)
+    return out
+
+fn httpPostJson(url: str, body: str): AuthHttpResult =
+    return authHttpRequest("POST", url, body, "application/json")
+
+fn httpPostForm(url: str, body: str): AuthHttpResult =
+    return authHttpRequest("POST", url, body, "application/x-www-form-urlencoded")
+
+fn looksLikeJwt(token: str): bool =
+    if len(token) == 0:
+        return false
+    var dots: int32 = 0
+    var i: int32 = 0
+    while i < len(token):
+        if token[i] == '.':
+            dots = dots + 1
+        i = i + 1
+    return dots >= 2
+
+fn base64ValueLocal(c: char): int32 =
+    if c >= 'A' && c <= 'Z':
+        return ord(c) - ord('A')
+    if c >= 'a' && c <= 'z':
+        return ord(c) - ord('a') + 26
+    if c >= '0' && c <= '9':
+        return ord(c) - ord('0') + 52
+    if c == '+' || c == '-':
+        return 62
+    if c == '/' || c == '_':
+        return 63
+    return -1
+
+fn decodeBase64Url(text: str): str =
+    if len(text) == 0:
+        return ""
+    var buf = ""
+    var acc: int64 = 0
+    var bits: int32 = 0
+    var i: int32 = 0
+    while i < len(text):
+        let ch = text[i]
+        if ch == '=':
+            break
+        let v = base64ValueLocal(ch)
+        if v < 0:
+            return ""
+        acc = (acc << 6) | int64(v)
+        bits = bits + 6
+        if bits >= 8:
+            let shift = bits - 8
+            let masked: int64 = (acc >> shift) & 255
+            let outByte: int32 = int32(masked)
+            # Avoid charToStr (unstable in some compiler/runtime combos); use `$` conversion.
+            buf = buf + $ char(outByte)
+            bits = bits - 8
+        i = i + 1
+    return buf
+
+fn jwtPayload(token: str): json.JsonNode =
+    let parts = splitByCharLocal(token, '.')
+    if len(parts) < 2:
+        return json.newJNull()
+    let payloadPart = get[str](parts, 1)
+    if payloadPart == nil || len(payloadPart) == 0:
+        return json.newJNull()
+    let payload = decodeBase64Url(payloadPart)
+    if len(payload) == 0:
+        return json.newJNull()
+    let parsed = parseJsonSafe(payload)
+    if parsed.ok:
+        return parsed.value
+    return json.newJNull()
+
+fn jwtAuthClaims(token: str): json.JsonNode =
+    let root = jwtPayload(token)
+    if root == nil || root.kind != json.JObject:
+        return json.newJNull()
+    if root.hasKey("https://api.openai.com/auth"):
+        let node = json.jsonGetField(root, "https://api.openai.com/auth")
+        if node != nil && node.kind == json.JObject:
+            return node
+    return root
+
+fn extractAccountIdFromJwt(token: str): str =
+    let claims = jwtAuthClaims(token)
+    return getStringField(claims, "chatgpt_account_id", "")
+
+fn extractPlanTypeFromJwt(token: str): str =
+    let claims = jwtAuthClaims(token)
+    return getStringField(claims, "chatgpt_plan_type", "")
+
+fn extractEmailFromJwt(token: str): str =
+    let claims = jwtPayload(token)
+    return getStringField(claims, "email", "")
+
+fn extractExpiryFromJwt(token: str): int64 =
+    let claims = jwtPayload(token)
+    let exp = getIntField(claims, "exp", 0)
+    return exp
+
+fn buildPkceVerifier(): str =
+    let randBytes = randomBytesFromUrandom(64)
+    if len(randBytes) <= 0:
+        return ""
+    return encodeBase64UrlSimple(randBytes)
+
+fn authHexValue(ch: char): int32 =
+    if ch >= '0' && ch <= '9':
+        return ord(ch) - ord('0')
+    if ch >= 'a' && ch <= 'f':
+        return ord(ch) - ord('a') + 10
+    if ch >= 'A' && ch <= 'F':
+        return ord(ch) - ord('A') + 10
+    return -1
+
+fn authHexToBytes(hexText: str): seq[int32] =
+    var out: seq[int32] = newSeq[int32]()
+    if len(hexText) < 2:
+        return out
+    var i: int32 = 0
+    while i + 1 < len(hexText):
+        let hi = authHexValue(hexText[i])
+        let lo = authHexValue(hexText[i + 1])
+        if hi < 0 || lo < 0:
+            return newSeq[int32]()
+        seqAdd(out, hi * 16 + lo)
+        i = i + 2
+    return out
+
+fn authFirstToken(text: str): str =
+    if text == nil:
+        return ""
+    var start: int32 = 0
+    while start < len(text):
+        let ch = text[start]
+        if ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n':
+            break
+        start = start + 1
+    var stop: int32 = start
+    while stop < len(text):
+        let ch = text[stop]
+        if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n':
+            break
+        stop = stop + 1
+    if stop <= start:
+        return ""
+    return __cheng_slice_string(text, start, stop - 1, false)
+
+fn authFallbackSha256Hex(payload: str): str =
+    let alphabet = "0123456789abcdef"
+    var seed: int64 = 1469598103934665603
+    var i: int32 = 0
+    while i < len(payload):
+        seed = seed ^ int64(ord(payload[i]))
+        seed = seed * 1099511628211
+        i = i + 1
+    var out = ""
+    var j: int32 = 0
+    while j < 64:
+        let nibble = int32(seed & 15)
+        let ch = alphabet[nibble]
+        out = out + $ ch
+        seed = (seed >> 1) ^ (seed << 3) ^ 0x9e3779b97f4a7c15
+        j = j + 1
+    return out
+
+fn authSha256Hex(payload: str): str =
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let cmd1 = "printf %s " + shellQuote(payload) + " | shasum -a 256"
+    let res1 = os.execCmdEx(cmd1, opts, os.getCurrentDir())
+    if res1.exitCode == 0:
+        let token = authFirstToken(res1.output)
+        if len(token) >= 64:
+            return __cheng_slice_string(token, 0, 63, false)
+    let cmd2 = "printf %s " + shellQuote(payload) + " | sha256sum"
+    let res2 = os.execCmdEx(cmd2, opts, os.getCurrentDir())
+    if res2.exitCode == 0:
+        let token = authFirstToken(res2.output)
+        if len(token) >= 64:
+            return __cheng_slice_string(token, 0, 63, false)
+    return authFallbackSha256Hex(payload)
+
+fn buildPkceChallenge(verifier: str): str =
+    if len(verifier) == 0:
+        return ""
+    let digestHex = authSha256Hex(verifier)
+    let digest = authHexToBytes(digestHex)
+    return encodeBase64UrlSimple(digest)
+
+fn generateState(): str =
+    let randBytes = randomBytesFromUrandom(32)
+    if len(randBytes) <= 0:
+        return ""
+    return encodeBase64UrlSimple(randBytes)
+
+fn encodeBase64UrlSimple(data: seq[int32]): str =
+    if len(data) <= 0:
+        return ""
+    var out = ""
+    var i: int32 = 0
+    while i < len(data):
+        let b0 = data[i]
+        var b1: int32 = -1
+        var b2: int32 = -1
+        if i + 1 < len(data):
+            b1 = data[i + 1]
+        if i + 2 < len(data):
+            b2 = data[i + 2]
+        let v0 = b0 / 4
+        var v1 = (b0 % 4) * 16
+        if b1 >= 0:
+            v1 = v1 + (b1 / 16)
+        let ch0 = Base64UrlAlphabet[v0]
+        out = out + $ ch0
+        let ch1 = Base64UrlAlphabet[v1]
+        out = out + $ ch1
+        if b1 >= 0:
+            var v2 = (b1 % 16) * 4
+            if b2 >= 0:
+                v2 = v2 + (b2 / 64)
+            let ch2 = Base64UrlAlphabet[v2]
+            out = out + $ ch2
+        if b2 >= 0:
+            let v3 = b2 % 64
+            let ch3 = Base64UrlAlphabet[v3]
+            out = out + $ ch3
+        i = i + 3
+    return out
+
+fn randomBytesFromUrandom(length: int32): seq[int32] =
+    var out: seq[int32] = newSeq[int32]()
+    if length <= 0:
+        return out
+    let f = os.openRead("/dev/urandom")
+    if f != nil:
+        var i: int32 = 0
+        while i < length:
+            let ch = c_fgetc(f)
+            if ch < 0:
+                break
+            seqAdd(out, ch % 256)
+            i = i + 1
+        os.close(f)
+        if len(out) == length:
+            return out
+    out = newSeq[int32]()
+    var seed: int64 = times.toUnix(times.now())
+    if seed == 0:
+        seed = 1234567
+    var i: int32 = 0
+    while i < length:
+        seed = seed * 1103515245 + 12345
+        let masked: int64 = seed & 255
+        let v: int32 = int32(masked)
+        seqAdd(out, v)
+        i = i + 1
+    return out
+
+fn indexOfSubstrAuthJsonLocal(text: str, needle: str, start: int32): int32 =
+    if text == nil || needle == nil:
+        return -1
+    if start < 0:
+        return -1
+    if len(needle) == 0:
+        return start
+    var i: int32 = start
+    let limit: int32 = len(text) - len(needle)
+    while i <= limit:
+        var matched = true
+        var j: int32 = 0
+        while j < len(needle):
+            if ord(text[i + j]) != ord(needle[j]):
+                matched = false
+                break
+            j = j + 1
+        if matched:
+            return i
+        i = i + 1
+    return -1
+
+fn jsonSkipSpacesAuthJsonLocal(payload: str, startIdx: int32): int32 =
+    var idx: int32 = startIdx
+    while idx < len(payload):
+        let ch = payload[idx]
+        if ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r':
+            break
+        idx = idx + 1
+    return idx
+
+fn jsonExtractStringRawLocal(payload: str, key: str): str =
+    if payload == nil || key == nil || len(key) == 0:
+        return ""
+    let needle = "\"" + key + "\""
+    let keyIdx = indexOfSubstrAuthJsonLocal(payload, needle, 0)
+    if keyIdx < 0:
+        return ""
+    var idx: int32 = indexOfSubstrAuthJsonLocal(payload, ":", keyIdx + len(needle))
+    if idx < 0:
+        return ""
+    idx = jsonSkipSpacesAuthJsonLocal(payload, idx + 1)
+    if idx >= len(payload) || payload[idx] != '"':
+        return ""
+    idx = idx + 1
+    let startIdx = idx
+    while idx < len(payload):
+        let ch = payload[idx]
+        if ch == '\\':
+            # skip escaped byte (auth tokens should not contain escapes)
+            idx = idx + 2
+            continue
+        if ch == '"':
+            break
+        idx = idx + 1
+    if idx >= len(payload) || payload[idx] != '"':
+        return ""
+    if idx - 1 < startIdx:
+        return ""
+    return __cheng_slice_string(payload, startIdx, idx - 1, false)
+
+fn authJsonReplaceNullWithEmptyString(payload: str, key: str): str =
+    if payload == nil || len(payload) == 0 || key == nil || len(key) == 0:
+        return payload
+    let needle = "\"" + key + "\""
+    let keyIdx = indexOfSubstrAuthJsonLocal(payload, needle, 0)
+    if keyIdx < 0:
+        return payload
+    var idx: int32 = indexOfSubstrAuthJsonLocal(payload, ":", keyIdx + len(needle))
+    if idx < 0:
+        return payload
+    idx = jsonSkipSpacesAuthJsonLocal(payload, idx + 1)
+    if idx + 3 >= len(payload):
+        return payload
+    let idx1: int32 = idx + 1
+    let idx2: int32 = idx + 2
+    let idx3: int32 = idx + 3
+    if payload[idx] != 'n' || payload[idx1] != 'u' || payload[idx2] != 'l' || payload[idx3] != 'l':
+        return payload
+    var out = ""
+    if idx > 0:
+        out = __cheng_slice_string(payload, 0, idx - 1, false)
+    out = out + "\"\""
+    let tailStart = idx + 4
+    if tailStart <= len(payload) - 1:
+        out = out + __cheng_slice_string(payload, tailStart, len(payload) - 1, false)
+    return out
+
+fn authJsonCopySpan(payload: str, startIdx: int32, endIdx: int32): str =
+    if payload == nil || startIdx < 0 || endIdx < startIdx:
+        return ""
+    if len(payload) == 0:
+        return ""
+    if startIdx >= len(payload):
+        return ""
+    if endIdx >= len(payload):
+        return ""
+    return __cheng_slice_string(payload, startIdx, endIdx, false)
+
+fn authJsonExtractStringValueDirect(payload: str, key: str): str =
+    if payload == nil || key == nil || len(key) == 0:
+        return ""
+    var needle = "\""
+    needle = needle + key
+    needle = needle + "\""
+    let keyIdx = indexOfSubstrAuthJsonLocal(payload, needle, 0)
+    if keyIdx < 0:
+        return ""
+    var idx: int32 = indexOfSubstrAuthJsonLocal(payload, ":", keyIdx + len(needle))
+    if idx < 0:
+        return ""
+    idx = jsonSkipSpacesAuthJsonLocal(payload, idx + 1)
+    if idx >= len(payload) || payload[idx] != '"':
+        return ""
+    let startIdx: int32 = idx + 1
+    let closeIdx = indexOfSubstrAuthJsonLocal(payload, "\"", startIdx)
+    if closeIdx < 0:
+        return ""
+    let endIdx = closeIdx - 1
+    if endIdx < startIdx:
+        return ""
+    return authJsonCopySpan(payload, startIdx, endIdx)
+
+fn authJsonExtractStringValue(payload: str, key: str, outValue: var str): bool =
+    outValue = ""
+    if payload == nil || key == nil || len(key) == 0:
+        return false
+    # Build incrementally to avoid deep temp chains.
+    var needle = "\""
+    needle = needle + key
+    needle = needle + "\""
+    let keyIdx = indexOfSubstrAuthJsonLocal(payload, needle, 0)
+    if keyIdx < 0:
+        return false
+    var idx: int32 = indexOfSubstrAuthJsonLocal(payload, ":", keyIdx + len(needle))
+    if idx < 0:
+        return false
+    idx = jsonSkipSpacesAuthJsonLocal(payload, idx + 1)
+    if idx >= len(payload) || payload[idx] != '"':
+        return false
+    let startIdx: int32 = idx + 1
+    let closeIdx = indexOfSubstrAuthJsonLocal(payload, "\"", startIdx)
+    if closeIdx < 0:
+        return false
+    let endIdx = closeIdx - 1
+    if endIdx < startIdx:
+        outValue = ""
+        return true
+    let span = authJsonCopySpan(payload, startIdx, endIdx)
+    outValue = span
+    return true
+
+fn readAuthJsonTokens(path: str, tokens: var AuthTokens, apiKey: var str): bool =
+    resetAuthTokens(tokens)
+    apiKey = ""
+    traceAuthLocal("readAuthJsonTokens.begin path=" + path)
+    if len(path) == 0 || ! os.fileExists(path):
+        traceAuthLocal("readAuthJsonTokens.missing")
+        return false
+    let content = os.readFile(path)
+    if len(content) == 0:
+        traceAuthLocal("readAuthJsonTokens.empty")
+        return false
+    let probeAccess = indexOfSubstrAuthJsonLocal(content, "\"access_token\"", 0)
+    let probeId = indexOfSubstrAuthJsonLocal(content, "\"id_token\"", 0)
+    let probeAccount = indexOfSubstrAuthJsonLocal(content, "\"account_id\"", 0)
+    var probeMsg = "readAuthJsonTokens.probe access="
+    probeMsg = probeMsg + intToStr(probeAccess)
+    probeMsg = probeMsg + " id="
+    probeMsg = probeMsg + intToStr(probeId)
+    probeMsg = probeMsg + " account="
+    probeMsg = probeMsg + intToStr(probeAccount)
+    traceAuthLocal(probeMsg)
+    # Prefer a tiny scanner: upstream codex CLI auth.json can contain nulls,
+    # and the minimal JSON AST doesn't reliably materialize nested objects.
+    let apiKeyValue = authJsonExtractStringValueDirect(content, "OPENAI_API_KEY")
+    apiKey = apiKeyValue
+    tokens.idToken = authJsonExtractStringValueDirect(content, "id_token")
+    tokens.accessToken = authJsonExtractStringValueDirect(content, "access_token")
+    tokens.refreshToken = authJsonExtractStringValueDirect(content, "refresh_token")
+    tokens.accountId = authJsonExtractStringValueDirect(content, "account_id")
+    let refreshText = authJsonExtractStringValueDirect(content, "last_refresh")
+    if len(refreshText) > 0:
+        tokens.lastRefresh = parseInt64Simple(refreshText, 0)
+    var doneMsg = "readAuthJsonTokens.done apiKeyLen="
+    doneMsg = doneMsg + intToStr(len(apiKeyValue))
+    doneMsg = doneMsg + " accessLen="
+    doneMsg = doneMsg + intToStr(len(tokens.accessToken))
+    doneMsg = doneMsg + " idLen="
+    doneMsg = doneMsg + intToStr(len(tokens.idToken))
+    doneMsg = doneMsg + " acctLen="
+    doneMsg = doneMsg + intToStr(len(tokens.accountId))
+    traceAuthLocal(doneMsg)
+    return len(apiKeyValue) > 0 || len(tokens.accessToken) > 0 || len(tokens.idToken) > 0
+
+fn authJsonCandidatePaths(): seq[str] =
+    var out: seq[str] = newSeq[str]()
+    let envHome = os.getEnv("CODEX_HOME")
+    if len(envHome) > 0:
+        seqAdd(out, os.joinPath(envHome, "auth.json"))
+    let home = os.getEnv("HOME")
+    if len(home) > 0:
+        seqAdd(out, os.joinPath(os.joinPath(home, ".codex"), "auth.json"))
+    let local = codexAuthJsonPath()
+    if len(local) > 0:
+        seqAdd(out, local)
+    return out
+
+fn loadAuthJson(tokens: var AuthTokens, apiKey: var str): bool =
+    resetAuthTokens(tokens)
+    apiKey = ""
+    let paths = authJsonCandidatePaths()
+    var i: int32 = 0
+    while i < len(paths):
+        let path = get[str](paths, i)
+        if path != nil && readAuthJsonTokens(path, tokens, apiKey):
+            return true
+        i = i + 1
+    return false
+
+fn writeAuthJsonTokens(apiKey: str, tokens: AuthTokens): bool =
+    let home = codexHomeDir()
+    if len(home) == 0:
+        return false
+    if ! os.dirExists(home):
+        os.createDir(home)
+    let path = codexAuthJsonPath()
+    var fields: seq[str] = newSeq[str]()
+    if len(apiKey) > 0:
+        seqAdd(fields, jstrPair("OPENAI_API_KEY", jstrString(apiKey)))
+    if len(tokens.accessToken) > 0 || len(tokens.idToken) > 0 || len(tokens.refreshToken) > 0:
+        var tokenFields: seq[str] = newSeq[str]()
+        if len(tokens.idToken) > 0:
+            seqAdd(tokenFields, jstrPair("id_token", jstrString(tokens.idToken)))
+        if len(tokens.accessToken) > 0:
+            seqAdd(tokenFields, jstrPair("access_token", jstrString(tokens.accessToken)))
+        if len(tokens.refreshToken) > 0:
+            seqAdd(tokenFields, jstrPair("refresh_token", jstrString(tokens.refreshToken)))
+        if len(tokens.accountId) > 0:
+            seqAdd(tokenFields, jstrPair("account_id", jstrString(tokens.accountId)))
+        seqAdd(fields, jstrPair("tokens", jstrObject(tokenFields)))
+        let ts = int64ToStr(tokens.lastRefresh)
+        if len(ts) > 0:
+            seqAdd(fields, jstrPair("last_refresh", jstrString(ts)))
+    let content = jstrObject(fields)
+    os.writeFile(path, content)
+    return true
+
+fn readAuthJsonApiKey(apiKey: var str): bool =
+    var tokens: AuthTokens
+    var keyValue = ""
+    if loadAuthJson(tokens, keyValue) && len(keyValue) > 0:
+        apiKey = keyValue
+        return true
+    apiKey = ""
+    return false
+
+fn readChatgptTokens(tokens: var AuthTokens): bool =
+    var apiKey = ""
+    if loadAuthJson(tokens, apiKey):
+        if len(tokens.accessToken) > 0 || len(tokens.idToken) > 0:
+            return true
+    return false
+
+fn buildAccountInfo(tokens: AuthTokens): AuthAccount =
+    var account: AuthAccount
+    var token: str = tokens.accessToken
+    if len(tokens.idToken) > 0:
+        token = tokens.idToken
+    if len(token) > 0:
+        account.email = extractEmailFromJwt(token)
+        account.planType = extractPlanTypeFromJwt(token)
+        account.accountId = extractAccountIdFromJwt(token)
+    if len(tokens.accountId) > 0 && len(account.accountId) == 0:
+        account.accountId = tokens.accountId
+    return account
+
+fn shouldRefresh(tokens: AuthTokens): bool =
+    if len(tokens.refreshToken) == 0:
+        return false
+    let exp = extractExpiryFromJwt(tokens.accessToken)
+    if exp <= 0:
+        return false
+    let nowTs = times.toUnix(times.now())
+    return nowTs + 60 >= exp
+
+fn refreshTokens(issuer: str, clientId: str, tokens: AuthTokens, updated: var AuthTokens, err: var str): bool =
+    err = ""
+    copyAuthTokens(updated, tokens)
+    if len(tokens.refreshToken) == 0:
+        err = "missing refresh token"
+        return false
+    let url = issuer + "/oauth/token"
+    let body = jstrObject(seqStr4(
+        jstrPair("client_id", jstrString(clientId)),
+        jstrPair("grant_type", jstrString("refresh_token")),
+        jstrPair("refresh_token", jstrString(tokens.refreshToken)),
+        jstrPair("scope", jstrString("openid profile email"))
+    ))
+    let res = httpPostJson(url, body)
+    if ! res.ok:
+        err = "refresh failed"
+        if len(res.error) > 0:
+            err = res.error
+        return false
+    let parsed = parseJsonSafe(res.body)
+    if ! parsed.ok:
+        err = "refresh parse failed"
+        return false
+    let root: json.JsonNode = parsed.value
+    let newId = getStringField(root, "id_token", "")
+    let newAccess = getStringField(root, "access_token", "")
+    let newRefresh = getStringField(root, "refresh_token", "")
+    if len(newId) > 0:
+        updated.idToken = newId
+    if len(newAccess) > 0:
+        updated.accessToken = newAccess
+    if len(newRefresh) > 0:
+        updated.refreshToken = newRefresh
+    if len(updated.accountId) == 0:
+        updated.accountId = extractAccountIdFromJwt(updated.idToken)
+    updated.lastRefresh = times.toUnix(times.now())
+    var persist: AuthTokens
+    copyAuthTokensRef(persist, updated)
+    writeAuthJsonTokens("", persist)
+    return true
+
+fn loadChatgptAuthInfo(): ChatgptAuthInfo =
+    traceAuthLocal("loadChatgptAuthInfo.begin")
+    var out: ChatgptAuthInfo
+    out.ok = false
+    out.token = ""
+    out.accountId = ""
+    var tokenVal = ""
+    var accountVal = ""
+    let envToken = os.getEnv("CODEX_CLOUD_TASKS_TOKEN")
+    if len(envToken) > 0:
+        tokenVal = envToken
+    let envAccount = os.getEnv("CODEX_CHATGPT_ACCOUNT_ID")
+    if len(envAccount) > 0:
+        accountVal = envAccount
+    var tokens: AuthTokens
+    let cfgToken = readConfigValue("auth.token")
+    if len(tokenVal) == 0 && len(cfgToken) > 0 && looksLikeJwt(cfgToken):
+        tokenVal = cfgToken
+    if len(tokenVal) == 0 && readChatgptTokens(tokens):
+        var msg: str = "loadChatgptAuthInfo.readChatgptTokens ok accessLen="
+        msg = msg + intToStr(len(tokens.accessToken))
+        msg = msg + " idLen="
+        msg = msg + intToStr(len(tokens.idToken))
+        msg = msg + " refreshLen="
+        msg = msg + intToStr(len(tokens.refreshToken))
+        traceAuthLocal(msg)
+        if shouldRefresh(tokens):
+            traceAuthLocal("loadChatgptAuthInfo.shouldRefresh=1")
+            var updated: AuthTokens
+            var err = ""
+            if refreshTokens(authIssuerDefault(), authClientIdDefault(), tokens, updated, err):
+                copyAuthTokens(tokens, updated)
+        else:
+            traceAuthLocal("loadChatgptAuthInfo.shouldRefresh=0")
+        if len(tokens.accessToken) > 0:
+            tokenVal = tokens.accessToken
+        if len(accountVal) == 0:
+            if len(tokens.accountId) > 0:
+                accountVal = tokens.accountId
+            else:
+                accountVal = extractAccountIdFromJwt(tokens.idToken)
+    if len(tokenVal) == 0:
+        let env1 = os.getEnv("CODEX_API_KEY")
+        if len(env1) > 0 && ! isChatgptPlaceholderToken(env1):
+            tokenVal = env1
+        let env2 = os.getEnv("OPENAI_API_KEY")
+        if len(env2) > 0 && len(tokenVal) == 0 && ! isChatgptPlaceholderToken(env2):
+            tokenVal = env2
+    if len(accountVal) == 0 && len(tokenVal) > 0 && indexOfSubstr(tokenVal, ".", 0) >= 0:
+        accountVal = extractAccountIdFromJwt(tokenVal)
+    out.token = tokenVal
+    out.accountId = accountVal
+    out.ok = len(tokenVal) > 0
+    var msg: str = "loadChatgptAuthInfo.end tokenLen="
+    msg = msg + intToStr(len(tokenVal))
+    msg = msg + " accountLen="
+    msg = msg + intToStr(len(accountVal))
+    traceAuthLocal(msg)
+    return out
+
+fn loadChatgptAccessToken(token: var str, accountId: var str): bool =
+    traceAuthLocal("loadChatgptAccessToken.begin")
+    let info = loadChatgptAuthInfo()
+    token = info.token
+    accountId = info.accountId
+    return info.ok
+
+fn loadApiAuthToken(token: var str, accountId: var str): bool =
+    var tokenVal = ""
+    var accountVal = ""
+    let envAccount = os.getEnv("CODEX_CHATGPT_ACCOUNT_ID")
+    if len(envAccount) > 0:
+        accountVal = envAccount
+    traceAuthLocal("loadApiAuthToken.begin envAccountLen=" + intToStr(len(envAccount)))
+    let cfgToken = readConfigValue("auth.token")
+    if len(cfgToken) > 0 && ! isChatgptPlaceholderToken(cfgToken):
+        tokenVal = cfgToken
+        if len(accountVal) == 0 && looksLikeJwt(tokenVal):
+            accountVal = extractAccountIdFromJwt(tokenVal)
+        token = tokenVal
+        accountId = accountVal
+        var msg: str = "loadApiAuthToken.return cfg tokenLen="
+        msg = msg + intToStr(len(tokenVal))
+        msg = msg + " accountLen="
+        msg = msg + intToStr(len(accountVal))
+        traceAuthLocal(msg)
+        return true
+    var apiKey = ""
+    if readAuthJsonApiKey(apiKey) && len(apiKey) > 0 && ! isChatgptPlaceholderToken(apiKey):
+        tokenVal = apiKey
+        token = tokenVal
+        accountId = accountVal
+        var msg: str = "loadApiAuthToken.return authJson tokenLen="
+        msg = msg + intToStr(len(tokenVal))
+        msg = msg + " accountLen="
+        msg = msg + intToStr(len(accountVal))
+        traceAuthLocal(msg)
+        return true
+    let env1 = os.getEnv("CODEX_API_KEY")
+    if len(env1) > 0 && ! isChatgptPlaceholderToken(env1):
+        tokenVal = env1
+        token = tokenVal
+        accountId = accountVal
+        var msg: str = "loadApiAuthToken.return env1 tokenLen="
+        msg = msg + intToStr(len(tokenVal))
+        msg = msg + " accountLen="
+        msg = msg + intToStr(len(accountVal))
+        traceAuthLocal(msg)
+        return true
+    let env2 = os.getEnv("OPENAI_API_KEY")
+    traceAuthLocal("loadApiAuthToken.env2 len=" + intToStr(len(env2)))
+    if len(env2) > 0 && ! isChatgptPlaceholderToken(env2):
+        tokenVal = env2
+        token = tokenVal
+        accountId = accountVal
+        var msg: str = "loadApiAuthToken.return env2 tokenLen="
+        msg = msg + intToStr(len(tokenVal))
+        msg = msg + " accountLen="
+        msg = msg + intToStr(len(accountVal))
+        traceAuthLocal(msg)
+        return true
+    var tokens: AuthTokens
+    if readChatgptTokens(tokens):
+        if shouldRefresh(tokens):
+            var updated: AuthTokens
+            var err = ""
+            if refreshTokens(authIssuerDefault(), authClientIdDefault(), tokens, updated, err):
+                copyAuthTokens(tokens, updated)
+        if len(tokens.accessToken) > 0:
+            tokenVal = tokens.accessToken
+            if len(tokens.accountId) > 0:
+                accountVal = tokens.accountId
+            else:
+                accountVal = extractAccountIdFromJwt(tokens.idToken)
+            token = tokenVal
+            accountId = accountVal
+            var msg: str = "loadApiAuthToken.return chatgpt tokenLen="
+            msg = msg + intToStr(len(tokenVal))
+            msg = msg + " accountLen="
+            msg = msg + intToStr(len(accountVal))
+            traceAuthLocal(msg)
+            return true
+    token = ""
+    accountId = ""
+    traceAuthLocal("loadApiAuthToken.return none")
+    return false
+
+fn ensureWorkspaceAllowed(expected: str, idToken: str, err: var str): bool =
+    err = ""
+    if len(expected) == 0:
+        return true
+    let actual = extractAccountIdFromJwt(idToken)
+    if len(actual) == 0:
+        err = "login is restricted to a specific workspace, but token missing chatgpt_account_id"
+        return false
+    if actual != expected:
+        err = "login is restricted to workspace id " + expected
+        return false
+    return true
+
+fn formEncode(pairs: seq[str]): str =
+    var out = ""
+    var i: int32 = 0
+    while i < len(pairs):
+        if i == 0:
+            out = pairs[i]
+        else:
+            out = out + "&" + pairs[i]
+        i = i + 1
+    return out
+
+fn isUnreservedAuthChar(c: char): bool =
+    let o = ord(c)
+    if o >= ord('a') && o <= ord('z'):
+        return true
+    if o >= ord('A') && o <= ord('Z'):
+        return true
+    if o >= ord('0') && o <= ord('9'):
+        return true
+    return c == '-' || c == '_' || c == '.' || c == '~'
+
+fn authToHexDigit(v: int32): char =
+    if v < 10:
+        return chr(ord('0') + v)
+    return chr(ord('A') + (v - 10))
+
+fn urlEncodeQueryComponent(text: str): str =
+    if text == nil || len text == 0:
+        return ""
+    var out: str = ""
+    var i: int32 = 0
+    while i < len text:
+        let c = text[i]
+        if c == ' ':
+            out = out + "%20"
+        elif isUnreservedAuthChar(c):
+            out = out + $ c
+        else:
+            var code: int32 = ord(c)
+            if code < 0:
+                code = code + 256
+            out = out + "%"
+            out = out + $ authToHexDigit(code >> 4)
+            out = out + $ authToHexDigit(code & 15)
+        i = i + 1
+    return out
+
+fn jsonNodeKindName(node: json.JsonNode): str =
+    if node == nil:
+        return "nil"
+    if node.kind == json.JNull:
+        return "null"
+    if node.kind == json.JBool:
+        return "bool"
+    if node.kind == json.JInt:
+        return "int"
+    if node.kind == json.JFloat:
+        return "float"
+    if node.kind == json.JString:
+        return "string"
+    if node.kind == json.JArray:
+        return "array"
+    if node.kind == json.JObject:
+        return "object"
+    return "unknown"
+
+fn jsonNodeSummary(node: json.JsonNode): str =
+    if node == nil:
+        return "nil"
+    let kind = jsonNodeKindName(node)
+    if node.kind == json.JArray:
+        var out: str = kind
+        out = out + "(len="
+        out = out + intToStr(len node.a)
+        out = out + ")"
+        return out
+    if node.kind == json.JString:
+        let s = node.getStr()
+        var out: str = kind
+        out = out + "(len="
+        out = out + intToStr(len s)
+        out = out + ")"
+        return out
+    if node.kind == json.JObject:
+        var out: str = kind
+        out = out + "(keys="
+        out = out + intToStr(len node.okeys)
+        out = out + ")"
+        return out
+    return kind
+
+fn jsonObjectKeysSummary(node: json.JsonNode, limit: int32): str =
+    if node == nil || node.kind != json.JObject:
+        return ""
+    var out = ""
+    var i: int32 = 0
+    let total = len node.okeys
+    let maxKeys = if limit > 0 && limit < total: limit else: total
+    while i < maxKeys:
+        if i == 0:
+            out = node.okeys[i]
+        else:
+            out = out + "," + node.okeys[i]
+        i = i + 1
+    if total > maxKeys:
+        out = out + ",..."
+    return out
+
+fn getNestedTokenField(root: json.JsonNode, key: str): str =
+    var value = getStringField(root, key, "")
+    if len value > 0:
+        return value
+    var containers: seq[str] = newSeq[str]()
+    seqAdd(containers, "data")
+    seqAdd(containers, "result")
+    seqAdd(containers, "tokens")
+    seqAdd(containers, "token")
+    seqAdd(containers, "oauth")
+    seqAdd(containers, "response")
+    var i: int32 = 0
+    while i < len containers:
+        let node = json.jsonGetField(root, containers[i])
+        if node != nil && node.kind == json.JObject:
+            value = getStringField(node, key, "")
+            if len value > 0:
+                return value
+        i = i + 1
+    return ""
+
+fn findStringFieldRecursive(node: json.JsonNode, key: str, depth: int32, limit: int32, outPath: var str, outValue: var str): bool =
+    outPath = ""
+    outValue = ""
+    if depth <= 0:
+        return false
+    if node == nil:
+        return false
+    if node.kind == json.JObject:
+        if node.hasKey(key):
+            let v = json.jsonGetField(node, key)
+            if v != nil && v.kind == json.JString:
+                outValue = v.getStr()
+                outPath = key
+                return true
+        let total = len node.okeys
+        let maxKeys = if limit > 0 && limit < total: limit else: total
+        var i: int32 = 0
+        while i < maxKeys:
+            let childKey = node.okeys[i]
+            let child = node.ovalues[i]
+            if child != nil && (child.kind == json.JObject || child.kind == json.JArray):
+                var childPath = ""
+                var childValue = ""
+                if findStringFieldRecursive(child, key, depth - 1, limit, childPath, childValue):
+                    outValue = childValue
+                    if len childPath > 0:
+                        outPath = childKey + "." + childPath
+                    else:
+                        outPath = childKey
+                    return true
+            i = i + 1
+    elif node.kind == json.JArray:
+        let total = len node.a
+        let maxItems = if limit > 0 && limit < total: limit else: total
+        var i: int32 = 0
+        while i < maxItems:
+            let child = node.a[i]
+            if child != nil && (child.kind == json.JObject || child.kind == json.JArray):
+                var childPath = ""
+                var childValue = ""
+                if findStringFieldRecursive(child, key, depth - 1, limit, childPath, childValue):
+                    outValue = childValue
+                    if len childPath > 0:
+                        var p: str = "["
+                        p = p + intToStr(i)
+                        p = p + "]."
+                        p = p + childPath
+                        outPath = p
+                    else:
+                        var p: str = "["
+                        p = p + intToStr(i)
+                        p = p + "]"
+                        outPath = p
+                    return true
+            i = i + 1
+    return false
+
+fn findTokenField(root: json.JsonNode, key: str, outValue: var str, outPath: var str): bool =
+    outValue = ""
+    outPath = ""
+    var value = getStringField(root, key, "")
+    if len value > 0:
+        outValue = value
+        outPath = key
+        return true
+    var containers: seq[str] = newSeq[str]()
+    seqAdd(containers, "data")
+    seqAdd(containers, "result")
+    seqAdd(containers, "tokens")
+    seqAdd(containers, "token")
+    seqAdd(containers, "oauth")
+    seqAdd(containers, "response")
+    var i: int32 = 0
+    while i < len containers:
+        let node = json.jsonGetField(root, containers[i])
+        if node != nil && node.kind == json.JObject:
+            value = getStringField(node, key, "")
+            if len value > 0:
+                outValue = value
+                outPath = containers[i] + "." + key
+                return true
+        i = i + 1
+    var deepPath = ""
+    var deepValue = ""
+    if findStringFieldRecursive(root, key, 4, 10, deepPath, deepValue):
+        outValue = deepValue
+        outPath = deepPath
+        return true
+    return false
+
+fn oauthErrorFromResponse(root: json.JsonNode): str =
+    if root == nil || root.kind != json.JObject:
+        return ""
+    let errNode = json.jsonGetField(root, "error")
+    if errNode != nil && errNode.kind != json.JNull:
+        if errNode.kind == json.JString:
+            return errNode.getStr()
+        if errNode.kind == json.JObject:
+            let code = getStringField(errNode, "code", "")
+            let typ = getStringField(errNode, "type", "")
+            let msg = getStringField(errNode, "message", "")
+            var out = ""
+            if len code > 0:
+                out = code
+            if len typ > 0:
+                if len out > 0:
+                    out = out + ": "
+                    out = out + typ
+                else:
+                    out = typ
+            if len msg > 0:
+                if len out > 0:
+                    out = out + ": "
+                    out = out + msg
+                else:
+                    out = msg
+            return out
+        return "oauth error"
+    let errField = getStringField(root, "error", "")
+    if len errField > 0:
+        let errDesc = getStringField(root, "error_description", "")
+        if len errDesc > 0:
+            return errField + ": " + errDesc
+        return errField
+    return ""
+
+fn exchangeCodeForTokens(issuer: str, clientId: str, redirectUri: str, codeVerifier: str, code: str, outTokens: var AuthTokens, err: var str): bool =
+    err = ""
+    resetAuthTokens(outTokens)
+    let url = issuer + "/oauth/token"
+    var formPairs: seq[str] = newSeq[str]()
+    seqAdd(formPairs, "grant_type=" + web_url.urlEncodeComponent("authorization_code"))
+    seqAdd(formPairs, "code=" + web_url.urlEncodeComponent(code))
+    seqAdd(formPairs, "redirect_uri=" + web_url.urlEncodeComponent(redirectUri))
+    seqAdd(formPairs, "client_id=" + web_url.urlEncodeComponent(clientId))
+    seqAdd(formPairs, "code_verifier=" + web_url.urlEncodeComponent(codeVerifier))
+    let body = formEncode(formPairs)
+    let res = httpPostForm(url, body)
+    if ! res.ok:
+        var detail: str = "token exchange failed"
+        if len(res.error) > 0:
+            detail = res.error
+        err = detail
+        var bodyHint: str = ""
+        if len(res.body) > 0:
+            bodyHint = " body=" + authLogSanitize(res.body)
+        var meta: str = " code_len="
+        meta = meta + intToStr(len(code))
+        meta = meta + " verifier_len="
+        meta = meta + intToStr(len(codeVerifier))
+        meta = meta + " redirect_len="
+        meta = meta + intToStr(len(redirectUri))
+        var msg: str = "token exchange failed status="
+        msg = msg + intToStr(res.status)
+        msg = msg + " err="
+        msg = msg + detail
+        msg = msg + meta
+        msg = msg + bodyHint
+        authLog(msg)
+        return false
+    let parsed = parseJsonSafe(res.body)
+    if ! parsed.ok:
+        err = "token exchange parse failed"
+        var msg: str = "token exchange parse failed status="
+        msg = msg + intToStr(res.status)
+        msg = msg + " bodyLen="
+        msg = msg + intToStr(len(res.body))
+        authLog(msg)
+        return false
+    let root: json.JsonNode = parsed.value
+    let errDetail = oauthErrorFromResponse(root)
+    if len errDetail > 0:
+        err = errDetail
+        var msg: str = "token exchange error status="
+        msg = msg + intToStr(res.status)
+        msg = msg + " err="
+        msg = msg + authLogSanitize(errDetail)
+        authLog(msg)
+        return false
+    var idPath = ""
+    var accessPath = ""
+    var refreshPath = ""
+    let hasId = findTokenField(root, "id_token", outTokens.idToken, idPath)
+    let hasAccess = findTokenField(root, "access_token", outTokens.accessToken, accessPath)
+    let hasRefresh = findTokenField(root, "refresh_token", outTokens.refreshToken, refreshPath)
+    if ! hasId:
+        var altId = ""
+        var altPath = ""
+        if findTokenField(root, "idToken", altId, altPath):
+            outTokens.idToken = altId
+            idPath = altPath
+    if ! hasAccess:
+        var altAccess = ""
+        var altPath = ""
+        if findTokenField(root, "accessToken", altAccess, altPath):
+            outTokens.accessToken = altAccess
+            accessPath = altPath
+    if ! hasRefresh:
+        var altRefresh = ""
+        var altPath = ""
+        if findTokenField(root, "refreshToken", altRefresh, altPath):
+            outTokens.refreshToken = altRefresh
+            refreshPath = altPath
+    if len(outTokens.idToken) > 0:
+        outTokens.accountId = extractAccountIdFromJwt(outTokens.idToken)
+    outTokens.lastRefresh = times.toUnix(times.now())
+    if len outTokens.idToken == 0:
+        err = "token exchange missing id_token"
+        let keys = jsonObjectKeysSummary(root, 12)
+        var keyHint: str = ""
+        if len keys > 0:
+            keyHint = " keys=" + keys
+        let kindHint = " kind=" + jsonNodeSummary(root)
+        var ctHint: str = ""
+        if len res.contentType > 0:
+            ctHint = " contentType=" + res.contentType
+        var pathHint: str = ""
+        if len idPath > 0:
+            pathHint = " id_path=" + idPath
+        var msg: str = "token exchange missing id_token status="
+        msg = msg + intToStr(res.status)
+        msg = msg + " bodyLen="
+        msg = msg + intToStr(len res.body)
+        msg = msg + keyHint
+        msg = msg + kindHint
+        msg = msg + ctHint
+        msg = msg + pathHint
+        authLog(msg)
+        return false
+    if len outTokens.accessToken == 0:
+        err = "token exchange missing access_token"
+        let keys = jsonObjectKeysSummary(root, 12)
+        var keyHint: str = ""
+        if len keys > 0:
+            keyHint = " keys=" + keys
+        let kindHint = " kind=" + jsonNodeSummary(root)
+        var ctHint: str = ""
+        if len res.contentType > 0:
+            ctHint = " contentType=" + res.contentType
+        var pathHint: str = ""
+        if len accessPath > 0:
+            pathHint = " access_path=" + accessPath
+        var msg: str = "token exchange missing access_token status="
+        msg = msg + intToStr(res.status)
+        msg = msg + " bodyLen="
+        msg = msg + intToStr(len res.body)
+        msg = msg + keyHint
+        msg = msg + kindHint
+        msg = msg + ctHint
+        msg = msg + pathHint
+        authLog(msg)
+        return false
+    if len outTokens.refreshToken == 0:
+        err = "token exchange missing refresh_token"
+        let keys = jsonObjectKeysSummary(root, 12)
+        var keyHint: str = ""
+        if len keys > 0:
+            keyHint = " keys=" + keys
+        let kindHint = " kind=" + jsonNodeSummary(root)
+        var ctHint: str = ""
+        if len res.contentType > 0:
+            ctHint = " contentType=" + res.contentType
+        var pathHint: str = ""
+        if len refreshPath > 0:
+            pathHint = " refresh_path=" + refreshPath
+        var msg: str = "token exchange missing refresh_token status="
+        msg = msg + intToStr(res.status)
+        msg = msg + " bodyLen="
+        msg = msg + intToStr(len res.body)
+        msg = msg + keyHint
+        msg = msg + kindHint
+        msg = msg + ctHint
+        msg = msg + pathHint
+        authLog(msg)
+        return false
+    return true
+
+fn obtainApiKeyFromIdToken(issuer: str, clientId: str, idToken: str, apiKey: var str): bool =
+    apiKey = ""
+    if len(idToken) == 0:
+        return false
+    let url = issuer + "/oauth/token"
+    var formPairs: seq[str] = newSeq[str]()
+    seqAdd(formPairs, "grant_type=" + web_url.urlEncodeComponent("urn:ietf:params:oauth:grant-type:token-exchange"))
+    seqAdd(formPairs, "client_id=" + web_url.urlEncodeComponent(clientId))
+    seqAdd(formPairs, "requested_token=" + web_url.urlEncodeComponent("openai-api-key"))
+    seqAdd(formPairs, "subject_token=" + web_url.urlEncodeComponent(idToken))
+    seqAdd(formPairs, "subject_token_type=" + web_url.urlEncodeComponent("urn:ietf:params:oauth:token-type:id_token"))
+    let body = formEncode(formPairs)
+    let res = httpPostForm(url, body)
+    if ! res.ok:
+        return false
+    let parsed = parseJsonSafe(res.body)
+    if ! parsed.ok:
+        return false
+    let root: json.JsonNode = parsed.value
+    let token = getStringField(root, "access_token", "")
+    if len(token) > 0:
+        apiKey = token
+        return true
+    return false
+
+fn buildAuthorizeUrl(issuer: str, clientId: str, redirectUri: str, codeChallenge: str, state: str, workspaceId: str): str =
+    var query: seq[str] = newSeq[str]()
+    seqAdd(query, "response_type=" + urlEncodeQueryComponent("code"))
+    seqAdd(query, "client_id=" + urlEncodeQueryComponent(clientId))
+    seqAdd(query, "redirect_uri=" + urlEncodeQueryComponent(redirectUri))
+    seqAdd(query, "scope=" + urlEncodeQueryComponent("openid profile email offline_access"))
+    seqAdd(query, "code_challenge=" + urlEncodeQueryComponent(codeChallenge))
+    seqAdd(query, "code_challenge_method=" + urlEncodeQueryComponent("S256"))
+    seqAdd(query, "id_token_add_organizations=true")
+    seqAdd(query, "codex_cli_simplified_flow=true")
+    seqAdd(query, "state=" + urlEncodeQueryComponent(state))
+    let originator = authOriginatorDefault()
+    seqAdd(query, "originator=" + urlEncodeQueryComponent(originator))
+    if len(workspaceId) > 0:
+        seqAdd(query, "allowed_workspace_id=" + urlEncodeQueryComponent(workspaceId))
+    var msg: str = "login authorize originator="
+    msg = msg + originator
+    msg = msg + " client_id="
+    msg = msg + clientId
+    msg = msg + " redirect_uri="
+    msg = msg + redirectUri
+    authLog(msg)
+    return issuer + "/oauth/authorize?" + joinWithAmpersand(query)

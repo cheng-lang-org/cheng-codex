@@ -1,0 +1,2394 @@
+# Cloud tasks CLI (codex cloud)
+
+import system
+import cheng/decentralized/json_parse
+import std/os
+import seqs
+import cheng/runtime/json_ast as json
+import cheng/codex/common
+import cheng/codex/json_util
+
+fn ord(ch: char): int32 =
+    return int32(ch)
+
+fn cloudTraceLocal(msg: str) =
+    let enabled = normalizePolicy(trimLine(os.getEnv("CODEX_TRACE_MAIN")))
+    if enabled == "1" || enabled == "true" || enabled == "yes":
+        printErr("[cloud] " + msg)
+
+type
+    CloudStatus = enum
+        csPending
+        csReady
+        csApplied
+        csError
+
+    CloudSummary =
+        filesChanged: int32
+        linesAdded: int32
+        linesRemoved: int32
+
+    CloudAttemptDiff =
+        placement: int32
+        hasPlacement: bool
+        createdAt: int64
+        hasCreated: bool
+        diff: str
+
+    CloudAttemptCollect =
+        ok: bool
+        attempts: seq[CloudAttemptDiff]
+        err: str
+
+    CloudAttemptSelect =
+        ok: bool
+        attempt: CloudAttemptDiff
+        err: str
+
+    CloudHttpResult =
+        ok: bool
+        status: int32
+        contentType: str
+        body: str
+        error: str
+
+    CloudTaskSummary =
+        id: str
+        title: str
+        status: CloudStatus
+        updatedAt: int64
+        updatedAtNanos: int32
+        environmentId: str
+        environmentLabel: str
+        summary: CloudSummary
+        isReview: bool
+        attemptTotal: int32
+        hasAttemptTotal: bool
+
+    CloudTasksCollect =
+        ok: bool
+        tasks: seq[CloudTaskSummary]
+        err: str
+
+    CloudTaskListPage =
+        ok: bool
+        tasks: seq[CloudTaskSummary]
+        cursor: str
+        hasCursor: bool
+        err: str
+
+    CloudTimestamp =
+        unix: int64
+        nanos: int32
+
+    CloudAttemptTotal =
+        ok: bool
+        total: int32
+
+    CloudParseI32 =
+        ok: bool
+        value: int32
+        err: str
+
+    CloudEnvList =
+        ok: bool
+        ids: seq[str]
+        labels: seq[str]
+        err: str
+
+    CloudEnvResolve =
+        ok: bool
+        id: str
+        err: str
+
+fn cloudIsOptionLike(arg: str): bool =
+    if arg == nil || len(arg) == 0:
+        return false
+    # Treat "-" as a positional value (matches clap behavior).
+    if arg == "-":
+        return false
+    return arg[0] == '-'
+
+fn cloudHexDigitLocal(value: int32): char =
+    if value < 10:
+        return char(ord('0') + value)
+    return char(ord('a') + (value - 10))
+
+fn cloudUrlEncodeComponent(text: str): str =
+    if text == nil:
+        return ""
+    var out: str = ""
+    var i: int32 = 0
+    while i < len(text):
+        let ch = text[i]
+        if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' || ch == '~':
+            out = out + $ ch
+        else:
+            let byteVal: int32 = ord(ch)
+            out = out + "%"
+            out = out + $ cloudHexDigitLocal((byteVal >> 4) & 15)
+            out = out + $ cloudHexDigitLocal(byteVal & 15)
+        i = i + 1
+    return out
+
+fn cloudStatusJson(status: CloudStatus): str =
+    case status
+    of csPending:
+        return "pending"
+    of csReady:
+        return "ready"
+    of csApplied:
+        return "applied"
+    of csError:
+        return "error"
+    return "pending"
+
+fn cloudPrintVersion(): int32 =
+    var out: str = "codex-cli-cloud"
+    if len(CODEX_VERSION) > 0:
+        out = out + " "
+        out = out + CODEX_VERSION
+    printLine(out)
+    return 0
+
+fn cloudUsageUnexpectedArg(arg: str, usage: str, tip: str): int32 =
+    var msg: str = "error: unexpected argument '"
+    msg = msg + arg
+    msg = msg + "' found"
+    printErr(msg)
+    printErr("")
+    if len(tip) > 0:
+        var tipLine: str = "  tip: "
+        tipLine = tipLine + tip
+        printErr(tipLine)
+        printErr("")
+    var usageLine: str = "Usage: "
+    usageLine = usageLine + usage
+    printErr(usageLine)
+    printErr("")
+    printErr("For more information, try '--help'.")
+    return 2
+
+fn cloudUsageMissingValue(flag: str, usage: str): int32 =
+    # clap omits Usage for missing-value errors.
+    var msg: str = "error: a value is required for '"
+    msg = msg + flag
+    msg = msg + "' but none was supplied"
+    printErr(msg)
+    printErr("")
+    printErr("For more information, try '--help'.")
+    return 2
+
+fn cloudUsageInvalidValue(value: str, flag: str, detail: str): int32 =
+    # Match clap invalid value formatting (no Usage block).
+    var msg: str = "error: invalid value '"
+    msg = msg + value
+    msg = msg + "' for '"
+    msg = msg + flag
+    msg = msg + "': "
+    msg = msg + detail
+    printErr(msg)
+    printErr("")
+    printErr("For more information, try '--help'.")
+    return 2
+
+fn cloudUsageUnrecognizedSubcommand(sub: str, usage: str): int32 =
+    var msg: str = "error: unrecognized subcommand '"
+    msg = msg + sub
+    msg = msg + "'"
+    printErr(msg)
+    printErr("")
+    var usageLine: str = "Usage: "
+    usageLine = usageLine + usage
+    printErr(usageLine)
+    printErr("")
+    printErr("For more information, try '--help'.")
+    return 2
+
+fn cloudUsageMissingRequired(argName: str, usage: str): int32 =
+    printErr("error: the following required arguments were not provided:")
+    var argLine: str = "  "
+    argLine = argLine + argName
+    printErr(argLine)
+    printErr("")
+    var usageLine: str = "Usage: "
+    usageLine = usageLine + usage
+    printErr(usageLine)
+    printErr("")
+    printErr("For more information, try '--help'.")
+    return 2
+
+fn printCloudConfigHelpOption() =
+    printLine("  -c, --config <key=value>")
+    printLine("          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`.")
+    printLine("          Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed")
+    printLine("          as TOML. If it fails to parse as TOML, the raw string is used as a literal.")
+    printLine("          ")
+    printLine("          Examples: - `-c model=\"o3\"` - `-c 'sandbox_permissions=[\"disk-full-read-access\"]'` - `-c")
+    printLine("          shell_environment_policy.inherit=all`")
+    printLine("")
+
+fn printCloudEnableHelpOption() =
+    printLine("      --enable <FEATURE>")
+    printLine("          Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    printLine("")
+
+fn printCloudDisableHelpOption() =
+    printLine("      --disable <FEATURE>")
+    printLine("          Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    printLine("")
+
+fn printCloudConfigOverridesHelp() =
+    printCloudConfigHelpOption()
+    printCloudEnableHelpOption()
+    printCloudDisableHelpOption()
+
+fn printCloudHelp(): int32 =
+    printLine("[EXPERIMENTAL] Browse tasks from Codex Cloud and apply changes locally")
+    printLine("")
+    printLine("Usage: codex cloud [OPTIONS] [COMMAND]")
+    printLine("")
+    printLine("Commands:")
+    printLine("  exec    Submit a new Codex Cloud task without launching the TUI")
+    printLine("  status  Show the status of a Codex Cloud task")
+    printLine("  list    List Codex Cloud tasks")
+    printLine("  apply   Apply the diff for a Codex Cloud task locally")
+    printLine("  diff    Show the unified diff for a Codex Cloud task")
+    printLine("  help    Print this message or the help of the given subcommand(s)")
+    printLine("")
+    printLine("Options:")
+    printCloudConfigOverridesHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    printLine("")
+    printLine("  -V, --version")
+    printLine("          Print version")
+    return 0
+
+fn printCloudListHelp(): int32 =
+    printLine("List Codex Cloud tasks")
+    printLine("")
+    printLine("Usage: codex cloud list [OPTIONS]")
+    printLine("")
+    printLine("Options:")
+    printCloudConfigHelpOption()
+    printLine("      --env <ENV_ID>")
+    printLine("          Filter tasks by environment identifier")
+    printLine("")
+    printCloudEnableHelpOption()
+    printLine("      --limit <N>")
+    printLine("          Maximum number of tasks to return (1-20)")
+    printLine("          ")
+    printLine("          [default: 20]")
+    printLine("")
+    printLine("      --cursor <CURSOR>")
+    printLine("          Pagination cursor returned by a previous call")
+    printLine("")
+    printCloudDisableHelpOption()
+    printLine("      --json")
+    printLine("          Emit JSON instead of plain text")
+    printLine("")
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn printCloudExecHelp(): int32 =
+    printLine("Submit a new Codex Cloud task without launching the TUI")
+    printLine("")
+    printLine("Usage: codex cloud exec [OPTIONS] --env <ENV_ID> [QUERY]")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [QUERY]")
+    printLine("          Task prompt to run in Codex Cloud")
+    printLine("")
+    printLine("Options:")
+    printCloudConfigHelpOption()
+    printLine("      --env <ENV_ID>")
+    printLine("          Target environment identifier (see `codex cloud` to browse)")
+    printLine("")
+    printLine("      --attempts <ATTEMPTS>")
+    printLine("          Number of assistant attempts (best-of-N)")
+    printLine("          ")
+    printLine("          [default: 1]")
+    printLine("")
+    printCloudEnableHelpOption()
+    printLine("      --branch <BRANCH>")
+    printLine("          Git branch to run in Codex Cloud (defaults to current branch)")
+    printLine("")
+    printCloudDisableHelpOption()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn printCloudStatusHelp(): int32 =
+    printLine("Show the status of a Codex Cloud task")
+    printLine("")
+    printLine("Usage: codex cloud status [OPTIONS] <TASK_ID>")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  <TASK_ID>")
+    printLine("          Codex Cloud task identifier to inspect")
+    printLine("")
+    printLine("Options:")
+    printCloudConfigOverridesHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn printCloudDiffHelp(): int32 =
+    printLine("Show the unified diff for a Codex Cloud task")
+    printLine("")
+    printLine("Usage: codex cloud diff [OPTIONS] <TASK_ID>")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  <TASK_ID>")
+    printLine("          Codex Cloud task identifier to display")
+    printLine("")
+    printLine("Options:")
+    printLine("      --attempt <N>")
+    printLine("          Attempt number to display (1-based)")
+    printLine("")
+    printCloudConfigOverridesHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn printCloudApplyHelp(): int32 =
+    printLine("Apply the diff for a Codex Cloud task locally")
+    printLine("")
+    printLine("Usage: codex cloud apply [OPTIONS] <TASK_ID>")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  <TASK_ID>")
+    printLine("          Codex Cloud task identifier to apply")
+    printLine("")
+    printLine("Options:")
+    printLine("      --attempt <N>")
+    printLine("          Attempt number to apply (1-based)")
+    printLine("")
+    printCloudConfigOverridesHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+var cloudTempSeq: int32 = 0
+
+fn cloudPrompt(prompt: str): str =
+    if len(prompt) > 0:
+        printErr(prompt)
+    let rl = stdinReadLine()
+    if ! rl.ok:
+        return ""
+    return trimLine(rl.line)
+
+fn cloudStdinIsTerminalLocal(): bool =
+    # No stdlib isatty yet; use POSIX `test -t 0` best-effort.
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let res = os.execCmdEx("test -t 0", opts, os.getCurrentDir())
+    return res.exitCode == 0
+
+fn cloudParseIntLocal(text: str, defaultValue: int32): int32 =
+    if text == nil:
+        return defaultValue
+    let s = trimLine(text)
+    if len(s) == 0:
+        return defaultValue
+    var i: int32 = 0
+    var value: int32 = 0
+    while i < len(s):
+        let ch = s[i]
+        if ch < '0' || ch > '9':
+            return defaultValue
+        value = value * 10 + (ord(ch) - ord('0'))
+        i = i + 1
+    return value
+
+fn cloudNextTempPath(prefix: str, suffix: str): str =
+    cloudTempSeq = cloudTempSeq + 1
+    let home = codexHomeDir()
+    var base: str = "/tmp"
+    if len(home) > 0:
+        base = os.joinPath(home, "tmp")
+    if ! os.dirExists(base):
+        os.createDir(base)
+    let ts = int64ToStr(times.toUnix(times.now()))
+    # Build incrementally to avoid deep temporary chains.
+    var name: str = prefix
+    name = name + "-"
+    name = name + ts
+    name = name + "-"
+    name = name + intToStr(cloudTempSeq)
+    name = name + suffix
+    return os.joinPath(base, name)
+
+fn trimTrailingSlash(url: str): str =
+    if url == nil || len(url) == 0:
+        return ""
+    var out = url
+    while len(out) > 0 && out[len(out) - 1] == '/':
+        if len(out) <= 1:
+            out = ""
+            break
+        out = __cheng_slice_string(out, 0, len(out) - 2, false)
+    # Always return an owned string: slice views can dangle once the source buffer drops.
+    if out == nil:
+        return ""
+    return "" + out
+
+fn cloudIndexOfSubstr(text: str, needle: str, start: int32): int32 =
+    if text == nil || needle == nil:
+        return -1
+    if start < 0:
+        return -1
+    if len(needle) == 0:
+        return start
+    var i: int32 = start
+    let limit: int32 = len(text) - len(needle)
+    while i <= limit:
+        var matched = true
+        var j: int32 = 0
+        while j < len(needle):
+            if ord(text[i + j]) != ord(needle[j]):
+                matched = false
+                break
+            j = j + 1
+        if matched:
+            return i
+        i = i + 1
+    return -1
+
+fn normalizeCloudBaseUrl(url: str): str =
+    cloudTraceLocal("normalizeCloudBaseUrl.begin")
+    # Avoid calling helpers that return slice views: those can dangle depending on ORC/drop order.
+    # Make an owned copy, then trim in-place.
+    var out: str = ""
+    if url != nil && len(url) > 0:
+        out = "" + url
+    cloudTraceLocal("normalizeCloudBaseUrl.afterCopy")
+    while len(out) > 0 && out[len(out) - 1] == '/':
+        if len(out) <= 1:
+            out = ""
+            break
+        out = "" + __cheng_slice_string(out, 0, len(out) - 2, false)
+    cloudTraceLocal("normalizeCloudBaseUrl.afterTrim")
+    var shouldNormalize = false
+    cloudTraceLocal("normalizeCloudBaseUrl.checkPrefix.chatgpt")
+    if hasPrefix(out, "https://chatgpt.com"):
+        shouldNormalize = true
+    else:
+        cloudTraceLocal("normalizeCloudBaseUrl.checkPrefix.chatopenai")
+        if hasPrefix(out, "https://chat.openai.com"):
+            shouldNormalize = true
+    if shouldNormalize:
+        cloudTraceLocal("normalizeCloudBaseUrl.prefixMatch=1")
+        if cloudIndexOfSubstr(out, "/backend-api", 0) < 0:
+            cloudTraceLocal("normalizeCloudBaseUrl.appendBackendApi")
+            out = out + "/backend-api"
+    else:
+        cloudTraceLocal("normalizeCloudBaseUrl.prefixMatch=0")
+    cloudTraceLocal("normalizeCloudBaseUrl.end")
+    return out
+
+fn loadCloudBaseUrl(): str =
+    cloudTraceLocal("loadCloudBaseUrl.begin")
+    let envBase = os.getEnv("CODEX_CLOUD_TASKS_BASE_URL")
+    cloudTraceLocal("loadCloudBaseUrl.afterEnv")
+    if len(envBase) > 0:
+        cloudTraceLocal("loadCloudBaseUrl.useEnv")
+        return normalizeCloudBaseUrl(envBase)
+    let cfgBase = readConfigValue("chatgpt_base_url")
+    cloudTraceLocal("loadCloudBaseUrl.afterCfg")
+    if len(cfgBase) > 0:
+        cloudTraceLocal("loadCloudBaseUrl.useCfg")
+        return normalizeCloudBaseUrl(cfgBase)
+    cloudTraceLocal("loadCloudBaseUrl.useDefault")
+    return normalizeCloudBaseUrl("https://chatgpt.com/backend-api")
+
+fn cloudApiPath(baseUrl: str, path: str): str =
+    if cloudIndexOfSubstr(baseUrl, "/backend-api", 0) >= 0:
+        var out: str = baseUrl
+        out = out + "/wham"
+        out = out + path
+        return out
+    var out: str = baseUrl
+    out = out + "/api/codex"
+    out = out + path
+    return out
+
+fn cloudBrowserTaskUrl(baseUrl: str, taskId: str): str =
+    let base = trimTrailingSlash(baseUrl)
+    if endsWithSuffix(base, "/backend-api"):
+        let root = __cheng_slice_string(base, 0, len(base) - len("/backend-api") - 1, false)
+        var out: str = "" + root
+        out = out + "/codex/tasks/"
+        out = out + taskId
+        return out
+    if endsWithSuffix(base, "/api/codex"):
+        let root = __cheng_slice_string(base, 0, len(base) - len("/api/codex") - 1, false)
+        var out: str = "" + root
+        out = out + "/codex/tasks/"
+        out = out + taskId
+        return out
+    if endsWithSuffix(base, "/codex"):
+        var out: str = base
+        out = out + "/tasks/"
+        out = out + taskId
+        return out
+    var out: str = base
+    out = out + "/codex/tasks/"
+    out = out + taskId
+    return out
+
+fn cloudSplitByChar(text: str, sep: char): seq[str] =
+    var outVal: seq[str] = newSeq[str]()
+    if text == nil:
+        return outVal
+    var start: int32 = 0
+    var i: int32 = 0
+    while i < len(text):
+        if text[i] == sep:
+            if i >= start:
+                seqAdd(outVal, __cheng_slice_string(text, start, i - 1, false))
+            else:
+                seqAdd(outVal, "")
+            start = i + 1
+        i = i + 1
+    if start <= len(text) - 1:
+        seqAdd(outVal, __cheng_slice_string(text, start, len(text) - 1, false))
+    elif start == len(text):
+        seqAdd(outVal, "")
+    return outVal
+
+fn cloudParseInt32(text: str, defaultValue: int32): int32 =
+    if len(text) == 0:
+        return defaultValue
+    var i: int32 = 0
+    var sign = 1
+    if text[0] == '-':
+        sign = -1
+        i = i + 1
+    var value: int32 = 0
+    var saw = false
+    while i < len(text):
+        let ch = text[i]
+        if ch < '0' || ch > '9':
+            break
+        value = value * 10 + (ord(ch) - ord('0'))
+        saw = true
+        i = i + 1
+    if ! saw:
+        return defaultValue
+    return value * sign
+
+fn cloudParseStatusCode(headersText: str): int32 =
+    let lines = splitLinesSimple(headersText)
+    var i: int32 = 0
+    while i < len(lines):
+        let line = argAt(lines, i)
+        if hasPrefix(line, "HTTP/"):
+            let sp = cloudIndexOfSubstr(line, " ", 0)
+            if sp >= 0 && sp + 1 < len(line):
+                return cloudParseInt32(trimLine(__cheng_slice_string(line, sp + 1, len(line) - 1, false)), 0)
+        i = i + 1
+    return 0
+
+fn cloudParseHeaderValue(headersText: str, key: str): str =
+    let keyLower = normalizePolicy(key)
+    let lines = splitLinesSimple(headersText)
+    var i: int32 = 0
+    while i < len(lines):
+        let line = argAt(lines, i)
+        let colon = cloudIndexOfSubstr(line, ":", 0)
+        if colon > 0:
+            let k = normalizePolicy(trimLine(__cheng_slice_string(line, 0, colon - 1, false)))
+            if k == keyLower:
+                return trimLine(__cheng_slice_string(line, colon + 1, len(line) - 1, false))
+        i = i + 1
+    return ""
+
+fn cloudHttpStatusTextLocal(code: int32): str =
+    # Match reqwest StatusCode Display ("404 Not Found", etc) for common codes.
+    case code
+    of 400:
+        return "400 Bad Request"
+    of 401:
+        return "401 Unauthorized"
+    of 403:
+        return "403 Forbidden"
+    of 404:
+        return "404 Not Found"
+    of 409:
+        return "409 Conflict"
+    of 422:
+        return "422 Unprocessable Entity"
+    of 429:
+        return "429 Too Many Requests"
+    of 500:
+        return "500 Internal Server Error"
+    of 502:
+        return "502 Bad Gateway"
+    of 503:
+        return "503 Service Unavailable"
+    of 504:
+        return "504 Gateway Timeout"
+    return intToStr(code)
+
+fn cloudHttpRequest(method: str, requestUrl: str, displayUrl: str, body: str, token: str, accountId: str): CloudHttpResult =
+    var out: CloudHttpResult
+    if len(requestUrl) == 0:
+        out.error = "missing url"
+        return out
+    var shownUrl: str = requestUrl
+    if len(displayUrl) > 0:
+        shownUrl = displayUrl
+    let hdrPath = cloudNextTempPath("cloud_hdr", ".txt")
+    let bodyPath = cloudNextTempPath("cloud_body", ".txt")
+    # Build the curl command incrementally to avoid deep temporary chains.
+    var cmd: str = "curl -sS -X "
+    cmd = cmd + method
+    cmd = cmd + " -D "
+    cmd = cmd + shellQuote(hdrPath)
+    cmd = cmd + " -o "
+    cmd = cmd + shellQuote(bodyPath)
+    if len(token) > 0:
+        cmd = cmd + " -H "
+        var authLine: str = "Authorization: Bearer "
+        authLine = authLine + token
+        cmd = cmd + shellQuote(authLine)
+    if len(accountId) > 0:
+        cmd = cmd + " -H "
+        var accLine: str = "ChatGPT-Account-Id: "
+        accLine = accLine + accountId
+        cmd = cmd + shellQuote(accLine)
+    cmd = cmd + " -H "
+    cmd = cmd + shellQuote("User-Agent: codex-cheng")
+    if len(body) > 0:
+        let reqPath = cloudNextTempPath("cloud_req", ".json")
+        os.writeFile(reqPath, body)
+        cmd = cmd + " -H "
+        cmd = cmd + shellQuote("Content-Type: application/json")
+        cmd = cmd + " --data @"
+        cmd = cmd + shellQuote(reqPath)
+    cmd = cmd + " "
+    cmd = cmd + shellQuote(requestUrl)
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let res = os.execCmdEx(cmd, opts, os.getCurrentDir())
+    if res.exitCode != 0:
+        out.error = ""
+        if res.output != nil:
+            out.error = res.output
+        return out
+    var headersText: str = ""
+    if os.fileExists(hdrPath):
+        let tmp = os.readFile(hdrPath)
+        if tmp != nil:
+            headersText = tmp
+    out.status = cloudParseStatusCode(headersText)
+    out.contentType = cloudParseHeaderValue(headersText, "content-type")
+    out.body = ""
+    if os.fileExists(bodyPath):
+        let tmp = os.readFile(bodyPath)
+        if tmp != nil:
+            out.body = tmp
+    out.ok = out.status >= 200 && out.status < 300
+    if ! out.ok:
+        # Mirror backend-client error formatting:
+        # "{METHOD} {URL} failed: {STATUS}; content-type={CT}; body={BODY}"
+        var msg: str = method
+        msg = msg + " "
+        msg = msg + shownUrl
+        msg = msg + " failed: "
+        msg = msg + cloudHttpStatusTextLocal(out.status)
+        msg = msg + "; content-type="
+        msg = msg + out.contentType
+        msg = msg + "; body="
+        msg = msg + out.body
+        out.error = msg
+    return out
+
+fn cloudParseJson(payload: str): json.JsonNode =
+    let parsed = parseJsonSafe(payload)
+    if parsed.ok:
+        return parsed.value
+    return json.newJNull()
+
+fn jsonIsObject(node: json.JsonNode): bool =
+    return node != nil && node.kind == json.JObject
+
+fn jsonIsArray(node: json.JsonNode): bool =
+    return node != nil && node.kind == json.JArray
+
+fn jsonGetObject(node: json.JsonNode, key: str): json.JsonNode =
+    if ! jsonIsObject(node) || ! node.hasKey(key):
+        return json.newJNull()
+    let value = json.jsonGetField(node, key)
+    if jsonIsObject(value):
+        return value
+    return json.newJNull()
+
+fn jsonGetArray(node: json.JsonNode, key: str): json.JsonNode =
+    if ! jsonIsObject(node) || ! node.hasKey(key):
+        return json.newJNull()
+    let value = json.jsonGetField(node, key)
+    if jsonIsArray(value):
+        return value
+    return json.newJNull()
+
+fn jstrArrayLen(node: json.JsonNode): int32 =
+    if jsonIsArray(node):
+        return len(node.a)
+    return 0
+
+fn jstrArrayItem(node: json.JsonNode, idx: int32): json.JsonNode =
+    if jsonIsArray(node) && idx >= 0 && idx < len(node.a):
+        return get[json.JsonNode](node.a, idx)
+    return json.newJNull()
+
+fn loadCloudAuthInfo(): ChatgptAuthInfo =
+    return loadChatgptAuthInfo()
+
+fn parseAttemptValue(text: str, defaultValue: int32): int32 =
+    let value = cloudParseInt32(text, defaultValue)
+    if value < 1 || value > 4:
+        return defaultValue
+    return value
+
+fn cloudParseAttemptsStrict(text: str): CloudParseI32 =
+    var out: CloudParseI32
+    out.ok = false
+    out.value = 0
+    out.err = "attempts must be an integer between 1 and 4"
+    if text == nil:
+        return out
+    let s = trimLine(text)
+    if len(s) == 0:
+        return out
+    var i: int32 = 0
+    var value: int32 = 0
+    while i < len(s):
+        let ch = s[i]
+        if ch < '0' || ch > '9':
+            return out
+        value = value * 10 + (ord(ch) - ord('0'))
+        i = i + 1
+    if value < 1 || value > 4:
+        out.err = "attempts must be between 1 and 4"
+        return out
+    out.ok = true
+    out.value = value
+    out.err = ""
+    return out
+
+fn cloudParseLimitStrict(text: str): CloudParseI32 =
+    var out: CloudParseI32
+    out.ok = false
+    out.value = 0
+    out.err = "limit must be an integer between 1 and 20"
+    if text == nil:
+        return out
+    let s = trimLine(text)
+    if len(s) == 0:
+        return out
+    var i: int32 = 0
+    var value: int32 = 0
+    while i < len(s):
+        let ch = s[i]
+        if ch < '0' || ch > '9':
+            return out
+        value = value * 10 + (ord(ch) - ord('0'))
+        i = i + 1
+    if value < 1 || value > 20:
+        out.err = "limit must be between 1 and 20"
+        return out
+    out.ok = true
+    out.value = value
+    out.err = ""
+    return out
+
+fn resolveGitBranch(defaultBranch: str): str =
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let res = os.execCmdEx("git rev-parse --abbrev-ref HEAD", opts, os.getCurrentDir())
+    if res.exitCode == 0:
+        let name = trimLine(res.output)
+        if len(name) > 0 && name != "HEAD":
+            return name
+    if len(defaultBranch) > 0:
+        return defaultBranch
+    return "main"
+
+fn parseTaskIdLocal(raw: str): str =
+    let trimmed = trimLine(raw)
+    if len(trimmed) == 0:
+        return ""
+    let parts = cloudSplitByChar(trimmed, '#')
+    var withoutFrag: str = trimmed
+    if len(parts) > 0:
+        withoutFrag = argAt(parts, 0)
+    let parts2 = cloudSplitByChar(withoutFrag, '?')
+    var withoutQuery: str = withoutFrag
+    if len(parts2) > 0:
+        withoutQuery = argAt(parts2, 0)
+    var path: str = withoutQuery
+    if cloudIndexOfSubstr(path, "/", 0) >= 0:
+        let segs = cloudSplitByChar(path, '/')
+        if len(segs) > 0:
+            path = argAt(segs, len(segs) - 1)
+    let out = trimLine(path)
+    if out == nil:
+        return ""
+    return "" + out
+
+fn mapStatusFromDisplay(display: json.JsonNode): CloudStatus =
+    if jsonIsObject(display):
+        let latest = jsonGetObject(display, "latest_turn_status_display")
+        let turnStatus = getStringField(latest, "turn_status", "")
+        if len(turnStatus) > 0:
+            if turnStatus == "failed" || turnStatus == "cancelled":
+                return csError
+            if turnStatus == "completed":
+                return csReady
+            if turnStatus == "in_progress" || turnStatus == "pending":
+                return csPending
+        let state = getStringField(display, "state", "")
+        if len(state) > 0:
+            if state == "ready":
+                return csReady
+            if state == "applied":
+                return csApplied
+            if state == "error":
+                return csError
+            if state == "pending":
+                return csPending
+    return csPending
+
+fn diffSummaryFromStatusDisplay(display: json.JsonNode): CloudSummary =
+    var out: CloudSummary
+    if jsonIsObject(display):
+        let latest = jsonGetObject(display, "latest_turn_status_display")
+        let diffStats = jsonGetObject(latest, "diff_stats")
+        out.filesChanged = int32(getIntField(diffStats, "files_modified", 0))
+        out.linesAdded = int32(getIntField(diffStats, "lines_added", 0))
+        out.linesRemoved = int32(getIntField(diffStats, "lines_removed", 0))
+    return out
+
+fn attemptTotalFromDisplay(display: json.JsonNode): CloudAttemptTotal =
+    var out: CloudAttemptTotal
+    out.ok = false
+    out.total = 0
+    if ! jsonIsObject(display):
+        return out
+    let latest = jsonGetObject(display, "latest_turn_status_display")
+    if ! jsonIsObject(latest) || ! latest.hasKey("sibling_turn_ids"):
+        return out
+    let siblings = jsonGetArray(latest, "sibling_turn_ids")
+    if ! jsonIsArray(siblings):
+        return out
+    out.ok = true
+    out.total = int32(jstrArrayLen(siblings) + 1)
+    return out
+
+fn isReviewFromTaskListItem(item: json.JsonNode): bool =
+    let prs = jsonGetArray(item, "pull_requests")
+    return jstrArrayLen(prs) > 0
+
+fn diffSummaryFromDiff(diff: str): CloudSummary =
+    var out: CloudSummary
+    if len(diff) == 0:
+        return out
+    let lines = splitLinesSimple(diff)
+    var i: int32 = 0
+    while i < len(lines):
+        let line = argAt(lines, i)
+        if hasPrefix(line, "diff --git "):
+            out.filesChanged = out.filesChanged + 1
+            i = i + 1
+            continue
+        if hasPrefix(line, "+++") || hasPrefix(line, "---") || hasPrefix(line, "@@"):
+            i = i + 1
+            continue
+        if len(line) > 0:
+            let ch = line[0]
+            if ch == '+':
+                out.linesAdded = out.linesAdded + 1
+            elif ch == '-':
+                out.linesRemoved = out.linesRemoved + 1
+        i = i + 1
+    if out.filesChanged == 0 && len(trimLine(diff)) > 0:
+        out.filesChanged = 1
+    return out
+
+fn extractDiffFromTurn(turn: json.JsonNode): str =
+    let items = jsonGetArray(turn, "output_items")
+    var i: int32 = 0
+    while i < jstrArrayLen(items):
+        let item = jstrArrayItem(items, i)
+        let kind = getStringField(item, "type", "")
+        if kind == "output_diff":
+            let diff = getStringField(item, "diff", "")
+            if len(diff) > 0:
+                return diff
+            let output = jsonGetObject(item, "output_diff")
+            let diff2 = getStringField(output, "diff", "")
+            if len(diff2) > 0:
+                return diff2
+        elif kind == "pr":
+            let output = jsonGetObject(item, "output_diff")
+            let diff = getStringField(output, "diff", "")
+            if len(diff) > 0:
+                return diff
+        i = i + 1
+    return ""
+
+fn extractDiffFromDetails(root: json.JsonNode): str =
+    let diffTurn = jsonGetObject(root, "current_diff_task_turn")
+    let diff = extractDiffFromTurn(diffTurn)
+    if len(diff) > 0:
+        return diff
+    let assistantTurn = jsonGetObject(root, "current_assistant_turn")
+    return extractDiffFromTurn(assistantTurn)
+
+fn taskSummaryFromDetails(root: json.JsonNode): CloudTaskSummary =
+    var summary: CloudTaskSummary
+    let taskNode = jsonGetObject(root, "task")
+    summary.id = getStringField(taskNode, "id", "")
+    summary.title = getStringField(taskNode, "title", "<untitled>")
+    summary.environmentId = getStringField(taskNode, "environment_id", "")
+    summary.isReview = getBoolField(taskNode, "is_review", false)
+    var display = jsonGetObject(root, "task_status_display")
+    if ! jsonIsObject(display):
+        display = jsonGetObject(taskNode, "task_status_display")
+    summary.status = mapStatusFromDisplay(display)
+    summary.environmentLabel = getStringField(display, "environment_label", "")
+    let updated = getFloatField(taskNode, "updated_at", 0.0)
+    let created = getFloatField(taskNode, "created_at", 0.0)
+    var ts = if updated > 0.0: updated else: created
+    if ts <= 0.0:
+        let latest = jsonGetObject(display, "latest_turn_status_display")
+        let updated2 = getFloatField(latest, "updated_at", 0.0)
+        let created2 = getFloatField(latest, "created_at", 0.0)
+        ts = if updated2 > 0.0: updated2 else: created2
+    let stamp = cloudTimestampFromFloat(ts)
+    summary.updatedAt = stamp.unix
+    summary.updatedAtNanos = stamp.nanos
+    summary.summary = diffSummaryFromStatusDisplay(display)
+    let attemptInfo = attemptTotalFromDisplay(display)
+    summary.hasAttemptTotal = attemptInfo.ok
+    summary.attemptTotal = attemptInfo.total
+    if summary.summary.filesChanged == 0 && summary.summary.linesAdded == 0 && summary.summary.linesRemoved == 0:
+        let diff = extractDiffFromDetails(root)
+        if len(diff) > 0:
+            summary.summary = diffSummaryFromDiff(diff)
+    return summary
+
+fn cloudTimestampFromFloat(ts: float64): CloudTimestamp =
+    var out: CloudTimestamp
+    if ts <= 0.0:
+        return out
+    let secs: int64 = int64(ts)
+    var frac = ts - float64(secs)
+    if frac < 0.0:
+        frac = 0.0
+    var nanos: int32 = int32(frac * 1000000000.0)
+    if nanos < 0:
+        nanos = 0
+    if nanos > 999999999:
+        nanos = 999999999
+    out.unix = secs
+    out.nanos = nanos
+    return out
+
+fn cloudTrimNewline(text: str): str =
+    if text == nil:
+        return ""
+    var out = "" + text
+    while len(out) > 0:
+        let ch = out[len(out) - 1]
+        if ch == '\n' || ch == '\r':
+            if len(out) <= 1:
+                out = ""
+                break
+            out = "" + __cheng_slice_string(out, 0, len(out) - 2, false)
+            continue
+        break
+    return out
+
+fn cloudDateFormatSecondsLocal(secs: int64, utc: bool, pattern: str): str =
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let fmtArg = "+" + pattern
+    var prefix = ""
+    if utc:
+        prefix = "-u "
+    # Try BSD/macOS `date -r`, then GNU `date -d @...`.
+    var cmd1: str = "date "
+    cmd1 = cmd1 + prefix
+    cmd1 = cmd1 + "-r "
+    cmd1 = cmd1 + int64ToStr(secs)
+    cmd1 = cmd1 + " "
+    cmd1 = cmd1 + shellQuote(fmtArg)
+    let res1 = os.execCmdEx(cmd1, opts, os.getCurrentDir())
+    if res1.exitCode == 0:
+        return cloudTrimNewline(res1.output)
+    var cmd2: str = "date "
+    cmd2 = cmd2 + prefix
+    cmd2 = cmd2 + "-d @"
+    cmd2 = cmd2 + int64ToStr(secs)
+    cmd2 = cmd2 + " "
+    cmd2 = cmd2 + shellQuote(fmtArg)
+    let res2 = os.execCmdEx(cmd2, opts, os.getCurrentDir())
+    if res2.exitCode == 0:
+        return cloudTrimNewline(res2.output)
+    return int64ToStr(secs)
+
+fn cloudZeroPad9Local(value: int32): str =
+    var v = value
+    if v < 0:
+        v = 0
+    if v > 999999999:
+        v = 999999999
+    var digits: seq[str] = newSeq[str]()
+    var place: int32 = 100000000
+    var i: int32 = 0
+    while i < 9:
+        let d = int32(v / place)
+        v = v - d * place
+        place = int32(place / 10)
+        seqAdd(digits, $ char(ord('0') + d))
+        i = i + 1
+    return joinPartsBalanced(digits)
+
+fn cloudTrimTrailingZerosLocal(text: str): str =
+    if text == nil:
+        return ""
+    var endIdx: int32 = len(text) - 1
+    while endIdx >= 0:
+        if text[endIdx] != '0':
+            break
+        endIdx = endIdx - 1
+    if endIdx < 0:
+        return ""
+    return "" + __cheng_slice_string(text, 0, endIdx, false)
+
+fn cloudFormatRfc3339Utc(secs: int64, nanos: int32): str =
+    let base = cloudDateFormatSecondsLocal(secs, true, "%Y-%m-%dT%H:%M:%S")
+    if nanos <= 0:
+        return base + "Z"
+    let frac9 = cloudZeroPad9Local(nanos)
+    let frac = cloudTrimTrailingZerosLocal(frac9)
+    if len(frac) == 0:
+        return base + "Z"
+    var out: str = base
+    out = out + "."
+    out = out + frac
+    out = out + "Z"
+    return out
+
+fn formatRelativeTime(ts: int64): str =
+    # Matches codex-rs util::format_relative_time (seconds/minutes/hours, then local timestamp).
+    let nowTs = times.toUnix(times.now())
+    var delta = nowTs - ts
+    if delta < 0:
+        delta = 0
+    if delta < 60:
+        return intToStr(int32(delta)) + "s ago"
+    if delta < 3600:
+        return intToStr(int32(delta / 60)) + "m ago"
+    if delta < 86400:
+        return intToStr(int32(delta / 3600)) + "h ago"
+    return cloudDateFormatSecondsLocal(ts, false, "%b %e %H:%M")
+
+fn statusLabel(status: CloudStatus): str =
+    case status
+    of csPending:
+        return "PENDING"
+    of csReady:
+        return "READY"
+    of csApplied:
+        return "APPLIED"
+    of csError:
+        return "ERROR"
+    return "PENDING"
+
+fn summaryLine(summary: CloudSummary): str =
+    if summary.filesChanged == 0 && summary.linesAdded == 0 && summary.linesRemoved == 0:
+        return "no diff"
+    let files = summary.filesChanged
+    var plural: str = "s"
+    if files == 1:
+        plural = ""
+    # Build incrementally to avoid deep temporary chains.
+    var out: str = "+"
+    out = out + intToStr(summary.linesAdded)
+    out = out + "/-"
+    out = out + intToStr(summary.linesRemoved)
+    out = out + " • "
+    out = out + intToStr(files)
+    out = out + " file"
+    out = out + plural
+    return out
+
+fn attemptLess(a: CloudAttemptDiff, b: CloudAttemptDiff): bool =
+    if a.hasPlacement && b.hasPlacement:
+        return a.placement < b.placement
+    if a.hasPlacement != b.hasPlacement:
+        return a.hasPlacement
+    if a.hasCreated && b.hasCreated:
+        return a.createdAt < b.createdAt
+    if a.hasCreated != b.hasCreated:
+        return a.hasCreated
+    return false
+
+fn sortAttempts(attempts: var seq[CloudAttemptDiff]) =
+    var i: int32 = 1
+    while i < len(attempts):
+        var j: int32 = i
+        while j > 0 && attemptLess(attempts[j], attempts[j - 1]):
+            let tmp = attempts[j - 1]
+            attempts[j - 1] = attempts[j]
+            attempts[j] = tmp
+            j = j - 1
+        i = i + 1
+
+fn collectAttemptDiffsLocal(baseUrl: str, token: str, accountId: str, taskId: str): CloudAttemptCollect =
+    var out: CloudAttemptCollect
+    out.ok = false
+    out.attempts = newSeq[CloudAttemptDiff]()
+    out.err = ""
+    let url = cloudApiPath(baseUrl, "/tasks/" + taskId)
+    let res = cloudHttpRequest("GET", url, url, "", token, accountId)
+    if ! res.ok:
+        var msg = res.error
+        if len(msg) == 0:
+            msg = "request failed"
+        var outMsg: str = "http error: get_task_details failed: "
+        outMsg = outMsg + msg
+        out.err = outMsg
+        return out
+    let root = cloudParseJson(res.body)
+    let diff = extractDiffFromDetails(root)
+    if len(diff) > 0:
+        var attempt: CloudAttemptDiff
+        let assistant = jsonGetObject(root, "current_assistant_turn")
+        let placement = getIntField(assistant, "attempt_placement", -1)
+        if placement >= 0:
+            attempt.hasPlacement = true
+            attempt.placement = int32(placement)
+        attempt.diff = diff
+        seqAdd(out.attempts, attempt)
+    let assistant = jsonGetObject(root, "current_assistant_turn")
+    let turnId = getStringField(assistant, "id", "")
+    if len(turnId) > 0:
+        # Build incrementally to avoid deep temporary chains.
+        var sibPath: str = "/tasks/"
+        sibPath = sibPath + taskId
+        sibPath = sibPath + "/turns/"
+        sibPath = sibPath + turnId
+        sibPath = sibPath + "/sibling_turns"
+        let sibUrl = cloudApiPath(baseUrl, sibPath)
+        let sibRes = cloudHttpRequest("GET", sibUrl, sibUrl, "", token, accountId)
+        if sibRes.ok:
+            let sibRoot = cloudParseJson(sibRes.body)
+            let siblings = jsonGetArray(sibRoot, "sibling_turns")
+            var idx: int32 = 0
+            while idx < jstrArrayLen(siblings):
+                let turn = jstrArrayItem(siblings, idx)
+                let diffText = extractDiffFromTurn(turn)
+                if len(diffText) > 0:
+                    var attempt: CloudAttemptDiff
+                    let placement = getIntField(turn, "attempt_placement", -1)
+                    if placement >= 0:
+                        attempt.hasPlacement = true
+                        attempt.placement = int32(placement)
+                    let created = getFloatField(turn, "created_at", 0.0)
+                    if created > 0.0:
+                        attempt.hasCreated = true
+                        attempt.createdAt = int64(created)
+                    attempt.diff = diffText
+                    seqAdd(out.attempts, attempt)
+                idx = idx + 1
+        else:
+            var msg = sibRes.error
+            if len(msg) == 0:
+                msg = "request failed"
+            var outMsg: str = "http error: list_sibling_turns failed: "
+            outMsg = outMsg + msg
+            out.err = outMsg
+            return out
+    sortAttempts(out.attempts)
+    if len(out.attempts) == 0:
+        out.err = "No diff available for task " + taskId
+        return out
+    out.ok = true
+    return out
+
+fn selectAttemptLocal(attempts: seq[CloudAttemptDiff], desired: int32): CloudAttemptSelect =
+    var out: CloudAttemptSelect
+    out.ok = false
+    out.err = ""
+    if len(attempts) == 0:
+        out.err = "No attempts available"
+        return out
+    let idx = desired - 1
+    if idx < 0:
+        out.err = "attempt must be at least 1"
+        return out
+    if idx >= len(attempts):
+        # Build incrementally to avoid deep temporary chains.
+        var msg: str = "Attempt "
+        msg = msg + intToStr(desired)
+        msg = msg + " not available; only "
+        msg = msg + intToStr(len(attempts))
+        msg = msg + " attempt(s) found"
+        out.err = msg
+        return out
+    out.ok = true
+    out.attempt = get[CloudAttemptDiff](attempts, idx)
+    out.err = ""
+    return out
+
+fn isUnifiedDiff(diff: str): bool =
+    let trimmed = trimLine(diff)
+    if hasPrefix(trimmed, "diff --git "):
+        return true
+    if cloudIndexOfSubstr(diff, "\n--- ", 0) >= 0 && cloudIndexOfSubstr(diff, "\n+++ ", 0) >= 0:
+        if cloudIndexOfSubstr(diff, "\n@@ ", 0) >= 0 || hasPrefix(trimmed, "@@ "):
+            return true
+    return false
+
+fn readQueryFromStdin(): str =
+    let stdinText = os.readAll(os.get_stdin())
+    if stdinText == nil:
+        return ""
+    let trimmed = trimLine(stdinText)
+    if len(trimmed) == 0:
+        return ""
+    return trimmed
+
+fn listEnvironmentsLocal(baseUrl: str, token: str, accountId: str): CloudEnvList =
+    var out: CloudEnvList
+    out.ok = false
+    out.ids = newSeq[str]()
+    out.labels = newSeq[str]()
+    out.err = ""
+    let url = cloudApiPath(baseUrl, "/environments")
+    let res = cloudHttpRequest("GET", url, url, "", token, accountId)
+    if ! res.ok:
+        out.err = "request failed"
+        if len(res.error) > 0:
+            out.err = res.error
+        return out
+    let root = cloudParseJson(res.body)
+    if ! jsonIsArray(root):
+        out.err = "invalid environments response"
+        return out
+    var i: int32 = 0
+    while i < jstrArrayLen(root):
+        let row = jstrArrayItem(root, i)
+        let id = getStringField(row, "id", "")
+        if len(id) > 0:
+            seqAdd(out.ids, id)
+            seqAdd(out.labels, getStringField(row, "label", ""))
+        i = i + 1
+    out.ok = true
+    return out
+
+fn resolveEnvironmentIdLocal(baseUrl: str, token: str, accountId: str, requested: str): CloudEnvResolve =
+    var out: CloudEnvResolve
+    out.ok = false
+    out.id = ""
+    out.err = ""
+    let trimmed = trimLine(requested)
+    if len(trimmed) == 0:
+        out.err = "environment id must not be empty"
+        return out
+    let envs = listEnvironmentsLocal(baseUrl, token, accountId)
+    if ! envs.ok:
+        out.err = envs.err
+        return out
+    if len(envs.ids) == 0:
+        out.err = "no cloud environments are available for this workspace"
+        return out
+    var i: int32 = 0
+    while i < len(envs.ids):
+        if argAt(envs.ids, i) == trimmed:
+            out.ok = true
+            out.id = argAt(envs.ids, i)
+            return out
+        i = i + 1
+    let target = normalizePolicy(trimmed)
+    var matchId = ""
+    var matchCount: int32 = 0
+    i = 0
+    while i < len(envs.ids):
+        let label = normalizePolicy(argAt(envs.labels, i))
+        if len(label) > 0 && label == target:
+            matchId = argAt(envs.ids, i)
+            matchCount = matchCount + 1
+        i = i + 1
+    if matchCount == 1:
+        out.ok = true
+        out.id = matchId
+        return out
+    if matchCount > 1:
+        # Accept duplicates when all matching rows share the same id.
+        var allSame = true
+        var firstId = ""
+        i = 0
+        while i < len(envs.ids):
+            let label = normalizePolicy(argAt(envs.labels, i))
+            if len(label) > 0 && label == target:
+                if len(firstId) == 0:
+                    firstId = argAt(envs.ids, i)
+                elif argAt(envs.ids, i) != firstId:
+                    allSame = false
+                    break
+            i = i + 1
+        if allSame && len(firstId) > 0:
+            out.ok = true
+            out.id = firstId
+            return out
+        out.err = "environment label '" + trimmed + "' is ambiguous; run `codex cloud` to pick the desired environment id"
+        return out
+    out.err = "environment '" + trimmed + "' not found; run `codex cloud` to list available environments"
+    return out
+
+fn parseCreateTaskId(payload: str): str =
+    let root = cloudParseJson(payload)
+    let task = jsonGetObject(root, "task")
+    let tid = getStringField(task, "id", "")
+    if len(tid) > 0:
+        return tid
+    return getStringField(root, "id", "")
+
+fn buildCreateTaskBody(envId: str, branch: str, attempts: int32, prompt: str): str =
+    var inputItems: seq[str] = newSeq[str]()
+    let userMsg = jstrObject(seqStr3(
+        jstrPair("type", jstrString("message")),
+        jstrPair("role", jstrString("user")),
+        jstrPair("content", jstrArray(seqStr1(
+            jstrObject(seqStr2(
+                jstrPair("content_type", jstrString("text")),
+                jstrPair("text", jstrString(prompt))
+            ))
+        )))
+    ))
+    seqAdd(inputItems, userMsg)
+    let startingDiff = os.getEnv("CODEX_STARTING_DIFF")
+    if len(startingDiff) > 0:
+        seqAdd(inputItems, jstrObject(seqStr2(
+            jstrPair("type", jstrString("pre_apply_patch")),
+            jstrPair("output_diff", jstrObject(seqStr1(
+                jstrPair("diff", jstrString(startingDiff))
+            )))
+        )))
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("new_task", jstrObject(seqStr3(
+        jstrPair("environment_id", jstrString(envId)),
+        jstrPair("branch", jstrString(branch)),
+        jstrPair("run_environment_in_qa_mode", jstrBool(false))
+    ))))
+    seqAdd(fields, jstrPair("input_items", jstrArray(inputItems)))
+    if attempts > 1:
+        seqAdd(fields, jstrPair("metadata", jstrObject(seqStr1(
+            jstrPair("best_of_n", intToStr(attempts))
+        ))))
+    return jstrObject(fields)
+
+fn cloudJoinWithSep(parts: seq[str], sep: str): str =
+    var out = ""
+    var i: int32 = 0
+    while i < len(parts):
+        if len(out) > 0:
+            out = out + sep
+        out = out + argAt(parts, i)
+        i = i + 1
+    return out
+
+fn cloudTaskEnvLabelLocal(task: CloudTaskSummary): str =
+    if len(task.environmentLabel) > 0:
+        return task.environmentLabel
+    return task.environmentId
+
+fn cloudTaskMetaLineLocal(task: CloudTaskSummary): str =
+    var parts: seq[str] = newSeq[str]()
+    let label = cloudTaskEnvLabelLocal(task)
+    if len(label) > 0:
+        seqAdd(parts, label)
+    seqAdd(parts, formatRelativeTime(task.updatedAt))
+    return cloudJoinWithSep(parts, "  •  ")
+
+fn cloudPrintTaskStatusLines(task: CloudTaskSummary, indent: str) =
+    # Line 1: [STATUS] Title
+    var line1: str = indent
+    line1 = line1 + "["
+    line1 = line1 + statusLabel(task.status)
+    line1 = line1 + "] "
+    line1 = line1 + task.title
+    printLine(line1)
+    # Line 2: Env label/id + relative time
+    printLine(indent + cloudTaskMetaLineLocal(task))
+    # Line 3: Summary
+    printLine(indent + summaryLine(task.summary))
+
+fn jsonGetAny(node: json.JsonNode, key: str): json.JsonNode =
+    if ! jsonIsObject(node) || ! node.hasKey(key):
+        return json.newJNull()
+    return json.jsonGetField(node, key)
+
+fn cloudListTasksPageLocal(baseUrl: str, token: str, accountId: str, envId: str, limit: int32, cursor: str): CloudTaskListPage =
+    var out: CloudTaskListPage
+    out.ok = false
+    out.tasks = newSeq[CloudTaskSummary]()
+    out.cursor = ""
+    out.hasCursor = false
+    out.err = ""
+    # Build URL with query encoding (reqwest would do this for us in rust).
+    let base = cloudApiPath(baseUrl, "/tasks/list")
+    var url: str = base
+    url = url + "?limit="
+    url = url + intToStr(limit)
+    url = url + "&task_filter=current"
+    if len(cursor) > 0:
+        url = url + "&cursor="
+        url = url + cloudUrlEncodeComponent(cursor)
+    if len(envId) > 0:
+        url = url + "&environment_id="
+        url = url + cloudUrlEncodeComponent(envId)
+    let res = cloudHttpRequest("GET", url, base, "", token, accountId)
+    if ! res.ok:
+        var msg = res.error
+        if len(msg) == 0:
+            msg = "request failed"
+        var outMsg: str = "http error: list_tasks failed: "
+        outMsg = outMsg + msg
+        out.err = outMsg
+        return out
+    let root = cloudParseJson(res.body)
+    if ! jsonIsObject(root):
+        out.err = "invalid tasks response"
+        return out
+    let items = jsonGetArray(root, "items")
+    var i: int32 = 0
+    while i < jstrArrayLen(items):
+        let item = jstrArrayItem(items, i)
+        let display = jsonGetObject(item, "task_status_display")
+        var summary: CloudTaskSummary
+        summary.id = getStringField(item, "id", "")
+        summary.title = getStringField(item, "title", "<untitled>")
+        summary.status = mapStatusFromDisplay(display)
+        summary.environmentId = getStringField(item, "environment_id", "")
+        summary.environmentLabel = getStringField(display, "environment_label", "")
+        summary.isReview = isReviewFromTaskListItem(item)
+        let updated = getFloatField(item, "updated_at", 0.0)
+        let created = getFloatField(item, "created_at", 0.0)
+        let ts = if updated > 0.0: updated else: created
+        let stamp = cloudTimestampFromFloat(ts)
+        summary.updatedAt = stamp.unix
+        summary.updatedAtNanos = stamp.nanos
+        summary.summary = diffSummaryFromStatusDisplay(display)
+        let attemptInfo = attemptTotalFromDisplay(display)
+        summary.hasAttemptTotal = attemptInfo.ok
+        summary.attemptTotal = attemptInfo.total
+        seqAdd(out.tasks, summary)
+        i = i + 1
+    let cursorNode = jsonGetAny(root, "cursor")
+    if cursorNode != nil && cursorNode.kind == json.JString:
+        let c = cursorNode.getStr()
+        if c != nil && len(c) > 0:
+            out.hasCursor = true
+            out.cursor = "" + c
+    out.ok = true
+    return out
+
+fn collectCloudTasksLocal(baseUrl: str, token: str, accountId: str): CloudTasksCollect =
+    var out: CloudTasksCollect
+    out.ok = false
+    out.tasks = newSeq[CloudTaskSummary]()
+    out.err = ""
+    let page = cloudListTasksPageLocal(baseUrl, token, accountId, "", 20, "")
+    if ! page.ok:
+        out.err = page.err
+        return out
+    out.ok = true
+    out.tasks = page.tasks
+    return out
+
+fn renderCloudTaskList(tasks: seq[CloudTaskSummary]) =
+    printErr("\x1b[2J\x1b[H")
+    tuiHeader("Codex Cloud")
+    printErr("")
+    var i: int32 = 0
+    while i < len(tasks):
+        let task = get[CloudTaskSummary](tasks, i)
+        # Build incrementally to avoid deep temporary chains.
+        var label: str = "["
+        label = label + statusLabel(task.status)
+        label = label + "] "
+        label = label + task.title
+        var line: str = intToStr(i + 1)
+        line = line + ") "
+        line = line + label
+        printErr(line)
+        let age = formatRelativeTime(task.updatedAt)
+        var meta: str = "unknown"
+        if len(task.id) > 0:
+            meta = task.id
+        var envLabel: str = task.environmentId
+        if len(task.environmentLabel) > 0:
+            envLabel = task.environmentLabel
+        var envText: str = ""
+        if len(envLabel) > 0:
+            envText = "  @ " + envLabel
+        var metaLine: str = "   "
+        metaLine = metaLine + meta
+        metaLine = metaLine + "  -  "
+        metaLine = metaLine + age
+        metaLine = metaLine + envText
+        printErr(metaLine)
+        printErr("   " + summaryLine(task.summary))
+        i = i + 1
+    printErr("")
+
+fn selectCloudTask(tasks: seq[CloudTaskSummary]): str =
+    let choice = cloudPrompt("Select task number or id (empty to exit):")
+    if len(choice) == 0:
+        return ""
+    let picked = cloudParseIntLocal(choice, -1)
+    if picked > 0 && picked <= len(tasks):
+        let task = get[CloudTaskSummary](tasks, picked - 1)
+        return task.id
+    return parseTaskIdLocal(choice)
+
+fn runCloudTui(baseUrl: str, token: str, accountId: str): int32 =
+    cloudTraceLocal("runCloudTui.enter")
+    cloudTraceLocal("runCloudTui.collect.begin")
+    let collected = collectCloudTasksLocal(baseUrl, token, accountId)
+    if ! collected.ok:
+        printErr(collected.err)
+        return 1
+    cloudTraceLocal("runCloudTui.collect.ok")
+    let tasks = collected.tasks
+    if len(tasks) == 0:
+        printLine("cloud tasks: none")
+        return 0
+    cloudTraceLocal("runCloudTui.render")
+    renderCloudTaskList(tasks)
+    cloudTraceLocal("runCloudTui.select")
+    let taskId = selectCloudTask(tasks)
+    if len(taskId) == 0:
+        return 0
+    cloudTraceLocal("runCloudTui.action")
+    let action = normalizePolicy(cloudPrompt("Action [s]tatus/[d]iff/[a]pply/[o]pen (default s):"))
+    if action == "o" || action == "open":
+        printLine(cloudBrowserTaskUrl(baseUrl, taskId))
+        return 0
+    if action == "d" || action == "diff":
+        let attemptText = cloudPrompt("Attempt (default 1):")
+        let attempt = cloudParseIntLocal(attemptText, 1)
+        var subArgs = newSeq[str]()
+        seqAdd(subArgs, taskId)
+        seqAdd(subArgs, "--attempt")
+        seqAdd(subArgs, intToStr(attempt))
+        return runCloudDiff(subArgs, 0)
+    if action == "a" || action == "apply":
+        let attemptText = cloudPrompt("Attempt (default 1):")
+        let attempt = cloudParseIntLocal(attemptText, 1)
+        var subArgs = newSeq[str]()
+        seqAdd(subArgs, taskId)
+        seqAdd(subArgs, "--attempt")
+        seqAdd(subArgs, intToStr(attempt))
+        return runCloudApply(subArgs, 0)
+    var statusArgs = newSeq[str]()
+    seqAdd(statusArgs, taskId)
+    return runCloudStatus(statusArgs, 0)
+
+fn cloudPrettyTaskListJson(page: CloudTaskListPage, baseUrl: str): str =
+    # Match serde_json::to_string_pretty formatting for this specific payload shape.
+    var parts: seq[str] = newSeq[str]()
+    seqAdd(parts, "{\n")
+    if len(page.tasks) == 0:
+        seqAdd(parts, "  \"tasks\": [],\n")
+    else:
+        seqAdd(parts, "  \"tasks\": [\n")
+        var i: int32 = 0
+        while i < len(page.tasks):
+            let task = get[CloudTaskSummary](page.tasks, i)
+            seqAdd(parts, "    {\n")
+            let indent = "      "
+            # id
+            var line: str = indent
+            line = line + jstrString("id")
+            line = line + ": "
+            line = line + jstrString(task.id)
+            line = line + ",\n"
+            seqAdd(parts, line)
+            # url
+            let url = cloudBrowserTaskUrl(baseUrl, task.id)
+            line = indent
+            line = line + jstrString("url")
+            line = line + ": "
+            line = line + jstrString(url)
+            line = line + ",\n"
+            seqAdd(parts, line)
+            # title
+            line = indent
+            line = line + jstrString("title")
+            line = line + ": "
+            line = line + jstrString(task.title)
+            line = line + ",\n"
+            seqAdd(parts, line)
+            # status
+            line = indent
+            line = line + jstrString("status")
+            line = line + ": "
+            line = line + jstrString(cloudStatusJson(task.status))
+            line = line + ",\n"
+            seqAdd(parts, line)
+            # updated_at
+            let updated = cloudFormatRfc3339Utc(task.updatedAt, task.updatedAtNanos)
+            line = indent
+            line = line + jstrString("updated_at")
+            line = line + ": "
+            line = line + jstrString(updated)
+            line = line + ",\n"
+            seqAdd(parts, line)
+            # environment_id (Option)
+            var envIdJson = jstrNull()
+            if len(task.environmentId) > 0:
+                envIdJson = jstrString(task.environmentId)
+            line = indent
+            line = line + jstrString("environment_id")
+            line = line + ": "
+            line = line + envIdJson
+            line = line + ",\n"
+            seqAdd(parts, line)
+            # environment_label (Option)
+            var envLabelJson = jstrNull()
+            if len(task.environmentLabel) > 0:
+                envLabelJson = jstrString(task.environmentLabel)
+            line = indent
+            line = line + jstrString("environment_label")
+            line = line + ": "
+            line = line + envLabelJson
+            line = line + ",\n"
+            seqAdd(parts, line)
+            # summary
+            seqAdd(parts, indent + jstrString("summary") + ": {\n")
+            let indent2 = "        "
+            line = indent2
+            line = line + jstrString("files_changed")
+            line = line + ": "
+            line = line + intToStr(task.summary.filesChanged)
+            line = line + ",\n"
+            seqAdd(parts, line)
+            line = indent2
+            line = line + jstrString("lines_added")
+            line = line + ": "
+            line = line + intToStr(task.summary.linesAdded)
+            line = line + ",\n"
+            seqAdd(parts, line)
+            line = indent2
+            line = line + jstrString("lines_removed")
+            line = line + ": "
+            line = line + intToStr(task.summary.linesRemoved)
+            line = line + "\n"
+            seqAdd(parts, line)
+            seqAdd(parts, indent + "},\n")
+            # is_review
+            line = indent
+            line = line + jstrString("is_review")
+            line = line + ": "
+            line = line + jstrBool(task.isReview)
+            line = line + ",\n"
+            seqAdd(parts, line)
+            # attempt_total (Option)
+            var attemptJson = jstrNull()
+            if task.hasAttemptTotal:
+                attemptJson = intToStr(task.attemptTotal)
+            line = indent
+            line = line + jstrString("attempt_total")
+            line = line + ": "
+            line = line + attemptJson
+            line = line + "\n"
+            seqAdd(parts, line)
+            seqAdd(parts, "    }")
+            if i + 1 < len(page.tasks):
+                seqAdd(parts, ",\n")
+            else:
+                seqAdd(parts, "\n")
+            i = i + 1
+        seqAdd(parts, "  ],\n")
+    # cursor (Option)
+    var cursorJson = jstrNull()
+    if page.hasCursor:
+        cursorJson = jstrString(page.cursor)
+    var cursorLine: str = "  "
+    cursorLine = cursorLine + jstrString("cursor")
+    cursorLine = cursorLine + ": "
+    cursorLine = cursorLine + cursorJson
+    cursorLine = cursorLine + "\n"
+    seqAdd(parts, cursorLine)
+    seqAdd(parts, "}")
+    return joinPartsBalanced(parts)
+
+fn cloudNotSignedIn(): int32 =
+    printErr("Not signed in. Please run 'codex login' to sign in with ChatGPT, then re-run 'codex cloud'.")
+    return 1
+
+fn cloudListIsKnownOption(tok: str): bool =
+    if tok == "--env" || tok == "--limit" || tok == "--cursor" || tok == "--json" || tok == "--help" || tok == "-h":
+        return true
+    if hasPrefix(tok, "--env=") || hasPrefix(tok, "--limit=") || hasPrefix(tok, "--cursor="):
+        return true
+    return false
+
+fn runCloudListCommand(args: seq[str], start: int32): int32 =
+    var envFilter = ""
+    var limit: int32 = 20
+    var cursor = ""
+    var jsonOut = false
+    var stopParsing = false
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if ! stopParsing && (arg == "--help" || arg == "-h"):
+            return printCloudListHelp()
+        if ! stopParsing && arg == "--":
+            stopParsing = true
+            i = i + 1
+            continue
+        if ! stopParsing && cloudIsOptionLike(arg):
+            if arg == "--json":
+                jsonOut = true
+                i = i + 1
+                continue
+            if arg == "--env":
+                if i + 1 >= len(args):
+                    return cloudUsageMissingValue("--env <ENV_ID>", "")
+                let next = argAt(args, i + 1)
+                if next == "--":
+                    return cloudUsageMissingValue("--env <ENV_ID>", "")
+                if cloudIsOptionLike(next):
+                    if cloudListIsKnownOption(next):
+                        return cloudUsageMissingValue("--env <ENV_ID>", "")
+                    return cloudUsageUnexpectedArg(next, "codex cloud list [OPTIONS]", "")
+                envFilter = next
+                i = i + 2
+                continue
+            if hasPrefix(arg, "--env="):
+                envFilter = dropPrefix(arg, "--env=")
+                i = i + 1
+                continue
+            if arg == "--limit":
+                if i + 1 >= len(args):
+                    return cloudUsageMissingValue("--limit <N>", "")
+                let next = argAt(args, i + 1)
+                if next == "--":
+                    return cloudUsageMissingValue("--limit <N>", "")
+                if cloudIsOptionLike(next):
+                    if cloudListIsKnownOption(next):
+                        return cloudUsageMissingValue("--limit <N>", "")
+                    return cloudUsageUnexpectedArg(next, "codex cloud list [OPTIONS]", "")
+                let parsed = cloudParseLimitStrict(next)
+                if ! parsed.ok:
+                    return cloudUsageInvalidValue(next, "--limit <N>", parsed.err)
+                limit = parsed.value
+                i = i + 2
+                continue
+            if hasPrefix(arg, "--limit="):
+                let raw = dropPrefix(arg, "--limit=")
+                let parsed = cloudParseLimitStrict(raw)
+                if ! parsed.ok:
+                    return cloudUsageInvalidValue(raw, "--limit <N>", parsed.err)
+                limit = parsed.value
+                i = i + 1
+                continue
+            if arg == "--cursor":
+                if i + 1 >= len(args):
+                    return cloudUsageMissingValue("--cursor <CURSOR>", "")
+                let next = argAt(args, i + 1)
+                if next == "--":
+                    return cloudUsageMissingValue("--cursor <CURSOR>", "")
+                if cloudIsOptionLike(next):
+                    if cloudListIsKnownOption(next):
+                        return cloudUsageMissingValue("--cursor <CURSOR>", "")
+                    return cloudUsageUnexpectedArg(next, "codex cloud list [OPTIONS]", "")
+                cursor = next
+                i = i + 2
+                continue
+            if hasPrefix(arg, "--cursor="):
+                cursor = dropPrefix(arg, "--cursor=")
+                i = i + 1
+                continue
+            return cloudUsageUnexpectedArg(arg, "codex cloud list [OPTIONS]", "")
+        # No positional args are accepted for list.
+        return cloudUsageUnexpectedArg(arg, "codex cloud list [OPTIONS]", "")
+    let auth = loadCloudAuthInfo()
+    if ! auth.ok:
+        return cloudNotSignedIn()
+    let token = auth.token
+    let accountId = auth.accountId
+    let baseUrl = loadCloudBaseUrl()
+    var resolvedEnv = ""
+    if len(envFilter) > 0:
+        let resolved = resolveEnvironmentIdLocal(baseUrl, token, accountId, envFilter)
+        if ! resolved.ok:
+            printErr("Error: " + resolved.err)
+            return 1
+        resolvedEnv = resolved.id
+    let page = cloudListTasksPageLocal(baseUrl, token, accountId, resolvedEnv, limit, cursor)
+    if ! page.ok:
+        printErr("Error: " + page.err)
+        return 1
+    if jsonOut:
+        printLine(cloudPrettyTaskListJson(page, baseUrl))
+        return 0
+    if len(page.tasks) == 0:
+        printLine("No tasks found.")
+        return 0
+    var idx: int32 = 0
+    while idx < len(page.tasks):
+        let task = get[CloudTaskSummary](page.tasks, idx)
+        printLine(cloudBrowserTaskUrl(baseUrl, task.id))
+        cloudPrintTaskStatusLines(task, "  ")
+        if idx + 1 < len(page.tasks):
+            printLine("")
+        idx = idx + 1
+    if page.hasCursor:
+        printLine("")
+        printLine("To fetch the next page, run codex cloud list --cursor='" + page.cursor + "'")
+    return 0
+
+fn runCloudExec(args: seq[str], start: int32): int32 =
+    var envId = ""
+    var sawEnv = false
+    var attempts: int32 = 1
+    var branch = ""
+    var query = ""
+    var sawQuery = false
+    var stopParsing = false
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if ! stopParsing && (arg == "--help" || arg == "-h"):
+            return printCloudExecHelp()
+        if ! stopParsing && arg == "--":
+            stopParsing = true
+            i = i + 1
+            continue
+        if ! stopParsing && cloudIsOptionLike(arg):
+            if arg == "--env":
+                if i + 1 >= len(args):
+                    return cloudUsageMissingValue("--env <ENV_ID>", "")
+                let next = argAt(args, i + 1)
+                if next == "--":
+                    return cloudUsageMissingValue("--env <ENV_ID>", "")
+                if cloudIsOptionLike(next):
+                    if next == "--env" || next == "--attempts" || next == "--branch" || next == "--help" || next == "-h" || hasPrefix(next, "--env=") || hasPrefix(next, "--attempts=") || hasPrefix(next, "--branch="):
+                        return cloudUsageMissingValue("--env <ENV_ID>", "")
+                    var tip: str = "to pass '"
+                    tip = tip + next
+                    tip = tip + "' as a value, use '-- "
+                    tip = tip + next
+                    tip = tip + "'"
+                    return cloudUsageUnexpectedArg(next, "codex cloud exec [OPTIONS] --env <ENV_ID> [QUERY]", tip)
+                envId = next
+                sawEnv = true
+                i = i + 2
+                continue
+            if hasPrefix(arg, "--env="):
+                envId = dropPrefix(arg, "--env=")
+                sawEnv = true
+                i = i + 1
+                continue
+            if arg == "--attempts":
+                if i + 1 >= len(args):
+                    return cloudUsageMissingValue("--attempts <ATTEMPTS>", "")
+                let next = argAt(args, i + 1)
+                if next == "--":
+                    return cloudUsageMissingValue("--attempts <ATTEMPTS>", "")
+                if cloudIsOptionLike(next):
+                    if next == "--env" || next == "--attempts" || next == "--branch" || next == "--help" || next == "-h" || hasPrefix(next, "--env=") || hasPrefix(next, "--attempts=") || hasPrefix(next, "--branch="):
+                        return cloudUsageMissingValue("--attempts <ATTEMPTS>", "")
+                    var tip: str = "to pass '"
+                    tip = tip + next
+                    tip = tip + "' as a value, use '-- "
+                    tip = tip + next
+                    tip = tip + "'"
+                    return cloudUsageUnexpectedArg(next, "codex cloud exec [OPTIONS] --env <ENV_ID> [QUERY]", tip)
+                let parsed = cloudParseAttemptsStrict(next)
+                if ! parsed.ok:
+                    return cloudUsageInvalidValue(next, "--attempts <ATTEMPTS>", parsed.err)
+                attempts = parsed.value
+                i = i + 2
+                continue
+            if hasPrefix(arg, "--attempts="):
+                let raw = dropPrefix(arg, "--attempts=")
+                let parsed = cloudParseAttemptsStrict(raw)
+                if ! parsed.ok:
+                    return cloudUsageInvalidValue(raw, "--attempts <ATTEMPTS>", parsed.err)
+                attempts = parsed.value
+                i = i + 1
+                continue
+            if arg == "--branch":
+                if i + 1 >= len(args):
+                    return cloudUsageMissingValue("--branch <BRANCH>", "")
+                let next = argAt(args, i + 1)
+                if next == "--":
+                    return cloudUsageMissingValue("--branch <BRANCH>", "")
+                if cloudIsOptionLike(next):
+                    if next == "--env" || next == "--attempts" || next == "--branch" || next == "--help" || next == "-h" || hasPrefix(next, "--env=") || hasPrefix(next, "--attempts=") || hasPrefix(next, "--branch="):
+                        return cloudUsageMissingValue("--branch <BRANCH>", "")
+                    var tip: str = "to pass '"
+                    tip = tip + next
+                    tip = tip + "' as a value, use '-- "
+                    tip = tip + next
+                    tip = tip + "'"
+                    return cloudUsageUnexpectedArg(next, "codex cloud exec [OPTIONS] --env <ENV_ID> [QUERY]", tip)
+                branch = next
+                i = i + 2
+                continue
+            if hasPrefix(arg, "--branch="):
+                branch = dropPrefix(arg, "--branch=")
+                i = i + 1
+                continue
+            var tip: str = "to pass '"
+            tip = tip + arg
+            tip = tip + "' as a value, use '-- "
+            tip = tip + arg
+            tip = tip + "'"
+            return cloudUsageUnexpectedArg(arg, "codex cloud exec [OPTIONS] --env <ENV_ID> [QUERY]", tip)
+        # Positional QUERY (optional, max 1).
+        if ! sawQuery:
+            query = arg
+            sawQuery = true
+        else:
+            return cloudUsageUnexpectedArg(arg, "codex cloud exec [OPTIONS] --env <ENV_ID> [QUERY]", "")
+        i = i + 1
+    if ! sawEnv:
+        if sawQuery:
+            return cloudUsageMissingRequired("--env <ENV_ID>", "codex cloud exec --env <ENV_ID> <QUERY>")
+        return cloudUsageMissingRequired("--env <ENV_ID>", "codex cloud exec --env <ENV_ID> [QUERY]")
+    let auth = loadCloudAuthInfo()
+    if ! auth.ok:
+        return cloudNotSignedIn()
+    let token = auth.token
+    let accountId = auth.accountId
+    let baseUrl = loadCloudBaseUrl()
+    # Resolve query input (stdin fallback mirrors codex-rs).
+    var prompt = query
+    let forceStdin = sawQuery && query == "-"
+    if (! sawQuery) || forceStdin:
+        if cloudStdinIsTerminalLocal() && ! forceStdin:
+            printErr("Error: no query provided. Pass one as an argument or pipe it via stdin.")
+            return 1
+        if ! forceStdin:
+            printErr("Reading query from stdin...")
+        let stdinText = os.readAll(os.get_stdin())
+        if stdinText == nil || len(trimLine(stdinText)) == 0:
+            printErr("Error: no query provided via stdin (received empty input).")
+            return 1
+        prompt = stdinText
+    let resolved = resolveEnvironmentIdLocal(baseUrl, token, accountId, envId)
+    if ! resolved.ok:
+        printErr("Error: " + resolved.err)
+        return 1
+    let branchName = resolveGitBranch(branch)
+    let body = buildCreateTaskBody(resolved.id, branchName, attempts, prompt)
+    let url = cloudApiPath(baseUrl, "/tasks")
+    let res = cloudHttpRequest("POST", url, url, body, token, accountId)
+    if ! res.ok:
+        var errMsg = res.error
+        if len(errMsg) == 0:
+            errMsg = "request failed"
+        var msg: str = "Error: http error: create_task failed: "
+        msg = msg + errMsg
+        printErr(msg)
+        return 1
+    let taskId = parseCreateTaskId(res.body)
+    if len(taskId) == 0:
+        printErr("Error: create task succeeded but no task id found")
+        return 1
+    printLine(cloudBrowserTaskUrl(baseUrl, taskId))
+    return 0
+
+fn runCloudStatus(args: seq[str], start: int32): int32 =
+    var rawTask = ""
+    var sawTask = false
+    var stopParsing = false
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if ! stopParsing && (arg == "--help" || arg == "-h"):
+            return printCloudStatusHelp()
+        if ! stopParsing && arg == "--":
+            stopParsing = true
+            i = i + 1
+            continue
+        if ! stopParsing && cloudIsOptionLike(arg):
+            var tip: str = ""
+            if cloudIsOptionLike(arg):
+                tip = "to pass '" + arg + "' as a value, use '-- " + arg + "'"
+            return cloudUsageUnexpectedArg(arg, "codex cloud status [OPTIONS] <TASK_ID>", tip)
+        if ! sawTask:
+            rawTask = arg
+            sawTask = true
+        else:
+            return cloudUsageUnexpectedArg(arg, "codex cloud status [OPTIONS] <TASK_ID>", "")
+        i = i + 1
+    if ! sawTask:
+        return cloudUsageMissingRequired("<TASK_ID>", "codex cloud status <TASK_ID>")
+    let auth = loadCloudAuthInfo()
+    if ! auth.ok:
+        return cloudNotSignedIn()
+    let token = auth.token
+    let accountId = auth.accountId
+    let baseUrl = loadCloudBaseUrl()
+    let taskId = parseTaskIdLocal(rawTask)
+    if len(taskId) == 0:
+        printErr("Error: task id must not be empty")
+        return 1
+    let url = cloudApiPath(baseUrl, "/tasks/" + taskId)
+    let res = cloudHttpRequest("GET", url, url, "", token, accountId)
+    if ! res.ok:
+        var errMsg = res.error
+        if len(errMsg) == 0:
+            errMsg = "request failed"
+        var msg: str = "Error: http error: get_task_details failed: "
+        msg = msg + errMsg
+        printErr(msg)
+        return 1
+    let root = cloudParseJson(res.body)
+    let summary = taskSummaryFromDetails(root)
+    cloudPrintTaskStatusLines(summary, "")
+    if summary.status == csReady:
+        return 0
+    return 1
+
+fn runCloudDiff(args: seq[str], start: int32): int32 =
+    var rawTask = ""
+    var sawTask = false
+    var attempt: int32 = 1
+    var stopParsing = false
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if ! stopParsing && (arg == "--help" || arg == "-h"):
+            return printCloudDiffHelp()
+        if ! stopParsing && arg == "--":
+            stopParsing = true
+            i = i + 1
+            continue
+        if ! stopParsing && cloudIsOptionLike(arg):
+            if arg == "--attempt":
+                if i + 1 >= len(args):
+                    return cloudUsageMissingValue("--attempt <N>", "")
+                let next = argAt(args, i + 1)
+                if next == "--":
+                    return cloudUsageMissingValue("--attempt <N>", "")
+                if cloudIsOptionLike(next):
+                    if next == "--attempt" || next == "--help" || next == "-h" || hasPrefix(next, "--attempt="):
+                        return cloudUsageMissingValue("--attempt <N>", "")
+                    var tip: str = "to pass '"
+                    tip = tip + next
+                    tip = tip + "' as a value, use '-- "
+                    tip = tip + next
+                    tip = tip + "'"
+                    return cloudUsageUnexpectedArg(next, "codex cloud diff [OPTIONS] <TASK_ID>", tip)
+                let parsed = cloudParseAttemptsStrict(next)
+                if ! parsed.ok:
+                    return cloudUsageInvalidValue(next, "--attempt <N>", parsed.err)
+                attempt = parsed.value
+                i = i + 2
+                continue
+            if hasPrefix(arg, "--attempt="):
+                let raw = dropPrefix(arg, "--attempt=")
+                let parsed = cloudParseAttemptsStrict(raw)
+                if ! parsed.ok:
+                    return cloudUsageInvalidValue(raw, "--attempt <N>", parsed.err)
+                attempt = parsed.value
+                i = i + 1
+                continue
+            var tip: str = "to pass '"
+            tip = tip + arg
+            tip = tip + "' as a value, use '-- "
+            tip = tip + arg
+            tip = tip + "'"
+            return cloudUsageUnexpectedArg(arg, "codex cloud diff [OPTIONS] <TASK_ID>", tip)
+        if ! sawTask:
+            rawTask = arg
+            sawTask = true
+        else:
+            return cloudUsageUnexpectedArg(arg, "codex cloud diff [OPTIONS] <TASK_ID>", "")
+        i = i + 1
+    if ! sawTask:
+        return cloudUsageMissingRequired("<TASK_ID>", "codex cloud diff <TASK_ID>")
+    let auth = loadCloudAuthInfo()
+    if ! auth.ok:
+        return cloudNotSignedIn()
+    let token = auth.token
+    let accountId = auth.accountId
+    let baseUrl = loadCloudBaseUrl()
+    let taskId = parseTaskIdLocal(rawTask)
+    if len(taskId) == 0:
+        printErr("Error: task id must not be empty")
+        return 1
+    let collected = collectAttemptDiffsLocal(baseUrl, token, accountId, taskId)
+    if ! collected.ok:
+        var msg = collected.err
+        if hasPrefix(msg, "No diff available for task "):
+            msg = msg + "; it may still be running."
+        printErr("Error: " + msg)
+        return 1
+    let selected = selectAttemptLocal(collected.attempts, attempt)
+    if ! selected.ok:
+        printErr("Error: " + selected.err)
+        return 1
+    os.write(os.get_stdout(), selected.attempt.diff)
+    return 0
+
+fn applyCloudTaskDiff(taskId: str, attempt: int32): int32 =
+    let auth = loadCloudAuthInfo()
+    if ! auth.ok:
+        return cloudNotSignedIn()
+    let token = auth.token
+    let accountId = auth.accountId
+    let baseUrl = loadCloudBaseUrl()
+    let collected = collectAttemptDiffsLocal(baseUrl, token, accountId, taskId)
+    if ! collected.ok:
+        printErr("Error: " + collected.err)
+        return 1
+    let selected = selectAttemptLocal(collected.attempts, attempt)
+    if ! selected.ok:
+        printErr("Error: " + selected.err)
+        return 1
+    let diff = selected.attempt.diff
+    if ! isUnifiedDiff(diff):
+        printLine("Expected unified git diff; backend returned an incompatible format.")
+        return 1
+    let summary = diffSummaryFromDiff(diff)
+    let res = runPatchTool(diff, os.getCurrentDir())
+    if res.ok:
+        var msg: str = "Applied task "
+        msg = msg + taskId
+        msg = msg + " locally ("
+        msg = msg + intToStr(summary.filesChanged)
+        msg = msg + " files)"
+        printLine(msg)
+        return 0
+    var failMsg: str = "Apply failed for task "
+    failMsg = failMsg + taskId
+    failMsg = failMsg + " (applied=0, skipped=0, conflicts=0)"
+    printLine(failMsg)
+    return 1
+
+fn runCloudApply(args: seq[str], start: int32): int32 =
+    var rawTask = ""
+    var sawTask = false
+    var attempt: int32 = 1
+    var stopParsing = false
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if ! stopParsing && (arg == "--help" || arg == "-h"):
+            return printCloudApplyHelp()
+        if ! stopParsing && arg == "--":
+            stopParsing = true
+            i = i + 1
+            continue
+        if ! stopParsing && cloudIsOptionLike(arg):
+            if arg == "--attempt":
+                if i + 1 >= len(args):
+                    return cloudUsageMissingValue("--attempt <N>", "")
+                let next = argAt(args, i + 1)
+                if next == "--":
+                    return cloudUsageMissingValue("--attempt <N>", "")
+                if cloudIsOptionLike(next):
+                    if next == "--attempt" || next == "--help" || next == "-h" || hasPrefix(next, "--attempt="):
+                        return cloudUsageMissingValue("--attempt <N>", "")
+                    var tip: str = "to pass '"
+                    tip = tip + next
+                    tip = tip + "' as a value, use '-- "
+                    tip = tip + next
+                    tip = tip + "'"
+                    return cloudUsageUnexpectedArg(next, "codex cloud apply [OPTIONS] <TASK_ID>", tip)
+                let parsed = cloudParseAttemptsStrict(next)
+                if ! parsed.ok:
+                    return cloudUsageInvalidValue(next, "--attempt <N>", parsed.err)
+                attempt = parsed.value
+                i = i + 2
+                continue
+            if hasPrefix(arg, "--attempt="):
+                let raw = dropPrefix(arg, "--attempt=")
+                let parsed = cloudParseAttemptsStrict(raw)
+                if ! parsed.ok:
+                    return cloudUsageInvalidValue(raw, "--attempt <N>", parsed.err)
+                attempt = parsed.value
+                i = i + 1
+                continue
+            var tip: str = "to pass '"
+            tip = tip + arg
+            tip = tip + "' as a value, use '-- "
+            tip = tip + arg
+            tip = tip + "'"
+            return cloudUsageUnexpectedArg(arg, "codex cloud apply [OPTIONS] <TASK_ID>", tip)
+        if ! sawTask:
+            rawTask = arg
+            sawTask = true
+        else:
+            return cloudUsageUnexpectedArg(arg, "codex cloud apply [OPTIONS] <TASK_ID>", "")
+        i = i + 1
+    if ! sawTask:
+        return cloudUsageMissingRequired("<TASK_ID>", "codex cloud apply <TASK_ID>")
+    let taskId = parseTaskIdLocal(rawTask)
+    if len(taskId) == 0:
+        printErr("Error: task id must not be empty")
+        return 1
+    return applyCloudTaskDiff(taskId, attempt)
+
+fn cloudMin2Local(a: int32, b: int32): int32 =
+    if a < b:
+        return a
+    return b
+
+fn cloudMin3Local(a: int32, b: int32, c: int32): int32 =
+    return cloudMin2Local(cloudMin2Local(a, b), c)
+
+fn cloudEditDistanceLocal(a: str, b: str): int32 =
+    let s1 = normalizePolicy(trimLine(a))
+    let s2 = normalizePolicy(trimLine(b))
+    if len(s1) == 0:
+        return len(s2)
+    if len(s2) == 0:
+        return len(s1)
+    var prev: seq[int32] = newSeq[int32]()
+    var j: int32 = 0
+    while j <= len(s2):
+        seqAdd(prev, j)
+        j = j + 1
+    var i: int32 = 0
+    while i < len(s1):
+        var curr: seq[int32] = newSeq[int32]()
+        seqAdd(curr, i + 1)
+        j = 0
+        while j < len(s2):
+            let cost = if s1[i] == s2[j]: 0 else: 1
+            let del = get[int32](prev, j + 1) + 1
+            let ins = get[int32](curr, j) + 1
+            let sub = get[int32](prev, j) + cost
+            let v = cloudMin3Local(del, ins, sub)
+            seqAdd(curr, v)
+            j = j + 1
+        prev = curr
+        i = i + 1
+    return get[int32](prev, len(s2))
+
+fn cloudSuggestCloudSubcommandLocal(name: str): str =
+    var candidates: seq[str] = newSeq[str]()
+    seqAdd(candidates, "exec")
+    seqAdd(candidates, "status")
+    seqAdd(candidates, "list")
+    seqAdd(candidates, "apply")
+    seqAdd(candidates, "diff")
+    seqAdd(candidates, "help")
+    var best = ""
+    var bestDist: int32 = 999
+    var i: int32 = 0
+    while i < len(candidates):
+        let cand = argAt(candidates, i)
+        let d = cloudEditDistanceLocal(name, cand)
+        if d < bestDist:
+            bestDist = d
+            best = cand
+        i = i + 1
+    if len(best) > 0 && bestDist <= 3:
+        return best
+    return ""
+
+fn cloudUsageUnrecognizedCloudSubcommand(sub: str): int32 =
+    printErr("error: unrecognized subcommand '" + sub + "'")
+    printErr("")
+    let suggestion = cloudSuggestCloudSubcommandLocal(sub)
+    if len(suggestion) > 0:
+        printErr("  tip: a similar subcommand exists: '" + suggestion + "'")
+        printErr("")
+    printErr("Usage: codex cloud [OPTIONS] [COMMAND]")
+    printErr("")
+    printErr("For more information, try '--help'.")
+    return 2
+
+fn printCloudHelpCommandHelp(): int32 =
+    printLine("Print this message or the help of the given subcommand(s)")
+    printLine("")
+    printLine("Usage: codex cloud help [COMMAND]...")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [COMMAND]...  Print help for the subcommand(s)")
+    return 0
+
+fn runCloudHelpCommand(args: seq[str], start: int32): int32 =
+    if start >= len(args):
+        return printCloudHelp()
+    let sub = argAt(args, start)
+    if sub == "exec":
+        if start + 1 < len(args):
+            return cloudUsageUnrecognizedSubcommand(argAt(args, start + 1), "codex cloud exec [OPTIONS] --env <ENV_ID> [QUERY]")
+        return printCloudExecHelp()
+    if sub == "status":
+        if start + 1 < len(args):
+            return cloudUsageUnrecognizedSubcommand(argAt(args, start + 1), "codex cloud status [OPTIONS] <TASK_ID>")
+        return printCloudStatusHelp()
+    if sub == "list":
+        if start + 1 < len(args):
+            return cloudUsageUnrecognizedSubcommand(argAt(args, start + 1), "codex cloud list [OPTIONS]")
+        return printCloudListHelp()
+    if sub == "apply":
+        if start + 1 < len(args):
+            return cloudUsageUnrecognizedSubcommand(argAt(args, start + 1), "codex cloud apply [OPTIONS] <TASK_ID>")
+        return printCloudApplyHelp()
+    if sub == "diff":
+        if start + 1 < len(args):
+            return cloudUsageUnrecognizedSubcommand(argAt(args, start + 1), "codex cloud diff [OPTIONS] <TASK_ID>")
+        return printCloudDiffHelp()
+    if sub == "help":
+        if start + 1 < len(args):
+            return cloudUsageUnrecognizedSubcommand(argAt(args, start + 1), "codex cloud help [COMMAND]...")
+        return printCloudHelpCommandHelp()
+    return cloudUsageUnrecognizedSubcommand(sub, "codex cloud [OPTIONS] [COMMAND]")
+
+fn runCloudLocal(args: seq[str], start: int32): int32 =
+    cloudTraceLocal("runCloudLocal.enter")
+    var stopParsing = false
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if ! stopParsing && (arg == "--help" || arg == "-h"):
+            return printCloudHelp()
+        if ! stopParsing && (arg == "--version" || arg == "-V"):
+            return cloudPrintVersion()
+        if ! stopParsing && arg == "--":
+            stopParsing = true
+            i = i + 1
+            break
+        if ! stopParsing && cloudIsOptionLike(arg):
+            return cloudUsageUnexpectedArg(arg, "codex cloud [OPTIONS] [COMMAND]", "")
+        break
+    if i >= len(args):
+        let auth = loadCloudAuthInfo()
+        if ! auth.ok:
+            return cloudNotSignedIn()
+        let baseUrl = loadCloudBaseUrl()
+        return runCloudTui(baseUrl, auth.token, auth.accountId)
+    let sub = argAt(args, i)
+    if sub == "help":
+        return runCloudHelpCommand(args, i + 1)
+    if sub == "exec":
+        return runCloudExec(args, i + 1)
+    if sub == "status":
+        return runCloudStatus(args, i + 1)
+    if sub == "list":
+        return runCloudListCommand(args, i + 1)
+    if sub == "apply":
+        return runCloudApply(args, i + 1)
+    if sub == "diff":
+        return runCloudDiff(args, i + 1)
+    return cloudUsageUnrecognizedCloudSubcommand(sub)

@@ -1,0 +1,617 @@
+# ChatGPT login flows (browser + device code)
+
+import system
+import cheng/web/std/server_http
+import std/os
+import seqs
+
+fn ord(ch: char): int32 =
+    return int32(ch)
+
+type
+    LoginSession =
+        issuer: str
+        clientId: str
+        workspaceId: str
+        state: str
+        pkceVerifier: str
+        pkceChallenge: str
+        authUrl: str
+        port: int32
+
+fn loginDebugEnabled(): bool =
+    let raw = normalizePolicy(trimLine(os.getEnv("CHENG_CODEX_LOGIN_DEBUG")))
+    return raw == "1" || raw == "true" || raw == "yes"
+
+fn loginQuietEnabled(): bool =
+    let appServer = normalizePolicy(trimLine(os.getEnv("CHENG_CODEX_APP_SERVER")))
+    if appServer == "1" || appServer == "true" || appServer == "yes":
+        return true
+    let raw = normalizePolicy(trimLine(os.getEnv("CHENG_CODEX_LOGIN_QUIET")))
+    return raw == "1" || raw == "true" || raw == "yes"
+
+fn loginDebug(msg: str) =
+    if loginDebugEnabled() && ! loginQuietEnabled():
+        printErr("[login] " + msg)
+
+fn loginOpenBrowser(url: str) =
+    if len(url) == 0:
+        return
+    var cmd = ""
+    if isDarwin():
+        cmd = "open " + shellQuote(url)
+    elif indexOfSubstr(detectPlatform(), "linux", 0) >= 0:
+        cmd = "xdg-open " + shellQuote(url)
+    elif indexOfSubstr(detectPlatform(), "windows", 0) >= 0:
+        cmd = "cmd /c start " + shellQuote(url)
+    if len(cmd) > 0:
+        let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+        os.execCmdEx(cmd, opts, os.getCurrentDir())
+
+fn loginCancelPriorServer(port: int32): bool =
+    if port <= 0:
+        return false
+    let url = "http://127.0.0.1:" + intToStr(port) + "/cancel"
+    let cmd = "curl -sS --max-time 2 " + shellQuote(url)
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let res = os.execCmdEx(cmd, opts, os.getCurrentDir())
+    return res.exitCode == 0
+
+fn loginTrimTrailingSlash(url: str): str =
+    if len(url) == 0:
+        return ""
+    var out = url
+    while len(out) > 0 && out[len(out) - 1] == '/':
+        out = __cheng_slice_string(out, 0, len(out) - 2, false)
+    return out
+
+fn loginReadHttpRequest(fd: int32, maxHeader: int32, maxBody: int32): str =
+    # Avoid repeated `raw = raw + chunk` growth (quadratic for long payloads).
+    var parts: seq[str] = newSeq[str]()
+    var totalLen: int32 = 0
+    var headerEnd: int32 = -1
+    var contentLen: int32 = -1
+    var tail: str = ""
+    while true:
+        let chunk: str = readChunk(fd, 4096)
+        if len(chunk) == 0:
+            break
+        seqAdd(parts, chunk)
+        totalLen = totalLen + len(chunk)
+        if headerEnd < 0:
+            let priorTailLen: int32 = len(tail)
+            let scan: str = tail + chunk
+            let idx: int32 = indexOfSubstr(scan, "\r\n\r\n", 0)
+            if len(scan) <= 3:
+                tail = scan
+            else:
+                tail = __cheng_slice_string(scan, len(scan) - 3, len(scan) - 1, false)
+            if idx >= 0:
+                headerEnd = (totalLen - len(chunk) - priorTailLen) + idx
+                # Compact so we can slice/parse headers without re-joining every chunk.
+                let joined: str = joinPartsBalanced(parts)
+                parts = newSeq[str]()
+                seqAdd(parts, joined)
+                totalLen = len(joined)
+                tail = ""
+                var head: str = ""
+                if headerEnd > 0:
+                    head = __cheng_slice_string(joined, 0, headerEnd - 1, false)
+                let lenText = loginParseHeaderValue(head, "content-length")
+                if len(lenText) > 0:
+                    contentLen = int32(parseInt64Simple(trimLine(lenText), 0))
+                else:
+                    contentLen = 0
+                if maxHeader > 0 && headerEnd > maxHeader:
+                    break
+        if headerEnd < 0:
+            if maxHeader > 0 && totalLen > maxHeader:
+                break
+            continue
+        let totalNeeded: int32 = headerEnd + 4 + contentLen
+        if totalLen >= totalNeeded:
+            break
+        if maxBody > 0 && totalLen > headerEnd + 4 + maxBody:
+            break
+    return joinPartsBalanced(parts)
+
+fn loginSplitLinesRaw(text: str): seq[str] =
+    var out: seq[str] = newSeq[str]()
+    if text == nil:
+        return out
+    var start: int32 = 0
+    var i: int32 = 0
+    while i < len(text):
+        if text[i] == '\n':
+            var endIdx: int32 = i - 1
+            if endIdx >= start && text[endIdx] == '\r':
+                endIdx = endIdx - 1
+            if endIdx >= start:
+                seqAdd(out, __cheng_slice_string(text, start, endIdx, false))
+            else:
+                seqAdd(out, "")
+            start = i + 1
+        i = i + 1
+    if start <= len(text) - 1:
+        seqAdd(out, __cheng_slice_string(text, start, len(text) - 1, false))
+    elif start == len(text):
+        seqAdd(out, "")
+    return out
+
+fn loginParseHeaderValue(headersText: str, key: str): str =
+    let keyLower = normalizePolicy(key)
+    let lines = loginSplitLinesRaw(headersText)
+    var i: int32 = 0
+    while i < len(lines):
+        let line = lines[i]
+        let colon = indexOfSubstr(line, ":", 0)
+        if colon > 0:
+            let k = normalizePolicy(trimLine(__cheng_slice_string(line, 0, colon - 1, false)))
+            if k == keyLower:
+                return trimLine(__cheng_slice_string(line, colon + 1, len(line) - 1, false))
+        i = i + 1
+    return ""
+
+fn loginHexValue(c: char): int32 =
+    let o = ord(c)
+    if o >= ord('0') && o <= ord('9'):
+        return o - ord('0')
+    if o >= ord('a') && o <= ord('f'):
+        return o - ord('a') + 10
+    if o >= ord('A') && o <= ord('F'):
+        return o - ord('A') + 10
+    return -1
+
+fn loginSubstr(text: str, start: int32, count: int32): str =
+    if text == nil:
+        return ""
+    if count <= 0:
+        return ""
+    let stop = start + count - 1
+    return __cheng_slice_string(text, start, stop, false)
+
+fn loginIndexOfChar(s: str, target: char, start: int32): int32 =
+    if s == nil:
+        return -1
+    var i: int32 = start
+    while i < len(s):
+        if s[i] == target:
+            return i
+        i = i + 1
+    return -1
+
+fn loginDecodeQueryComponent(text: str): str =
+    if text == nil || len(text) == 0:
+        return ""
+    var out: str = ""
+    var i: int32 = 0
+    while i < len(text):
+        let c = text[i]
+        if c == '+':
+            out = out + " "
+        elif c == '%' && i + 2 < len(text):
+            let hi = loginHexValue(text[i + 1])
+            let lo = loginHexValue(text[i + 2])
+            if hi >= 0 && lo >= 0:
+                out = out + $ chr(hi * 16 + lo)
+                i = i + 2
+            else:
+                out = out + $ c
+        else:
+            out = out + $ c
+        i = i + 1
+    return out
+
+fn loginQueryGet(query: str, key: str): str =
+    if key == nil:
+        return ""
+    if query == nil || len(query) == 0:
+        return ""
+    var start: int32 = 0
+    var i: int32 = 0
+    while i <= len(query):
+        if i == len(query) || query[i] == '&':
+            let size: int32 = i - start
+            if size > 0:
+                let eq = loginIndexOfChar(query, '=', start)
+                if eq >= 0 && eq < i:
+                    let rawKey = loginSubstr(query, start, eq - start)
+                    let rawValue = loginSubstr(query, eq + 1, i - eq - 1)
+                    let decodedKey = loginDecodeQueryComponent(rawKey)
+                    if decodedKey == key:
+                        return loginDecodeQueryComponent(rawValue)
+                else:
+                    let rawKey = loginSubstr(query, start, size)
+                    let decodedKey = loginDecodeQueryComponent(rawKey)
+                    if decodedKey == key:
+                        return ""
+            start = i + 1
+        i = i + 1
+    return ""
+
+fn loginSuccessHtml(): str =
+    var out: str = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Codex Login</title></head>"
+    out = out + "<body><h2>Login complete</h2><p>You can close this window.</p></body></html>"
+    return out
+
+fn loginTextResponse(body: str, status: int32): str =
+    var res = newResponse(status, body)
+    headerSet(res.headers, "Content-Type", "text/plain; charset=utf-8")
+    return responseToHttp(res)
+
+fn loginHtmlResponse(body: str, status: int32): str =
+    var res = newResponse(status, body)
+    headerSet(res.headers, "Content-Type", "text/html; charset=utf-8")
+    return responseToHttp(res)
+
+fn createLoginSession(issuer: str, clientId: str, workspaceId: str, port: int32): LoginSession =
+    var sess: LoginSession
+    sess.issuer = issuer
+    sess.clientId = clientId
+    sess.workspaceId = workspaceId
+    sess.state = generateState()
+    sess.pkceVerifier = buildPkceVerifier()
+    sess.pkceChallenge = buildPkceChallenge(sess.pkceVerifier)
+    sess.port = port
+    let redirectUri = "http://localhost:" + intToStr(port) + "/auth/callback"
+    sess.authUrl = buildAuthorizeUrl(issuer, clientId, redirectUri, sess.pkceChallenge, sess.state, workspaceId)
+    var msg: str = "login session state_len="
+    msg = msg + intToStr(len(sess.state))
+    msg = msg + " verifier_len="
+    msg = msg + intToStr(len(sess.pkceVerifier))
+    msg = msg + " challenge_len="
+    msg = msg + intToStr(len(sess.pkceChallenge))
+    msg = msg + " port="
+    msg = msg + intToStr(port)
+    authLog(msg)
+    return sess
+
+fn runLoginServerLoop(listenerFd: int32, sess: LoginSession, openBrowser: bool, err: var str): bool =
+    err = ""
+    if openBrowser:
+        loginOpenBrowser(sess.authUrl)
+    if ! loginQuietEnabled():
+        var msg: str = "Starting local login server on http://localhost:"
+        msg = msg + intToStr(sess.port)
+        msg = msg + ".\nIf your browser did not open, navigate to:\n\n"
+        msg = msg + sess.authUrl
+        printErr(msg)
+    while true:
+        let client = acceptClient(listenerFd)
+        if client < 0:
+            continue
+        let raw = loginReadHttpRequest(client, 16384, 65536)
+        if len(raw) == 0:
+            closeFd(client)
+            continue
+        let req = parseHttpRequest(raw)
+        if (req.method == hmGet || req.method == hmPost) && req.path == "/auth/callback":
+            var queryHasPlus = false
+            var qi: int32 = 0
+            while qi < len(req.query):
+                if req.query[qi] == '+':
+                    queryHasPlus = true
+                    break
+                qi = qi + 1
+            var errCode = loginQueryGet(req.query, "error")
+            if len(errCode) == 0 && len(req.body) > 0:
+                errCode = loginQueryGet(req.body, "error")
+            if len(errCode) > 0:
+                var errDesc = loginQueryGet(req.query, "error_description")
+                if len(errDesc) == 0 && len(req.body) > 0:
+                    errDesc = loginQueryGet(req.body, "error_description")
+                var detail: str = errCode
+                if len(errDesc) > 0:
+                    # Build incrementally to avoid deep temporary chains.
+                    var tmp: str = errCode
+                    tmp = tmp + ": "
+                    tmp = tmp + errDesc
+                    detail = tmp
+                let resp = loginTextResponse("Login error: " + detail, 400)
+                writeAll(client, resp)
+                closeFd(client)
+                err = "login error: " + errCode
+                authLog("login error code=" + errCode)
+                return false
+            var code = loginQueryGet(req.query, "code")
+            var state = loginQueryGet(req.query, "state")
+            if len(code) == 0 && len(req.body) > 0:
+                code = loginQueryGet(req.body, "code")
+            if len(state) == 0 && len(req.body) > 0:
+                state = loginQueryGet(req.body, "state")
+            var expectedHead: str = sess.state
+            if len(sess.state) >= 8:
+                expectedHead = __cheng_slice_string(sess.state, 0, 7, false)
+            var gotHead: str = state
+            if len(state) >= 8:
+                gotHead = __cheng_slice_string(state, 0, 7, false)
+            if len(code) == 0:
+                let resp = loginTextResponse("Missing authorization code", 400)
+                writeAll(client, resp)
+                closeFd(client)
+                err = "missing authorization code"
+                return false
+            var codeHasSpace = false
+            var ci: int32 = 0
+            while ci < len(code):
+                if code[ci] == ' ':
+                    codeHasSpace = true
+                    break
+                ci = ci + 1
+            var queryPlusText: str = "0"
+            if queryHasPlus:
+                queryPlusText = "1"
+            var codeSpaceText: str = "0"
+            if codeHasSpace:
+                codeSpaceText = "1"
+            # Build incrementally to avoid deep temporary chains.
+            var msg: str = "login callback query_len="
+            msg = msg + intToStr(len(req.query))
+            msg = msg + " query_plus="
+            msg = msg + queryPlusText
+            msg = msg + " state_len="
+            msg = msg + intToStr(len(state))
+            msg = msg + " code_len="
+            msg = msg + intToStr(len(code))
+            msg = msg + " code_space="
+            msg = msg + codeSpaceText
+            authLog(msg)
+            if len(state) == 0:
+                let queryHasState = indexOfSubstr(req.query, "state=", 0) >= 0
+                let bodyHasState = indexOfSubstr(req.body, "state=", 0) >= 0
+                var queryHasStateText: str = "0"
+                if queryHasState:
+                    queryHasStateText = "1"
+                var bodyHasStateText: str = "0"
+                if bodyHasState:
+                    bodyHasStateText = "1"
+                # Build incrementally to avoid deep temporary chains.
+                var msg: str = "login state missing expected_len="
+                msg = msg + intToStr(len(sess.state))
+                msg = msg + " query_len="
+                msg = msg + intToStr(len(req.query))
+                msg = msg + " body_len="
+                msg = msg + intToStr(len(req.body))
+                msg = msg + " query_has_state="
+                msg = msg + queryHasStateText
+                msg = msg + " body_has_state="
+                msg = msg + bodyHasStateText
+                authLog(msg)
+                let resp = loginTextResponse("State mismatch", 400)
+                writeAll(client, resp)
+                closeFd(client)
+                err = "state missing"
+                return false
+            if state != sess.state:
+                var dbg: str = "state mismatch expected="
+                dbg = dbg + sess.state
+                dbg = dbg + " got="
+                dbg = dbg + state
+                loginDebug(dbg)
+                let resp = loginTextResponse("State mismatch", 400)
+                writeAll(client, resp)
+                closeFd(client)
+                # Build incrementally to avoid deep temporary chains.
+                var msg: str = "login state mismatch expected_len="
+                msg = msg + intToStr(len(sess.state))
+                msg = msg + " got_len="
+                msg = msg + intToStr(len(state))
+                msg = msg + " expected_head="
+                msg = msg + expectedHead
+                msg = msg + " got_head="
+                msg = msg + gotHead
+                msg = msg + " query_len="
+                msg = msg + intToStr(len(req.query))
+                authLog(msg)
+                err = "state mismatch"
+                return false
+            var tokens: AuthTokens
+            var exErr = ""
+            let redirectUri = "http://localhost:" + intToStr(sess.port) + "/auth/callback"
+            if ! exchangeCodeForTokens(sess.issuer, sess.clientId, redirectUri, sess.pkceVerifier, code, tokens, exErr):
+                var detail = exErr
+                if len(detail) == 0:
+                    detail = "token exchange failed"
+                var shown = detail
+                if len(shown) > 180:
+                    shown = __cheng_slice_string(shown, 0, 179, false) + "..."
+                let resp = loginTextResponse("Token exchange failed: " + shown, 500)
+                writeAll(client, resp)
+                closeFd(client)
+                err = exErr
+                authLog("token exchange failed: " + detail)
+                return false
+            var wsErr = ""
+            if ! ensureWorkspaceAllowed(sess.workspaceId, tokens.idToken, wsErr):
+                let resp = loginTextResponse(wsErr, 403)
+                writeAll(client, resp)
+                closeFd(client)
+                err = wsErr
+                return false
+            var apiKey = ""
+            if len(tokens.idToken) > 0:
+                obtainApiKeyFromIdToken(sess.issuer, sess.clientId, tokens.idToken, apiKey)
+            if ! writeAuthJsonTokens(apiKey, tokens):
+                let resp = loginTextResponse("Unable to persist auth.json", 500)
+                writeAll(client, resp)
+                closeFd(client)
+                err = "persist failed"
+                return false
+            let resp = loginHtmlResponse(loginSuccessHtml(), 200)
+            writeAll(client, resp)
+            closeFd(client)
+            return true
+        if req.method == hmGet && req.path == "/cancel":
+            let resp = loginTextResponse("Login cancelled", 200)
+            writeAll(client, resp)
+            closeFd(client)
+            err = "login cancelled"
+            return false
+        let resp = loginTextResponse("Not Found", 404)
+        writeAll(client, resp)
+        closeFd(client)
+    return false
+
+fn bindLoginListener(preferredPort: int32, outPort: var int32, err: var str): int32 =
+    err = ""
+    var attempts: int32 = 0
+    var cancelled: bool = false
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    while attempts < 10:
+        let listener = createTcpListenerWithPort(preferredPort)
+        if listener.fd >= 0:
+            outPort = listener.port
+            var dbg: str = "bind ok port="
+            dbg = dbg + intToStr(preferredPort)
+            dbg = dbg + " fd="
+            dbg = dbg + intToStr(listener.fd)
+            dbg = dbg + " bound="
+            dbg = dbg + intToStr(listener.port)
+            loginDebug(dbg)
+            return listener.fd
+        if preferredPort != 1455:
+            let netErr = netGetError()
+            if len(netErr) > 0:
+                var msg: str = "failed to bind login server ("
+                msg = msg + netErr
+                msg = msg + ")"
+                err = msg
+            else:
+                err = "failed to bind login server"
+            var dbg: str = "bind failed port="
+            dbg = dbg + intToStr(preferredPort)
+            dbg = dbg + " err="
+            dbg = dbg + err
+            loginDebug(dbg)
+            return -1
+        if ! cancelled:
+            cancelled = true
+            loginCancelPriorServer(preferredPort)
+        os.execCmdEx("sleep 0.2", opts, os.getCurrentDir())
+        attempts = attempts + 1
+    let netErr = netGetError()
+    if len(netErr) > 0:
+        var msg: str = "failed to bind login server ("
+        msg = msg + netErr
+        msg = msg + ")"
+        err = msg
+    else:
+        err = "failed to bind login server"
+    var dbg: str = "bind failed port="
+    dbg = dbg + intToStr(preferredPort)
+    dbg = dbg + " err="
+    dbg = dbg + err
+    loginDebug(dbg)
+    return -1
+
+fn runBrowserLogin(issuer: str, clientId: str, workspaceId: str, openBrowser: bool, err: var str): bool =
+    var port: int32 = 0
+    let baseIssuer = loginTrimTrailingSlash(issuer)
+    let listenerFd = bindLoginListener(1455, port, err)
+    if listenerFd < 0:
+        return false
+    let sess = createLoginSession(baseIssuer, clientId, workspaceId, port)
+    let ok = runLoginServerLoop(listenerFd, sess, openBrowser, err)
+    closeFd(listenerFd)
+    return ok
+
+fn printDeviceCodePrompt(code: str) =
+    if loginQuietEnabled():
+        return
+    printErr("Follow these steps to sign in with ChatGPT using device code authorization:")
+    printErr("1. Open this link in your browser and sign in to your account")
+    printErr("   https://auth.openai.com/codex/device")
+    printErr("2. Enter this one-time code (expires in 15 minutes)")
+    printErr("   " + code)
+    printErr("Device codes are a common phishing target. Never share this code.")
+
+fn requestDeviceUserCode(issuer: str, clientId: str, deviceId: var str, userCode: var str, intervalSeconds: var int32, err: var str): bool =
+    err = ""
+    deviceId = ""
+    userCode = ""
+    intervalSeconds = 5
+    let apiBase = loginTrimTrailingSlash(issuer) + "/api/accounts/deviceauth/usercode"
+    let body = jstrObject(seqStr1(jstrPair("client_id", jstrString(clientId))))
+    let res = httpPostJson(apiBase, body)
+    if ! res.ok:
+        err = "device code request failed"
+        if len(res.error) > 0:
+            err = res.error
+        return false
+    let parsed = parseJsonSafe(res.body)
+    if ! parsed.ok:
+        err = "device code parse failed"
+        return false
+    let root: json.JsonNode = parsed.value
+    deviceId = getStringField(root, "device_auth_id", "")
+    userCode = getStringField(root, "user_code", "")
+    let intervalText = getStringField(root, "interval", "")
+    let intervalVal = int32(parseInt64Simple(intervalText, 5))
+    if intervalVal > 0:
+        intervalSeconds = intervalVal
+    if len(deviceId) == 0 || len(userCode) == 0:
+        err = "device code response missing fields"
+        return false
+    return true
+
+fn pollDeviceCodeToken(issuer: str, deviceId: str, userCode: str, intervalSeconds: int32, authCode: var str, codeVerifier: var str, err: var str): bool =
+    err = ""
+    authCode = ""
+    codeVerifier = ""
+    let apiBase = loginTrimTrailingSlash(issuer) + "/api/accounts/deviceauth/token"
+    let deadline = times.toUnix(times.now()) + 900
+    var interval = intervalSeconds
+    if interval <= 0:
+        interval = 5
+    while times.toUnix(times.now()) < deadline:
+        let body = jstrObject(seqStr2(
+            jstrPair("device_auth_id", jstrString(deviceId)),
+            jstrPair("user_code", jstrString(userCode))
+        ))
+        let res = httpPostJson(apiBase, body)
+        if res.ok:
+            let parsed = parseJsonSafe(res.body)
+            if parsed.ok:
+                let root: json.JsonNode = parsed.value
+                authCode = getStringField(root, "authorization_code", "")
+                codeVerifier = getStringField(root, "code_verifier", "")
+                if len(authCode) > 0 && len(codeVerifier) > 0:
+                    return true
+                err = "device token response missing fields"
+                return false
+            err = "device token parse failed"
+            return false
+        if res.status == 403 || res.status == 404:
+            let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+            os.execCmdEx("sleep " + intToStr(interval), opts, os.getCurrentDir())
+            continue
+        err = "device token request failed"
+        if len(res.error) > 0:
+            err = res.error
+        return false
+    err = "device auth timed out after 15 minutes"
+    return false
+
+fn runDeviceCodeLogin(issuer: str, clientId: str, workspaceId: str, err: var str): bool =
+    var deviceId = ""
+    var userCode = ""
+    var intervalSeconds: int32 = 5
+    if ! requestDeviceUserCode(issuer, clientId, deviceId, userCode, intervalSeconds, err):
+        return false
+    printDeviceCodePrompt(userCode)
+    var authCode = ""
+    var codeVerifier = ""
+    if ! pollDeviceCodeToken(issuer, deviceId, userCode, intervalSeconds, authCode, codeVerifier, err):
+        return false
+    let redirectUri = loginTrimTrailingSlash(issuer) + "/deviceauth/callback"
+    var tokens: AuthTokens
+    if ! exchangeCodeForTokens(issuer, clientId, redirectUri, codeVerifier, authCode, tokens, err):
+        return false
+    var wsErr = ""
+    if ! ensureWorkspaceAllowed(workspaceId, tokens.idToken, wsErr):
+        err = wsErr
+        return false
+    if ! writeAuthJsonTokens("", tokens):
+        err = "persist failed"
+        return false
+    return true

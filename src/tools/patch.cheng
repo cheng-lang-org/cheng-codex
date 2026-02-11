@@ -1,0 +1,36 @@
+# Patch tool (placeholder)
+
+import system
+import std/os
+import seqs
+import cheng/codex/common
+fn writeTempPatch(patchText: str): str =
+    if len(patchText) == 0:
+        return ""
+    let home = codexHomeDir()
+    if len(home) == 0:
+        return ""
+    if ! os.dirExists(home):
+        os.createDir(home)
+    let path = os.joinPath(home, "last.patch")
+    os.writeFile(path, patchText)
+    return path
+
+fn runPatchTool(patchText: str, root: str): ToolResult =
+    if len(patchText) == 0:
+        return makeToolResult(false, "empty patch", -1)
+    let patchPath = writeTempPatch(patchText)
+    if len(patchPath) == 0:
+        return makeToolResult(false, "patch write failed", -1)
+    let quoted = shellQuote(patchPath)
+    var cmd = "patch -p0 -i " + quoted
+    let gitDir = os.joinPath(root, ".git")
+    if os.dirExists(gitDir):
+        cmd = "git apply --whitespace=nowarn " + quoted
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let res = os.execCmdEx(cmd, opts, root)
+    var output = res.output
+    if output == nil:
+        output = ""
+    let exitCode: int32 = int32(res.exitCode)
+    return makeToolResult(exitCode == 0, output, exitCode)

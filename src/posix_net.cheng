@@ -1,0 +1,327 @@
+# Minimal POSIX socket helpers for codex-cheng (Unix only).
+
+import system
+import std/os
+import seqs
+const
+    AF_UNIX: int32 = 1
+    AF_INET: int32 = 2
+    SOCK_STREAM: int32 = 1
+    SOL_SOCKET: int32 = 1
+    SO_REUSEADDR: int32 = 2
+    SHUT_WR: int32 = 1
+
+type
+    SockAddrBuf =
+        data: void*
+        len: int32
+    TcpListenerInfo =
+        fd: int32
+        port: int32
+
+@ importc("socket")
+fn c_socket(domain: int32, typ: int32, protocol: int32): int32
+@ importc("bind")
+fn c_bind(fd: int32, addr: void*, len: int32): int32
+@ importc("listen")
+fn c_listen(fd: int32, backlog: int32): int32
+@ importc("accept")
+fn c_accept(fd: int32, addr: void*, len: int32*): int32
+@ importc("connect")
+fn c_connect(fd: int32, addr: void*, len: int32): int32
+@ importc("setsockopt")
+fn c_setsockopt(fd: int32, level: int32, optname: int32, optval: void*, optlen: int32): int32
+@ importc("getsockname")
+fn c_getsockname(fd: int32, addr: void*, len: int32*): int32
+@ importc("read")
+fn c_read(fd: int32, buf: void*, count: int32): int32
+@ importc("write")
+fn c_write(fd: int32, buf: void*, count: int32): int32
+@ importc("shutdown")
+fn c_shutdown(fd: int32, how: int32): int32
+@ importc("close")
+fn c_close(fd: int32): int32
+@ importc("fork")
+fn c_fork(): int32
+@ importc("waitpid")
+fn c_waitpid(pid: int32, status: int32*, options: int32): int32
+@ importc("kill")
+fn c_kill(pid: int32, sig: int32): int32
+
+const
+    WNOHANG: int32 = 1
+    SIGTERM: int32 = 15
+@ importc("getpid")
+fn c_getpid(): int32
+@ importc("exit")
+fn c_exit(code: int32)
+@ importc("cheng_errno")
+fn cheng_errno(): int32
+@ importc("cheng_strerror")
+fn cheng_strerror(err: int32): str
+@ importc("cheng_tcp_listener")
+fn cheng_tcp_listener(port: int32, outPort: int32*): int32
+
+var netLastError: str = ""
+
+fn netSetError(context: str) =
+    let err = cheng_errno()
+    let errText = cheng_strerror(err)
+    if len(context) > 0 && len(errText) > 0:
+        netLastError = context + ": " + errText
+    elif len(context) > 0:
+        netLastError = context
+    else:
+        netLastError = errText
+
+fn netClearError() =
+    netLastError = ""
+
+fn netGetError(): str =
+    return netLastError
+
+fn detectPlatform(): str =
+    # Best-effort OS identifier for lightweight branching.
+    # Keep it allocation-light and avoid global caching here.
+    let env = os.getEnv("OSTYPE")
+    if env != nil && len(env) > 0:
+        return normalizePolicy(env)
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let res = os.execCmdEx("uname -s", opts, os.getCurrentDir())
+    return normalizePolicy(trimLine(res.output))
+
+fn isDarwin(): bool =
+    # Avoid cached global strings here: some runtime builds have init-order issues.
+    if os.fileExists("/usr/bin/sandbox-exec"):
+        return true
+    let osEnv = normalizePolicy(os.getEnv("OS"))
+    if osEnv == "windows_nt":
+        return false
+    let ostype = normalizePolicy(os.getEnv("OSTYPE"))
+    if indexOfSubstr(ostype, "darwin", 0) >= 0 || indexOfSubstr(ostype, "mac", 0) >= 0:
+        return true
+    let name = detectPlatform()
+    return indexOfSubstr(name, "darwin", 0) >= 0 || indexOfSubstr(name, "mac", 0) >= 0
+
+fn writeByte(buf: void*, offset: int32, value: uint8) =
+    let p = ptr_add(buf, offset)
+    var p8: uint8* = uint8*(p)
+    *p8 = value
+
+fn storeUInt16(buf: void*, offset: int32, value: uint16) =
+    let p = ptr_add(buf, offset)
+    var p16: uint16* = uint16*(p)
+    *p16 = value
+
+fn storeUInt32(buf: void*, offset: int32, value: uint32) =
+    let p = ptr_add(buf, offset)
+    var p32: uint32* = uint32*(p)
+    *p32 = value
+
+fn loadUInt16(buf: void*, offset: int32): uint16 =
+    let p = ptr_add(buf, offset)
+    var p16: uint16* = uint16*(p)
+    return *p16
+
+fn swap16(v: uint16): uint16 =
+    let hi = (v >> 8) & uint16(0x00FF)
+    let lo = (v << 8) & uint16(0xFF00)
+    return hi | lo
+
+fn swap32(v: uint32): uint32 =
+    let b0 = (v & uint32(0x000000FF)) << 24
+    let b1 = (v & uint32(0x0000FF00)) << 8
+    let b2 = (v & uint32(0x00FF0000)) >> 8
+    let b3 = (v & uint32(0xFF000000)) >> 24
+    return b0 | b1 | b2 | b3
+
+fn htons(port: uint16): uint16 =
+    return swap16(port)
+
+fn htonl(addr: uint32): uint32 =
+    return swap32(addr)
+
+fn ntohs(port: uint16): uint16 =
+    return swap16(port)
+
+fn ipv4Loopback(): uint32 =
+    return uint32(0x7F000001)
+
+fn makeSockaddrIn(port: int32): SockAddrBuf =
+    let size: int32 = 16
+    let p = alloc(size)
+    # Avoid zeroMem here: some builds show memory corruption around zeroMem/copyMem
+    # in small FFI buffers, leading to crashes later during process teardown.
+    var z: int32 = 0
+    while z < size:
+        writeByte(p, z, uint8(0))
+        z = z + 1
+    if isDarwin():
+        writeByte(p, 0, uint8(size))
+        writeByte(p, 1, uint8(AF_INET))
+    else:
+        storeUInt16(p, 0, uint16(AF_INET))
+    let port16 = htons(uint16(port))
+    storeUInt16(p, 2, port16)
+    storeUInt32(p, 4, htonl(ipv4Loopback()))
+    SockAddrBuf(data: p, len: size)
+
+fn makeSockaddrInAny(port: int32): SockAddrBuf =
+    let size: int32 = 16
+    let p = alloc(size)
+    var z: int32 = 0
+    while z < size:
+        writeByte(p, z, uint8(0))
+        z = z + 1
+    if isDarwin():
+        writeByte(p, 0, uint8(size))
+        writeByte(p, 1, uint8(AF_INET))
+    else:
+        storeUInt16(p, 0, uint16(AF_INET))
+    let port16 = htons(uint16(port))
+    storeUInt16(p, 2, port16)
+    storeUInt32(p, 4, htonl(uint32(0)))
+    SockAddrBuf(data: p, len: size)
+
+fn makeSockaddrUn(path: str): SockAddrBuf =
+    # Avoid inline `if` expressions in hot/FFI paths: some compiler/runtime builds
+    # have miscompilation issues that can lead to buffer-size bugs.
+    var maxPath: int32 = 108
+    if isDarwin():
+        maxPath = 104
+    # Defensive copy: some call sites may pass transient strings (slices).
+    # We need a stable, NUL-terminated buffer before taking `len()` or memcpy.
+    let pathOwned: str = "" + path
+    var pathLen: int32 = len(pathOwned)
+    if pathLen > maxPath - 1:
+        pathLen = maxPath - 1
+    let size: int32 = 2 + pathLen + 1
+    let p = alloc(size)
+    var z: int32 = 0
+    while z < size:
+        writeByte(p, z, uint8(0))
+        z = z + 1
+    if isDarwin():
+        writeByte(p, 0, uint8(size))
+        writeByte(p, 1, uint8(AF_UNIX))
+    else:
+        storeUInt16(p, 0, uint16(AF_UNIX))
+    var j: int32 = 0
+    while j < pathLen:
+        writeByte(p, 2 + j, uint8(int32(pathOwned[j])))
+        j = j + 1
+    SockAddrBuf(data: p, len: size)
+
+fn closeFd(fd: int32) =
+    if fd >= 0:
+        c_close(fd)
+
+fn shutdownWrite(fd: int32) =
+    if fd >= 0:
+        c_shutdown(fd, SHUT_WR)
+
+fn writeAll(fd: int32, text: str): bool =
+    if fd < 0:
+        return false
+    if text == nil:
+        return true
+    let total = len(text)
+    var sent: int32 = 0
+    while sent < total:
+        let p = ptr_add(void*(text), sent)
+        let n = c_write(fd, p, total - sent)
+        if n <= 0:
+            return false
+        sent = sent + n
+    return true
+
+fn bytesToString(buf: void*, size: int32): str =
+    if size <= 0:
+        return ""
+    let out = alloc(size + 1)
+    copyMem(out, buf, size)
+    setMem(ptr_add(out, size), 0, 1)
+    return str(out)
+
+fn readChunk(fd: int32, size: int32): str =
+    if fd < 0 || size <= 0:
+        return ""
+    let buf = alloc(size)
+    let n = c_read(fd, buf, size)
+    if n <= 0:
+        return ""
+    return bytesToString(buf, n)
+
+fn createTcpListener(port: int32, outPort: int32*): int32 =
+    netClearError()
+    let fd = cheng_tcp_listener(port, outPort)
+    if fd < 0:
+        netSetError("bind")
+        return -1
+    netClearError()
+    return fd
+
+fn createTcpListenerWithPort(port: int32): TcpListenerInfo =
+    let portPtr = alloc(4)
+    store[int32](portPtr, 0)
+    let fd = createTcpListener(port, int32*(portPtr))
+    let bound = load[int32](portPtr)
+    dealloc(portPtr)
+    return TcpListenerInfo(fd: fd, port: bound)
+
+fn acceptClient(fd: int32): int32 =
+    return c_accept(fd, nil, nil)
+
+fn connectUnixSocket(path: str): int32 =
+    path
+    let fd = c_socket(AF_UNIX, SOCK_STREAM, 0)
+    if fd < 0:
+        return -1
+    # TEMP: isolate crashes in c_connect / sockaddr plumbing.
+    closeFd(fd)
+    return -1
+
+fn canConnectTcp(port: int32): bool =
+    if port <= 0:
+        return false
+    let fd = c_socket(AF_INET, SOCK_STREAM, 0)
+    if fd < 0:
+        return false
+    let addr = makeSockaddrIn(port)
+    let res = c_connect(fd, addr.data, addr.len)
+    dealloc(addr.data)
+    if res != 0:
+        closeFd(fd)
+        return false
+    closeFd(fd)
+    return true
+
+fn forkProcess(): int32 =
+    return c_fork()
+
+fn waitChild(pid: int32) =
+    var status: int32 = 0
+    let statusPtr = alloc(4)
+    store[int32](statusPtr, status)
+    c_waitpid(pid, statusPtr, 0)
+    dealloc(statusPtr)
+
+fn reapChildrenNoHang() =
+    var status: int32 = 0
+    let statusPtr = alloc(4)
+    while true:
+        let res = c_waitpid(-1, statusPtr, WNOHANG)
+        if res <= 0:
+            break
+    dealloc(statusPtr)
+
+fn currentPid(): int32 =
+    return c_getpid()
+
+fn exitProcess(code: int32) =
+    c_exit(code)
+
+fn killProcess(pid: int32): bool =
+    if pid <= 0:
+        return false
+    return c_kill(pid, SIGTERM) == 0

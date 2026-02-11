@@ -1,0 +1,461 @@
+# Sandbox execution helpers
+
+import system
+import std/os
+import seqs
+
+fn ord(ch: char): int32 =
+    return int32(ch)
+
+type
+    WritableRoot =
+        root: str
+        readOnlySubpaths: seq[str]
+
+const
+    SANDBOX_DENIAL_REASON = "command failed; retry without sandbox?"
+
+var seatbeltBasePolicyCache = ""
+var seatbeltNetworkPolicyCache = ""
+var seatbeltPolicyLoaded = false
+
+fn lowerAscii(text: str): str =
+    if text == nil:
+        return ""
+    var out = ""
+    var i: int32 = 0
+    while i < len(text):
+        let ch = text[i]
+        if ch >= 'A' && ch <= 'Z':
+            out = out + $ char(ord(ch) + 32)
+        else:
+            out = out + $ ch
+        i = i + 1
+    return out
+
+fn detectOsKind(): str =
+    let osEnv = normalizePolicy(os.getEnv("OS"))
+    if osEnv == "windows_nt":
+        return "windows"
+    let ostype = normalizePolicy(os.getEnv("OSTYPE"))
+    if indexOfSubstr(ostype, "darwin", 0) >= 0:
+        return "macos"
+    if indexOfSubstr(ostype, "linux", 0) >= 0:
+        return "linux"
+    if os.fileExists("/usr/bin/sandbox-exec"):
+        return "macos"
+    if os.dirExists("/fn") && os.dirExists("/sys"):
+        return "linux"
+    if os.dirExists("C:\\Windows"):
+        return "windows"
+    return "unknown"
+
+fn normalizeSandboxModeValue(mode: str): str =
+    let normalized = normalizePolicy(trimLine(mode))
+    if len(normalized) == 0:
+        return ""
+    if normalized == "read-only" || normalized == "readonly":
+        return "read-only"
+    if normalized == "workspace-write" || normalized == "workspacewrite":
+        return "workspace-write"
+    if normalized == "danger-full-access" || normalized == "dangerfullaccess":
+        return "danger-full-access"
+    return normalized
+
+fn buildCommandTextFromTokens(tokens: seq[str]): str =
+    var out = ""
+    var i: int32 = 0
+    while i < len(tokens):
+        let part = shellQuote(tokens[i])
+        if len(out) == 0:
+            out = part
+        else:
+            out = out + " "
+            out = out + part
+        i = i + 1
+    return out
+
+fn collectWritableRoots(cwd: str, extraRoots: seq[str]): seq[WritableRoot] =
+    var roots: seq[str] = newSeq[str]()
+    var i: int32 = 0
+    while i < len(extraRoots):
+        let root = extraRoots[i]
+        if len(root) > 0:
+            seqAdd(roots, os.absolutePath(root))
+        i = i + 1
+    if len(cwd) > 0:
+        seqAdd(roots, os.absolutePath(cwd))
+    if os.dirExists("/tmp"):
+        seqAdd(roots, "/tmp")
+    let tmpdir = os.getEnv("TMPDIR")
+    if len(tmpdir) > 0:
+        seqAdd(roots, os.absolutePath(tmpdir))
+    var result: seq[WritableRoot] = newSeq[WritableRoot]()
+    i = 0
+    while i < len(roots):
+        let root = roots[i]
+        var readOnly: seq[str] = newSeq[str]()
+        let gitPath = os.joinPath(root, ".git")
+        if os.dirExists(gitPath):
+            seqAdd(readOnly, gitPath)
+        let codexPath = os.joinPath(root, ".codex")
+        if os.dirExists(codexPath):
+            seqAdd(readOnly, codexPath)
+        let codexChengPath = os.joinPath(root, ".codex-cheng")
+        if os.dirExists(codexChengPath):
+            seqAdd(readOnly, codexChengPath)
+        seqAdd(result, WritableRoot(root: root, readOnlySubpaths: readOnly))
+        i = i + 1
+    return result
+
+fn joinWithSpace(items: seq[str]): str =
+    var out = ""
+    var i: int32 = 0
+    while i < len(items):
+        if i == 0:
+            out = items[i]
+        else:
+            out = out + " "
+            out = out + items[i]
+        i = i + 1
+    return out
+
+fn findExecutableInPath(name: str): str =
+    let pathEnv = os.getEnv("PATH")
+    if len(pathEnv) == 0:
+        return ""
+    var start: int32 = 0
+    var i: int32 = 0
+    while i <= len(pathEnv):
+        if i == len(pathEnv) || pathEnv[i] == ':':
+            var part: str = ""
+            if i > start:
+                part = __cheng_slice_string(pathEnv, start, i - 1, false)
+            if len(part) > 0:
+                let candidate = os.joinPath(part, name)
+                if os.fileExists(candidate):
+                    return candidate
+            start = i + 1
+        i = i + 1
+    return ""
+
+fn findTimeoutExecutable(): str =
+    let env = os.getEnv("CODEX_TIMEOUT_EXE")
+    if len(env) > 0 && os.fileExists(env):
+        return env
+    let timeoutPath = findExecutableInPath("timeout")
+    if len(timeoutPath) > 0:
+        return timeoutPath
+    let gtimeoutPath = findExecutableInPath("gtimeout")
+    if len(gtimeoutPath) > 0:
+        return gtimeoutPath
+    return ""
+
+fn findPerlExecutable(): str =
+    let env = os.getEnv("PERL")
+    if len(env) > 0 && os.fileExists(env):
+        return env
+    if os.fileExists("/usr/bin/perl"):
+        return "/usr/bin/perl"
+    if os.fileExists("/usr/local/bin/perl"):
+        return "/usr/local/bin/perl"
+    if os.fileExists("/opt/homebrew/bin/perl"):
+        return "/opt/homebrew/bin/perl"
+    if os.fileExists("/bin/perl"):
+        return "/bin/perl"
+    return ""
+
+fn wrapCommandWithTimeout(commandText: str, timeoutMs: int32, outApplied: var bool): str =
+    outApplied = false
+    if timeoutMs <= 0:
+        return commandText
+    let osKind: str = detectOsKind()
+    if osKind == "windows":
+        return commandText
+    let timeoutExe = findTimeoutExecutable()
+    if len(timeoutExe) > 0:
+        let timeoutSec = (timeoutMs + 999) / 1000
+        outApplied = true
+        let timeoutExeQuoted = shellQuote(timeoutExe)
+        let timeoutSecText = intToStr(timeoutSec)
+        let commandQuoted = shellQuote(commandText)
+        var out = timeoutExeQuoted
+        out = out + " "
+        out = out + timeoutSecText
+        out = out + " /bin/sh -c "
+        out = out + commandQuoted
+        return out
+    let perl = findPerlExecutable()
+    if len(perl) == 0:
+        return commandText
+    let timeoutSec = (timeoutMs + 999) / 1000
+    # Build incrementally to avoid deep temporary chains.
+    var script: str = "my $timeout = shift; "
+    script = script + "my $pid = fork(); "
+    script = script + "if (!defined $pid) { exit 127; } "
+    script = script + "if ($pid == 0) { exec @ARGV; exit 127; } "
+    script = script + "$SIG{ALRM} = sub { kill 9, $pid; exit 124; }; "
+    script = script + "alarm $timeout; "
+    script = script + "waitpid($pid, 0); "
+    script = script + "exit $? >> 8;"
+    outApplied = true
+    let perlQuoted = shellQuote(perl)
+    let scriptQuoted = shellQuote(script)
+    let timeoutSecText = intToStr(timeoutSec)
+    let commandQuoted = shellQuote(commandText)
+    var out = perlQuoted
+    out = out + " -e "
+    out = out + scriptQuoted
+    out = out + " "
+    out = out + timeoutSecText
+    out = out + " -- /bin/sh -c "
+    out = out + commandQuoted
+    return out
+
+fn findSeatbeltPolicyFile(fileName: str): str =
+    let cwd = os.getCurrentDir()
+    var candidates: seq[str] = newSeq[str]()
+    seqAdd(candidates, os.joinPath(cwd, fileName))
+    seqAdd(candidates, os.joinPath(os.joinPath(os.joinPath(cwd, "codex-cheng"), "src"), fileName))
+    seqAdd(candidates, os.joinPath(os.joinPath(cwd, "src"), fileName))
+    seqAdd(candidates, os.joinPath(os.joinPath(cwd, "codex-cheng"), fileName))
+    seqAdd(candidates, os.joinPath(os.joinPath(os.joinPath(os.joinPath(cwd, ".."), "codex-cheng"), "src"), fileName))
+    seqAdd(candidates, os.joinPath(os.joinPath(os.joinPath(cwd, ".."), "src"), fileName))
+    var i: int32 = 0
+    while i < len(candidates):
+        # Type annotation here avoids a backend width inference bug that can
+        # truncate string pointers when pulling values out of a `seq[str]`.
+        let candidate: str = candidates[i]
+        if os.fileExists(candidate):
+            return candidate
+        i = i + 1
+    return ""
+
+fn ensureSeatbeltPoliciesLoaded(): bool =
+    if seatbeltPolicyLoaded && len(seatbeltBasePolicyCache) > 0:
+        return true
+    seatbeltPolicyLoaded = true
+    if len(seatbeltBasePolicyCache) == 0:
+        let basePath = findSeatbeltPolicyFile("seatbelt_base_policy.sbpl")
+        if len(basePath) > 0:
+            seatbeltBasePolicyCache = os.readFile(basePath)
+    if len(seatbeltNetworkPolicyCache) == 0:
+        let networkPath = findSeatbeltPolicyFile("seatbelt_network_policy.sbpl")
+        if len(networkPath) > 0:
+            seatbeltNetworkPolicyCache = os.readFile(networkPath)
+    return len(seatbeltBasePolicyCache) > 0
+
+fn buildSeatbeltPolicy(sandboxMode: str, cwd: str, extraRoots: seq[str], allowNetwork: bool, outParams: var seq[str]): str =
+    outParams = newSeq[str]()
+    ensureSeatbeltPoliciesLoaded()
+    if len(seatbeltBasePolicyCache) == 0:
+        return ""
+    let mode = normalizePolicy(trimLine(sandboxMode))
+    var fileWritePolicy = ""
+    if mode == "workspace-write" || mode == "workspacewrite":
+        let roots = collectWritableRoots(cwd, extraRoots)
+        if len(roots) > 0:
+            var policyParts: seq[str] = newSeq[str]()
+            var idx: int32 = 0
+            while idx < len(roots):
+                let root = roots[idx]
+                let rootParam = "WRITABLE_ROOT_" + intToStr(idx)
+                var rootParamArg = "-D"
+                rootParamArg = rootParamArg + rootParam
+                rootParamArg = rootParamArg + "="
+                rootParamArg = rootParamArg + root.root
+                seqAdd(outParams, rootParamArg)
+                if len(root.readOnlySubpaths) == 0:
+                    var part = "(subpath (param \""
+                    part = part + rootParam
+                    part = part + "\"))"
+                    seqAdd(policyParts, part)
+                else:
+                    var requireParts: seq[str] = newSeq[str]()
+                    var basePart = "(subpath (param \""
+                    basePart = basePart + rootParam
+                    basePart = basePart + "\"))"
+                    seqAdd(requireParts, basePart)
+                    var roIdx: int32 = 0
+                    while roIdx < len(root.readOnlySubpaths):
+                        let roIdxText = intToStr(roIdx)
+                        var roParam = rootParam
+                        roParam = roParam + "_RO_"
+                        roParam = roParam + roIdxText
+                        var roParamArg = "-D"
+                        roParamArg = roParamArg + roParam
+                        roParamArg = roParamArg + "="
+                        roParamArg = roParamArg + root.readOnlySubpaths[roIdx]
+                        seqAdd(outParams, roParamArg)
+                        var requireNotPart = "(require-not (subpath (param \""
+                        requireNotPart = requireNotPart + roParam
+                        requireNotPart = requireNotPart + "\")))"
+                        seqAdd(requireParts, requireNotPart)
+                        roIdx = roIdx + 1
+                    let requireJoined = joinWithSpace(requireParts)
+                    var requireAll = "(require-all "
+                    requireAll = requireAll + requireJoined
+                    requireAll = requireAll + " )"
+                    seqAdd(policyParts, requireAll)
+                idx = idx + 1
+            let policyJoined = joinWithSpace(policyParts)
+            var policyText = "(allow file-write*\n"
+            policyText = policyText + policyJoined
+            policyText = policyText + "\n)"
+            fileWritePolicy = policyText
+    let fileReadPolicy = "; allow read-only file operations\n(allow file-read*)"
+    var networkPolicy: str = ""
+    if allowNetwork:
+        networkPolicy = seatbeltNetworkPolicyCache
+    var out = seatbeltBasePolicyCache
+    out = out + "\n"
+    out = out + fileReadPolicy
+    out = out + "\n"
+    out = out + fileWritePolicy
+    out = out + "\n"
+    out = out + networkPolicy
+    return out
+
+fn runRawCommand(commandText: str, workingDir: str, timeoutMs: int32): ToolResult =
+    if len(commandText) == 0:
+        return makeToolResult(false, "empty command", -1)
+    var applied = false
+    let execText = wrapCommandWithTimeout(commandText, timeoutMs, applied)
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let res = os.execCmdEx(execText, opts, workingDir)
+    var output = res.output
+    if output == nil:
+        output = ""
+    let exitCode: int32 = int32(res.exitCode)
+    var ok = exitCode == 0
+    if applied && exitCode == 124:
+        let timeoutText = intToStr(timeoutMs)
+        var suffix = "command timed out after "
+        suffix = suffix + timeoutText
+        suffix = suffix + "ms"
+        if len(output) > 0:
+            output = output + "\n"
+            output = output + suffix
+        else:
+            output = suffix
+        ok = false
+    return makeToolResult(ok, output, exitCode)
+
+fn runSeatbeltSandbox(commandText: str, commandTokens: seq[str], workingDir: str, sandboxMode: str, extraRoots: seq[str], timeoutMs: int32): ToolResult =
+    var cmd: str = commandText
+    if len(cmd) == 0:
+        cmd = buildCommandTextFromTokens(commandTokens)
+    var params: seq[str]
+    let policyText = buildSeatbeltPolicy(sandboxMode, workingDir, extraRoots, false, params)
+    if len(policyText) == 0:
+        return makeToolResult(false, "missing seatbelt policy", -1)
+    var fullCmd = "/usr/bin/sandbox-exec -p "
+    fullCmd = fullCmd + shellQuote(policyText)
+    var i: int32 = 0
+    while i < len(params):
+        fullCmd = fullCmd + " "
+        fullCmd = fullCmd + shellQuote(params[i])
+        i = i + 1
+    var wrappedCmd = "/bin/sh -c "
+    wrappedCmd = wrappedCmd + shellQuote(cmd)
+    fullCmd = fullCmd + " -- "
+    fullCmd = fullCmd + wrappedCmd
+    return runRawCommand(fullCmd, workingDir, timeoutMs)
+
+fn findLinuxSandboxExe(): str =
+    let env = os.getEnv("CODEX_LINUX_SANDBOX")
+    if len(env) > 0 && os.fileExists(env):
+        return env
+    let pathEnv = os.getEnv("PATH")
+    if len(pathEnv) == 0:
+        return ""
+    var start: int32 = 0
+    var i: int32 = 0
+    while i <= len(pathEnv):
+        if i == len(pathEnv) || pathEnv[i] == ':':
+            var part: str = ""
+            if i > start:
+                part = __cheng_slice_string(pathEnv, start, i - 1, false)
+            if len(part) > 0:
+                let candidate = os.joinPath(part, "codex-linux-sandbox")
+                if os.fileExists(candidate):
+                    return candidate
+            start = i + 1
+        i = i + 1
+    return ""
+
+fn buildLinuxSandboxPolicyJson(sandboxMode: str, extraRoots: seq[str]): str =
+    let mode = normalizePolicy(trimLine(sandboxMode))
+    if mode == "read-only" || mode == "readonly":
+        return "{\"type\":\"read-only\"}"
+    if mode == "workspace-write" || mode == "workspacewrite":
+        var rootsJson: seq[str] = newSeq[str]()
+        var i: int32 = 0
+        while i < len(extraRoots):
+            let root = extraRoots[i]
+            if len(root) > 0:
+                seqAdd(rootsJson, jstrString(os.absolutePath(root)))
+            i = i + 1
+        var fields: seq[str] = newSeq[str]()
+        seqAdd(fields, jstrPair("type", jstrString("workspace-write")))
+        if len(rootsJson) > 0:
+            seqAdd(fields, jstrPair("writable_roots", jstrArray(rootsJson)))
+        seqAdd(fields, jstrPair("network_access", jstrBool(false)))
+        seqAdd(fields, jstrPair("exclude_tmpdir_env_var", jstrBool(false)))
+        seqAdd(fields, jstrPair("exclude_slash_tmp", jstrBool(false)))
+        return jstrObject(fields)
+    return "{\"type\":\"danger-full-access\"}"
+
+fn runLinuxSandbox(commandText: str, commandTokens: seq[str], workingDir: str, sandboxMode: str, extraRoots: seq[str], timeoutMs: int32): ToolResult =
+    let exe = findLinuxSandboxExe()
+    if len(exe) == 0:
+        return makeToolResult(false, "missing codex-linux-sandbox executable path", -1)
+    var cmdText: str = commandText
+    if len(cmdText) == 0:
+        cmdText = buildCommandTextFromTokens(commandTokens)
+    let policyJson = buildLinuxSandboxPolicyJson(sandboxMode, extraRoots)
+    var wrappedCmd = "/bin/sh -c "
+    wrappedCmd = wrappedCmd + shellQuote(cmdText)
+    var fullCmd = shellQuote(exe)
+    fullCmd = fullCmd + " --sandbox-policy-cwd "
+    fullCmd = fullCmd + shellQuote(workingDir)
+    fullCmd = fullCmd + " --sandbox-policy "
+    fullCmd = fullCmd + shellQuote(policyJson)
+    fullCmd = fullCmd + " -- "
+    fullCmd = fullCmd + wrappedCmd
+    return runRawCommand(fullCmd, workingDir, timeoutMs)
+
+fn runSandboxedCommand(commandText: str, commandTokens: seq[str], workingDir: str, sandboxMode: str, extraRoots: seq[str], timeoutMs: int32): ToolResult =
+    let mode = normalizePolicy(trimLine(sandboxMode))
+    let osKind = detectOsKind()
+    if osKind == "macos":
+        return runSeatbeltSandbox(commandText, commandTokens, workingDir, mode, extraRoots, timeoutMs)
+    if osKind == "linux":
+        return runLinuxSandbox(commandText, commandTokens, workingDir, mode, extraRoots, timeoutMs)
+    if osKind == "windows":
+        if mode == "danger-full-access" || mode == "external-sandbox" || len(mode) == 0:
+            return runRawCommand(commandText, workingDir, timeoutMs)
+        return makeToolResult(false, "windows sandbox not available in codex-cheng", -1)
+    return runRawCommand(commandText, workingDir, timeoutMs)
+
+fn isLikelySandboxDenied(output: str, exitCode: int32, sandboxed: bool): bool =
+    if ! sandboxed || exitCode == 0:
+        return false
+    let lower = lowerAscii(output)
+    if indexOfSubstr(lower, "operation not permitted", 0) >= 0:
+        return true
+    if indexOfSubstr(lower, "permission denied", 0) >= 0:
+        return true
+    if indexOfSubstr(lower, "read-only file system", 0) >= 0:
+        return true
+    if indexOfSubstr(lower, "seccomp", 0) >= 0:
+        return true
+    if indexOfSubstr(lower, "sandbox", 0) >= 0:
+        return true
+    if indexOfSubstr(lower, "landlock", 0) >= 0:
+        return true
+    if indexOfSubstr(lower, "failed to write file", 0) >= 0:
+        return true
+    if exitCode == 2 || exitCode == 126 || exitCode == 127:
+        return false
+    return false

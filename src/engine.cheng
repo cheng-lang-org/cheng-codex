@@ -1,0 +1,499 @@
+# Turn execution engine
+
+import system
+import std/os
+import seqs
+type
+    ToolKind = enum
+        tkNone
+        tkShell
+        tkPatch
+        tkMock
+        tkImage
+        tkCollab
+
+type
+    TurnResult =
+        ok: bool
+        tool: ToolKind
+        agentText: str
+        agentOutput: str
+        command: str
+        commandOutput: str
+        commandExit: int32
+        diff: str
+        mock: str
+        imagePath: str
+        webSearchQueries: seq[str]
+        pending: bool
+        pendingResponseId: str
+        pendingCallId: str
+        pendingToolName: str
+        pendingArguments: str
+        pendingInputItems: seq[str]
+        pendingModel: str
+        pendingInstructions: str
+    TurnContext =
+        instructions: str
+        model: str
+        userInstructions: str
+
+fn traceEngineLocal(msg: str) =
+    let enabled = normalizePolicy(trimLine(os.getEnv("CODEX_TRACE_ENGINE")))
+    if enabled == "1" || enabled == "true" || enabled == "yes":
+        printErr("[engine] " + msg)
+
+fn cloneTextEngine(value: str): str =
+    if value == nil:
+        return ""
+    var out = ""
+    var i: int32 = 0
+    while i < len(value):
+        let ch = value[i]
+        out = out + $ ch
+        i = i + 1
+    return out
+
+fn cloneSeqStrEngine(values: seq[str]): seq[str] =
+    var out: seq[str] = newSeq[str]()
+    if values == nil:
+        return out
+    var i: int32 = 0
+    while i < len(values):
+        seqAdd(out, cloneTextEngine(values[i]))
+        i = i + 1
+    return out
+
+fn cloneSeqShallowEngine(values: seq[str]): seq[str] =
+    var out: seq[str] = newSeq[str]()
+    if values == nil:
+        return out
+    var i: int32 = 0
+    while i < len(values):
+        seqAdd(out, values[i])
+        i = i + 1
+    return out
+
+fn normalizeSandboxModeLocal(value: str): str =
+    let normalized = normalizePolicy(trimLine(value))
+    if len(normalized) == 0:
+        return ""
+    if normalized == "read-only" || normalized == "readonly":
+        return "read-only"
+    if normalized == "workspace-write" || normalized == "workspacewrite":
+        return "workspace-write"
+    if normalized == "danger-full-access" || normalized == "dangerfullaccess":
+        return "danger-full-access"
+    return normalized
+
+fn approvalAllowsTool(policy: str): bool =
+    let normalized = normalizePolicy(trimLine(policy))
+    if len(normalized) == 0:
+        return true
+    if normalized == "never":
+        return true
+    if normalized == "on-failure":
+        return true
+    if normalized == "untrusted" || normalized == "unlesstrusted":
+        return false
+    if normalized == "on-request" || normalized == "onrequest":
+        return false
+    return true
+
+fn runToolCall(toolName: str, arguments: str, workDir: str, approvalPolicy: str): TurnResult =
+    var result: TurnResult = TurnResult(
+        ok: false,
+        tool: tkNone,
+        agentText: "",
+        agentOutput: "",
+        command: "",
+        commandOutput: "",
+        commandExit: -1,
+        diff: "",
+        mock: "",
+        imagePath: "",
+        webSearchQueries: newSeq[str](),
+        pending: false,
+        pendingResponseId: "",
+        pendingCallId: "",
+        pendingToolName: "",
+        pendingArguments: "",
+        pendingInputItems: newSeq[str](),
+        pendingModel: "",
+        pendingInstructions: ""
+    )
+    if toolName == "shell" || toolName == "shell_command":
+        let shellArgs = parseShellToolArgs(arguments)
+        var raw = shellArgs.commandText
+        if len(raw) == 0 && len(shellArgs.commandTokens) > 0:
+            raw = buildCommandTextFromTokens(shellArgs.commandTokens)
+        if len(raw) == 0:
+            result.ok = false
+            result.agentText = "missing shell command"
+            return result
+        # Avoid `let x = if ...: <str> else: <str>`: current compiler can mis-infer
+        # local string widths on arm64 and truncate pointers (SIGSEGV in strlen).
+        var sandboxPerms: str = "use_default"
+        if len(shellArgs.sandboxPermissions) > 0:
+            sandboxPerms = shellArgs.sandboxPermissions
+        var execCwd: str = workDir
+        if len(shellArgs.workdir) > 0:
+            execCwd = shellArgs.workdir
+        let policyNorm = normalizePolicy(trimLine(approvalPolicy))
+        if sandboxPermissionsRequiresEscalated(sandboxPerms) && policyNorm != "on-request" && policyNorm != "onrequest":
+            result.tool = tkShell
+            result.command = raw
+            result.ok = false
+            # Build incrementally to avoid deep temporary chains.
+            var msg: str = "approval policy is "
+            msg = msg + approvalPolicy
+            msg = msg + "; reject command — you should not ask for escalated permissions if the approval policy is "
+            msg = msg + approvalPolicy
+            result.agentText = msg
+            return result
+        var evalErr = ""
+        let sandboxModeRaw: str = readConfigValue("sandbox_mode")
+        var sandboxMode: str = "danger-full-access"
+        if len(sandboxModeRaw) > 0:
+            sandboxMode = normalizeSandboxModeLocal(sandboxModeRaw)
+        let requirement = evaluateExecPolicyRequirement(shellArgs.commandTokens, approvalPolicy, sandboxMode, sandboxPerms, evalErr)
+        if requirement.kind == execReqForbidden:
+            result.tool = tkShell
+            result.command = raw
+            result.ok = false
+            var reasonText: str = "execpolicy forbids this command"
+            if len(requirement.reason) > 0:
+                reasonText = requirement.reason
+            result.agentText = reasonText
+            return result
+        if requirement.kind == execReqNeedsApproval || ! approvalAllowsTool(approvalPolicy):
+            result.tool = tkShell
+            result.command = raw
+            result.ok = false
+            result.agentText = "approval required"
+            return result
+        let bypassSandbox = requirement.bypassSandbox || sandboxPermissionsRequiresEscalated(sandboxPerms)
+        let useLogin = if shellArgs.hasLogin: shellArgs.login else: true
+        let res = runShellCommand(raw, shellArgs.commandTokens, execCwd, sandboxMode, sandboxPerms, bypassSandbox, newSeq[str](), shellArgs.timeoutMs, useLogin)
+        result.tool = tkShell
+        result.command = raw
+        result.commandOutput = res.output
+        result.commandExit = res.exitCode
+        result.ok = res.ok
+        var toolText: str = "command failed"
+        if res.ok:
+            toolText = "command ok"
+        result.agentText = toolText
+        return result
+    if toolName == "apply_patch":
+        let patchText = jsonExtractString(arguments, "patch")
+        if len(patchText) == 0:
+            result.ok = false
+            result.agentText = "missing patch"
+            return result
+        if ! approvalAllowsTool(approvalPolicy):
+            result.tool = tkPatch
+            result.diff = patchText
+            result.ok = false
+            result.agentText = "approval required"
+            return result
+        let res = runPatchTool(patchText, workDir)
+        result.tool = tkPatch
+        result.diff = patchText
+        result.ok = res.ok
+        var toolText = res.output
+        if len(toolText) == 0:
+            if res.ok:
+                toolText = "patch applied"
+            else:
+                toolText = "patch failed"
+        result.agentText = toolText
+        return result
+    if toolName == "view_image":
+        let path = jsonExtractString(arguments, "path")
+        if len(path) == 0:
+            result.ok = false
+            result.agentText = "missing image path"
+            return result
+        if ! os.fileExists(path):
+            result.ok = false
+            result.agentText = "image file not found"
+            return result
+        result.tool = tkImage
+        result.imagePath = path
+        result.ok = true
+        result.agentText = "attached local image path"
+        return result
+    if toolName == "spawn_agent":
+        let toolRes = collabSpawnAgent(arguments, "", "", "", approvalPolicy, workDir)
+        result.tool = tkCollab
+        result.ok = toolRes.ok
+        result.agentText = toolRes.output
+        return result
+    if toolName == "send_input":
+        let toolRes = collabSendInput(arguments, "", "", "", approvalPolicy, workDir)
+        result.tool = tkCollab
+        result.ok = toolRes.ok
+        result.agentText = toolRes.output
+        return result
+    if toolName == "wait":
+        let toolRes = collabWaitAgents(arguments)
+        result.tool = tkCollab
+        result.ok = toolRes.ok
+        result.agentText = toolRes.output
+        return result
+    if toolName == "close_agent":
+        let toolRes = collabCloseAgent(arguments)
+        result.tool = tkCollab
+        result.ok = toolRes.ok
+        result.agentText = toolRes.output
+        return result
+    result.ok = false
+    result.agentText = "unsupported tool"
+    return result
+
+fn mergeInstructions(baseText: str, userText: str, developerText: str): str =
+    var out = baseText
+    if len(userText) > 0:
+        if len(out) > 0:
+            out = out + "\n\n"
+            out = out + userText
+        else:
+            out = "" + userText
+    if len(developerText) > 0:
+        if len(out) > 0:
+            out = out + "\n\n# Developer instructions\n"
+            out = out + developerText
+        else:
+            out = "" + developerText
+    return out
+
+fn continueTurn(inputItems: seq[str], previousResponseId: str, workDir: str, approvalPolicy: str, model: str, instructions: str, outputSchemaJson: str, useTools: bool, pauseOnTool: bool, disableWebSearch: bool, disableViewImage: bool): TurnResult =
+    traceEngineLocal("continueTurn.begin")
+    var result: TurnResult = TurnResult(
+        ok: true,
+        tool: tkNone,
+        agentText: "",
+        agentOutput: "",
+        command: "",
+        commandOutput: "",
+        commandExit: -1,
+        diff: "",
+        mock: "",
+        imagePath: "",
+        webSearchQueries: newSeq[str](),
+        pending: false,
+        pendingResponseId: "",
+        pendingCallId: "",
+        pendingToolName: "",
+        pendingArguments: "",
+        pendingInputItems: newSeq[str](),
+        pendingModel: "",
+        pendingInstructions: ""
+    )
+    var workingItems: seq[str] = newSeq[str]()
+    var idx: int32 = 0
+    while idx < len(inputItems):
+        seqAdd(workingItems, inputItems[idx])
+        idx = idx + 1
+    var loopCount: int32 = 0
+    var lastResponseId: str = previousResponseId
+    var webQueries: seq[str] = newSeq[str]()
+    while loopCount < 4:
+        traceEngineLocal("continueTurn.before.callResponses")
+        let response = callResponsesApi(model, instructions, workingItems, useTools, outputSchemaJson, disableWebSearch, disableViewImage, lastResponseId)
+        traceEngineLocal("continueTurn.after.callResponses")
+        traceEngineLocal("continueTurn.response.ok.check")
+        if ! response.ok:
+            result.ok = false
+            result.agentText = "model error"
+            if len(response.error) > 0:
+                result.agentText = response.error
+            result.agentOutput = cloneTextEngine(response.outputText)
+            result.webSearchQueries = cloneSeqStrEngine(webQueries)
+            return result
+        traceEngineLocal("continueTurn.response.ok")
+        if ! disableWebSearch && len(response.webSearchQueries) > 0:
+            var w: int32 = 0
+            while w < len(response.webSearchQueries):
+                seqAdd(webQueries, response.webSearchQueries[w])
+                w = w + 1
+        traceEngineLocal("continueTurn.after.webSearch")
+        if len(response.outputText) > 0:
+            let outText = cloneTextEngine(response.outputText)
+            result.agentOutput = outText
+            seqAdd(workingItems, buildAssistantMessage(outText))
+        traceEngineLocal("continueTurn.after.outputText")
+        traceEngineLocal("continueTurn.before.hasToolCheck")
+        if ! response.hasToolCall || ! useTools:
+            result.ok = true
+            if len(response.outputText) > 0:
+                result.agentText = cloneTextEngine(response.outputText)
+            else:
+                result.agentText = "done"
+            result.webSearchQueries = cloneSeqStrEngine(webQueries)
+            return result
+        traceEngineLocal("continueTurn.hasToolCall")
+        # Include the function_call item in input history so backends that
+        # validate call_id linkage can match it when we send function_call_output.
+        if len(response.toolCall.callId) > 0:
+            seqAdd(workingItems, buildToolCall(response.toolCall.callId, response.toolCall.name, response.toolCall.arguments))
+        if pauseOnTool && useTools:
+            traceEngineLocal("continueTurn.pauseOnTool.begin")
+            result.pending = true
+            result.pendingResponseId = cloneTextEngine(response.responseId)
+            traceEngineLocal("continueTurn.pauseOnTool.clone.callId")
+            result.pendingCallId = cloneTextEngine(response.toolCall.callId)
+            traceEngineLocal("continueTurn.pauseOnTool.clone.name")
+            result.pendingToolName = cloneTextEngine(response.toolCall.name)
+            traceEngineLocal("continueTurn.pauseOnTool.clone.args")
+            result.pendingArguments = cloneTextEngine(response.toolCall.arguments)
+            traceEngineLocal("continueTurn.pauseOnTool.clone.items")
+            result.pendingInputItems = cloneSeqShallowEngine(workingItems)
+            traceEngineLocal("continueTurn.pauseOnTool.after.items")
+            # instructionTextForRequest currently ignores instructions; keep these empty to avoid
+            # depending on string lifetime across the model call boundary.
+            result.pendingModel = ""
+            result.pendingInstructions = ""
+            result.webSearchQueries = cloneSeqStrEngine(webQueries)
+            traceEngineLocal("continueTurn.pauseOnTool.return")
+            return result
+        let toolResult = runToolCall(response.toolCall.name, response.toolCall.arguments, workDir, approvalPolicy)
+        result.tool = toolResult.tool
+        result.command = toolResult.command
+        result.commandOutput = toolResult.commandOutput
+        result.commandExit = toolResult.commandExit
+        result.diff = toolResult.diff
+        result.mock = toolResult.mock
+        result.agentText = toolResult.agentText
+        result.ok = toolResult.ok
+        var toolOutputText: str = toolResult.agentText
+        if toolResult.tool == tkShell:
+            toolOutputText = toolResult.commandOutput
+        seqAdd(workingItems, buildToolOutput(response.toolCall.callId, toolOutputText, toolResult.ok))
+        loopCount = loopCount + 1
+        lastResponseId = response.responseId
+        lastResponseId
+    result.ok = false
+    result.agentText = "tool loop exceeded"
+    result.webSearchQueries = cloneSeqStrEngine(webQueries)
+    return result
+
+fn buildTurnInstructions(mode: str, baseInstructions: str, developerInstructions: str, workDir: str): TurnContext =
+    traceEngineLocal("buildTurnInstructions.begin")
+    traceEngineLocal("buildTurnInstructions.baseInstructions.check")
+    var instructions: str = ""
+    if len(baseInstructions) > 0:
+        instructions = baseInstructions
+    else:
+        instructions = loadBaseInstructions()
+    traceEngineLocal("buildTurnInstructions.baseInstructions.ready")
+    var model = loadModel()
+    traceEngineLocal("buildTurnInstructions.model.ready")
+    if mode == "review":
+        let reviewInst = loadReviewInstructions()
+        if len(reviewInst) > 0:
+            instructions = reviewInst
+        model = loadReviewModel()
+        traceEngineLocal("buildTurnInstructions.review.override")
+    traceEngineLocal("buildTurnInstructions.before.userInstructions")
+    let userText = buildUserInstructionsMessage(workDir)
+    traceEngineLocal("buildTurnInstructions.after.userInstructions")
+    instructions = mergeInstructions(instructions, "", developerInstructions)
+    traceEngineLocal("buildTurnInstructions.end")
+    return TurnContext(instructions: instructions, model: model, userInstructions: userText)
+
+fn runTurnWithItems(inputItems: seq[str], contextItems: seq[str], workDir: str, mode: str, approvalPolicy: str, baseInstructions: str, developerInstructions: str, outputSchemaJson: str, pauseOnTool: bool, disableWebSearch: bool, disableViewImage: bool): TurnResult =
+    traceEngineLocal("runTurnWithItems.begin")
+    var result: TurnResult = TurnResult(
+        ok: true,
+        tool: tkNone,
+        agentText: "",
+        agentOutput: "",
+        command: "",
+        commandOutput: "",
+        commandExit: -1,
+        diff: "",
+        mock: "",
+        imagePath: "",
+        webSearchQueries: newSeq[str](),
+        pending: false,
+        pendingResponseId: "",
+        pendingCallId: "",
+        pendingToolName: "",
+        pendingArguments: "",
+        pendingInputItems: newSeq[str](),
+        pendingModel: "",
+        pendingInstructions: ""
+    )
+    if len(inputItems) == 0:
+        result.ok = false
+        result.agentText = "empty input"
+        return result
+    traceEngineLocal("runTurnWithItems.before.buildTurnInstructions")
+    let context = buildTurnInstructions(mode, baseInstructions, developerInstructions, workDir)
+    traceEngineLocal("runTurnWithItems.after.buildTurnInstructions")
+    var items: seq[str] = newSeq[str]()
+    var idx: int32 = 0
+    while idx < len(contextItems):
+        seqAdd(items, contextItems[idx])
+        idx = idx + 1
+    if len(context.userInstructions) > 0:
+        seqAdd(items, buildInputMessage("user", context.userInstructions))
+    var j: int32 = 0
+    while j < len(inputItems):
+        seqAdd(items, inputItems[j])
+        j = j + 1
+    let useTools = true
+    let pause = if useTools: pauseOnTool else: false
+    traceEngineLocal("runTurnWithItems.before.continueTurn")
+    return continueTurn(items, "", workDir, approvalPolicy, context.model, context.instructions, outputSchemaJson, useTools, pause, disableWebSearch, disableViewImage)
+
+fn runTurn(prompt: str, contextItems: seq[str], workDir: str, mode: str, approvalPolicy: str, baseInstructions: str, developerInstructions: str, outputSchemaJson: str, pauseOnTool: bool, disableWebSearch: bool, disableViewImage: bool): TurnResult =
+    traceEngineLocal("runTurn.begin")
+    var result: TurnResult = TurnResult(
+        ok: true,
+        tool: tkNone,
+        agentText: "",
+        agentOutput: "",
+        command: "",
+        commandOutput: "",
+        commandExit: -1,
+        diff: "",
+        mock: "",
+        imagePath: "",
+        webSearchQueries: newSeq[str](),
+        pending: false,
+        pendingResponseId: "",
+        pendingCallId: "",
+        pendingToolName: "",
+        pendingArguments: "",
+        pendingInputItems: newSeq[str](),
+        pendingModel: "",
+        pendingInstructions: ""
+    )
+    let trimmed = trimLine(prompt)
+    if len(trimmed) == 0:
+        result.ok = false
+        result.agentText = "empty prompt"
+        return result
+    traceEngineLocal("runTurn.before.buildInputMessage")
+    var inputItems: seq[str] = newSeq[str]()
+    seqAdd(inputItems, buildInputMessage("user", trimmed))
+    traceEngineLocal("runTurn.after.buildInputMessage")
+    return runTurnWithItems(inputItems, contextItems, workDir, mode, approvalPolicy, baseInstructions, developerInstructions, outputSchemaJson, pauseOnTool, disableWebSearch, disableViewImage)
+
+fn resumeTurnWithTool(pendingInputItems: seq[str], previousResponseId: str, callId: str, toolOutputText: str, toolSuccess: bool, workDir: str, approvalPolicy: str, model: str, instructions: str, outputSchemaJson: str, pauseOnTool: bool, disableWebSearch: bool, disableViewImage: bool): TurnResult =
+    var inputItems: seq[str] = newSeq[str]()
+    var idx: int32 = 0
+    while idx < len(pendingInputItems):
+        seqAdd(inputItems, pendingInputItems[idx])
+        idx = idx + 1
+    seqAdd(inputItems, buildToolOutput(callId, toolOutputText, toolSuccess))
+    return continueTurn(inputItems, previousResponseId, workDir, approvalPolicy, model, instructions, outputSchemaJson, true, pauseOnTool, disableWebSearch, disableViewImage)
+
+fn buildPreview(text: str): str =
+    let trimmed = trimLine(text)
+    if len(trimmed) == 0:
+        return ""
+    return shorten(trimmed, 80)

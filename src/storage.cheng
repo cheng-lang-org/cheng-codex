@@ -1,0 +1,867 @@
+# Thread storage for codex-cheng
+
+import system
+import std/os
+import std/times
+import seqs
+
+fn ord(ch: char): int32 =
+    return int32(ch)
+
+type
+    ThreadInfo =
+        id: str
+        preview: str
+        createdAt: int32
+        cwd: str
+
+var nextThreadId: int32 = 1
+var nextTurnId: int32 = 1
+var nextStorageItemId: int32 = 1
+var storageWritesEnabled: bool = true
+
+fn setStorageWritesEnabled(enabled: bool) =
+    storageWritesEnabled = enabled
+
+fn traceStorageLocal(msg: str) =
+    let enabled = normalizePolicy(trimLine(os.getEnv("CODEX_TRACE_STORAGE")))
+    if enabled == "1" || enabled == "true" || enabled == "yes":
+        printErr("[storage] " + msg)
+
+fn ensureCodexDirs(): str =
+    if ! storageWritesEnabled:
+        return ""
+    let home = codexHomeDir()
+    if len(home) == 0:
+        return ""
+    if ! os.dirExists(home):
+        os.createDir(home)
+    let threads = codexThreadsDir()
+    if len(threads) > 0 && ! os.dirExists(threads):
+        os.createDir(threads)
+    return threads
+
+fn newThreadId(): str =
+    let idx: int32 = nextThreadId
+    nextThreadId = nextThreadId + 1
+    # Build incrementally to avoid deep temporary chains (can SIGSEGV).
+    var out = "thread-"
+    out = out + intToStr(idx)
+    out = out + "-"
+    out = out + intToStr(int32(getTime().unix % 1000000))
+    return out
+
+fn newTurnId(): str =
+    let idx: int32 = nextTurnId
+    nextTurnId = nextTurnId + 1
+    # Build incrementally to avoid deep temporary chains (can SIGSEGV).
+    var out = "turn-"
+    out = out + intToStr(idx)
+    out = out + "-"
+    out = out + intToStr(int32(getTime().unix % 1000000))
+    return out
+
+fn newItemId(): str =
+    let idx: int32 = nextStorageItemId
+    nextStorageItemId = nextStorageItemId + 1
+    # Build incrementally to avoid deep temporary chains (can SIGSEGV).
+    var out = "item-"
+    out = out + intToStr(idx)
+    out = out + "-"
+    out = out + intToStr(int32(getTime().unix % 1000000))
+    return out
+
+fn inputTokenText(text: str): str =
+    return "text:" + text
+
+fn inputTokenLocalImage(path: str): str =
+    return "local_image:" + path
+
+fn inputTokenImageUrl(url: str): str =
+    return "image_url:" + url
+
+fn inputTokenSkill(name: str, path: str): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("name", jstrString(name)))
+    seqAdd(fields, jstrPair("path", jstrString(path)))
+    return "skill:" + jstrObject(fields)
+
+fn inputTokensHasText(tokens: seq[str]): bool =
+    var idx: int32 = 0
+    while idx < len(tokens):
+        if hasPrefix(tokens[idx], "text:"):
+            return true
+        idx = idx + 1
+    return false
+
+fn inputTokensToText(tokens: seq[str]): str =
+    var out = ""
+    var idx: int32 = 0
+    while idx < len(tokens):
+        let token = tokens[idx]
+        if hasPrefix(token, "text:"):
+            let text = dropPrefix(token, "text:")
+            if len(out) == 0:
+                out = text
+            else:
+                out = out + "\n" + text
+        idx = idx + 1
+    return out
+
+fn inputTokensSummary(tokens: seq[str]): str =
+    let text = inputTokensToText(tokens)
+    if len(text) > 0:
+        return text
+    var idx: int32 = 0
+    while idx < len(tokens):
+        let token = tokens[idx]
+        if hasPrefix(token, "local_image:"):
+            return "local image: " + dropPrefix(token, "local_image:")
+        if hasPrefix(token, "image_url:"):
+            return "image: " + dropPrefix(token, "image_url:")
+        if hasPrefix(token, "skill:"):
+            let obj = dropPrefix(token, "skill:")
+            let name = jsonExtractString(obj, "name")
+            if len(name) > 0:
+                return "skill: " + name
+        idx = idx + 1
+    return ""
+
+fn inputTokensToMessages(tokens: seq[str], cwd: str): seq[str] =
+    var outVal: seq[str] = newSeq[str]()
+    var idx: int32 = 0
+    while idx < len(tokens):
+        let token = tokens[idx]
+        if hasPrefix(token, "text:"):
+            let text = dropPrefix(token, "text:")
+            let msg = buildInputMessage("user", text)
+            if len(msg) > 0:
+                seqAdd(outVal, msg)
+        elif hasPrefix(token, "local_image:"):
+            let path = dropPrefix(token, "local_image:")
+            let msg = buildInputImageMessage(path)
+            if len(msg) > 0:
+                seqAdd(outVal, msg)
+        elif hasPrefix(token, "image_url:"):
+            let url = dropPrefix(token, "image_url:")
+            let msg = buildInputImageUrlMessage(url)
+            if len(msg) > 0:
+                seqAdd(outVal, msg)
+        elif hasPrefix(token, "skill:"):
+            let obj = dropPrefix(token, "skill:")
+            let name = jsonExtractString(obj, "name")
+            let path = jsonExtractString(obj, "path")
+            let msg = loadSkillInstructionMessage(cwd, name, path)
+            if len(msg) > 0:
+                seqAdd(outVal, msg)
+        idx = idx + 1
+    return outVal
+
+fn inputTokensToHistoryLines(tokens: seq[str]): seq[str] =
+    var outVal: seq[str] = newSeq[str]()
+    var idx: int32 = 0
+    while idx < len(tokens):
+        let token = tokens[idx]
+        if hasPrefix(token, "text:"):
+            seqAdd(outVal, "you: " + dropPrefix(token, "text:"))
+        elif hasPrefix(token, "local_image:"):
+            seqAdd(outVal, "you: [image] " + dropPrefix(token, "local_image:"))
+        elif hasPrefix(token, "image_url:"):
+            seqAdd(outVal, "you: [image] " + dropPrefix(token, "image_url:"))
+        elif hasPrefix(token, "skill:"):
+            let obj = dropPrefix(token, "skill:")
+            let name = jsonExtractString(obj, "name")
+            if len(name) > 0:
+                seqAdd(outVal, "you: [skill] " + name)
+        idx = idx + 1
+    return outVal
+
+fn threadFilePath(threadId: str): str =
+    return os.joinPath(codexThreadsDir(), threadId + ".jsonl")
+
+fn buildThreadHeaderJson(threadId: str, preview: str, createdAt: int32, cwd: str, source: str): str =
+    traceStorageLocal("buildThreadHeaderJson.begin")
+    var out = "{\"id\":" + jstrString(threadId)
+    traceStorageLocal("buildThreadHeaderJson.id")
+    if len(preview) > 0:
+        out = out + ",\"preview\":" + jstrString(preview)
+        traceStorageLocal("buildThreadHeaderJson.preview")
+    out = out + ",\"createdAt\":" + intToStr(createdAt)
+    traceStorageLocal("buildThreadHeaderJson.createdAt")
+    if len(cwd) > 0:
+        out = out + ",\"cwd\":" + jstrString(cwd)
+    if len(source) > 0:
+        out = out + ",\"source\":" + jstrString(source)
+        traceStorageLocal("buildThreadHeaderJson.source")
+    traceStorageLocal("buildThreadHeaderJson.end")
+    return out + "}"
+
+fn normalizeThreadCwd(cwd: str): str =
+    if cwd == nil:
+        return currentDirSafe()
+    cwd
+    return currentDirSafe()
+
+fn threadCreatedAtNow(): int32 =
+    var nowTs = getTime().unix
+    if nowTs <= 0:
+        nowTs = times.toUnix(times.now())
+    if nowTs <= 0:
+        let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+        let res = os.execCmdEx("date +%s", opts, currentDirSafe())
+        if res.exitCode == 0:
+            let raw = trimLine(res.output)
+            var parsed: int64 = 0
+            var ok = false
+            var idx: int32 = 0
+            while idx < len(raw):
+                let ch = raw[idx]
+                if ch < '0' || ch > '9':
+                    ok = false
+                    idx = len(raw)
+                    break
+                parsed = parsed * 10 + int64(ord(ch) - ord('0'))
+                ok = true
+                idx = idx + 1
+            if ok:
+                nowTs = parsed
+    if nowTs <= 0:
+        return 0
+    let maxI32 = int64(2147483647)
+    if nowTs > maxI32:
+        return int32(maxI32)
+    return int32(nowTs)
+
+fn appendThreadEvent(threadId: str, eventJson: str) =
+    if ! storageWritesEnabled:
+        return
+    let threadsDir = ensureCodexDirs()
+    if len(threadsDir) == 0:
+        return
+    let path = threadFilePath(threadId)
+    if len(path) == 0:
+        return
+    var content = ""
+    if os.fileExists(path):
+        content = os.readFile(path)
+        if content == nil:
+            content = ""
+    if len(eventJson) > 0:
+        if len(content) > 0 && content[len(content) - 1] != '\n':
+            content = content + "\n"
+        content = content + eventJson + "\n"
+    os.writeFile(path, content)
+
+fn createThread(preview: str, cwd: str, source: str): str =
+    traceStorageLocal("createThread.begin")
+    let threadId = newThreadId()
+    traceStorageLocal("createThread.id=" + threadId)
+    let createdAt: int32 = threadCreatedAtNow()
+    traceStorageLocal("createThread.createdAt=" + intToStr(createdAt))
+    let threadCwd = normalizeThreadCwd(cwd)
+    let headerJson = buildThreadHeaderJson(threadId, preview, createdAt, threadCwd, source)
+    traceStorageLocal("createThread.header")
+    appendThreadEvent(threadId, headerJson)
+    traceStorageLocal("createThread.done")
+    return threadId
+
+fn ensureThread(threadId: str, preview: str, cwd: str, source: str): str =
+    if len(threadId) == 0:
+        return createThread(preview, cwd, source)
+    let threadsDir = ensureCodexDirs()
+    if len(threadsDir) == 0:
+        return threadId
+    let path = threadFilePath(threadId)
+    if os.fileExists(path):
+        return threadId
+    let createdAt: int32 = threadCreatedAtNow()
+    let threadCwd = normalizeThreadCwd(cwd)
+    let headerJson = buildThreadHeaderJson(threadId, preview, createdAt, threadCwd, source)
+    appendThreadEvent(threadId, headerJson)
+    return threadId
+
+fn updateThreadPreview(threadId: str, preview: str): bool =
+    if len(threadId) == 0:
+        return false
+    if ! storageWritesEnabled:
+        return false
+    let path = threadFilePath(threadId)
+    if len(path) == 0 || ! os.fileExists(path):
+        return false
+    let content: str = os.readFile(path)
+    if content == nil:
+        return false
+    let header = readThreadHeader(threadId)
+    if len(header) == 0:
+        return false
+    let createdAt: int32 = jsonExtractInt(header, "createdAt", threadCreatedAtNow())
+    let cwd = jsonExtractString(header, "cwd")
+    let source = jsonExtractString(header, "source")
+    let newHeader = buildThreadHeaderJson(threadId, preview, createdAt, cwd, source)
+    # Replace only the first line to preserve the rest of the jsonl file as-is.
+    var nl: int32 = -1
+    var i: int32 = 0
+    while i < len(content):
+        if content[i] == '\n':
+            nl = i
+            break
+        i = i + 1
+    if nl < 0:
+        os.writeFile(path, newHeader + "\n")
+        return true
+    var suffix = ""
+    if nl + 1 <= len(content) - 1:
+        suffix = "" + __cheng_slice_string(content, nl + 1, len(content) - 1, false)
+    os.writeFile(path, newHeader + "\n" + suffix)
+    return true
+
+fn readThreadHeader(threadId: str): str =
+    if len(threadId) == 0:
+        return ""
+    let path: str = threadFilePath(threadId)
+    if len(path) == 0 || ! os.fileExists(path):
+        return ""
+    # Type annotations are important: current compiler can mis-infer locals and
+    # dispatch `len()` to the wrong overload (e.g. treating seq as str), which
+    # can SIGSEGV in strlen on arm64.
+    let content: str = os.readFile(path)
+    if content == nil:
+        return ""
+    if len(content) == 0:
+        return ""
+    let lines: seq[str] = splitLinesSimple(content)
+    if len(lines) == 0:
+        return ""
+    return argAt(lines, 0)
+
+fn threadCwd(threadId: str): str =
+    let header: str = readThreadHeader(threadId)
+    if len(header) == 0:
+        return ""
+    return jsonExtractString(header, "cwd")
+
+fn appendTurnEvent(threadId: str, input: str, inputItems: seq[str], agentPrefix: str, agentOutput: str, command: str, commandOutput: str, commandExit: int32, diff: str, mock: str) =
+    if len(threadId) == 0:
+        return
+    var pairs: seq[str] = newSeq[str]()
+    seqAdd(pairs, jstrPair("type", jstrString("turn")))
+    if len(input) > 0:
+        seqAdd(pairs, jstrPair("input", jstrString(input)))
+    if len(inputItems) > 0:
+        var itemJson: seq[str] = newSeq[str]()
+        var idx: int32 = 0
+        while idx < len(inputItems):
+            seqAdd(itemJson, jstrString(inputItems[idx]))
+            idx = idx + 1
+        seqAdd(pairs, jstrPair("inputItems", jstrArray(itemJson)))
+    if len(agentPrefix) > 0:
+        seqAdd(pairs, jstrPair("agentPrefix", jstrString(agentPrefix)))
+    if len(agentOutput) > 0:
+        seqAdd(pairs, jstrPair("agentOutput", jstrString(agentOutput)))
+    if len(command) > 0:
+        seqAdd(pairs, jstrPair("command", jstrString(command)))
+    if len(commandOutput) > 0:
+        seqAdd(pairs, jstrPair("commandOutput", jstrString(commandOutput)))
+    if commandExit >= 0:
+        seqAdd(pairs, jstrPair("commandExit", intToStr(commandExit)))
+    if len(diff) > 0:
+        seqAdd(pairs, jstrPair("diff", jstrString(diff)))
+    if len(mock) > 0:
+        seqAdd(pairs, jstrPair("mock", jstrString(mock)))
+    let eventJson = jstrObject(pairs)
+    appendThreadEvent(threadId, eventJson)
+
+fn appendToolEvent(threadId: str, toolName: str, command: str, commandOutput: str, commandExit: int32, diff: str, toolOutput: str, ok: bool) =
+    if len(threadId) == 0:
+        return
+    var pairs: seq[str] = newSeq[str]()
+    seqAdd(pairs, jstrPair("type", jstrString("tool")))
+    if len(toolName) > 0:
+        seqAdd(pairs, jstrPair("tool", jstrString(toolName)))
+    if len(command) > 0:
+        seqAdd(pairs, jstrPair("command", jstrString(command)))
+    if len(commandOutput) > 0:
+        seqAdd(pairs, jstrPair("commandOutput", jstrString(commandOutput)))
+    if commandExit >= 0:
+        seqAdd(pairs, jstrPair("commandExit", intToStr(commandExit)))
+    if len(diff) > 0:
+        seqAdd(pairs, jstrPair("diff", jstrString(diff)))
+    if len(toolOutput) > 0:
+        seqAdd(pairs, jstrPair("output", jstrString(toolOutput)))
+    seqAdd(pairs, jstrPair("ok", jstrBool(ok)))
+    let eventJson = jstrObject(pairs)
+    appendThreadEvent(threadId, eventJson)
+
+fn buildUserInputFromToken(token: str): str =
+    if hasPrefix(token, "text:"):
+        return jstrObject(seqStr2(
+            jstrPair("type", jstrString("text")),
+            jstrPair("text", jstrString(dropPrefix(token, "text:")))
+        ))
+    if hasPrefix(token, "local_image:"):
+        return jstrObject(seqStr2(
+            jstrPair("type", jstrString("localImage")),
+            jstrPair("path", jstrString(dropPrefix(token, "local_image:")))
+        ))
+    if hasPrefix(token, "image_url:"):
+        return jstrObject(seqStr2(
+            jstrPair("type", jstrString("image")),
+            jstrPair("url", jstrString(dropPrefix(token, "image_url:")))
+        ))
+    if hasPrefix(token, "skill:"):
+        let obj = dropPrefix(token, "skill:")
+        let name = jsonExtractString(obj, "name")
+        let path = jsonExtractString(obj, "path")
+        if len(name) > 0 && len(path) > 0:
+            return jstrObject(seqStr3(
+                jstrPair("type", jstrString("skill")),
+                jstrPair("name", jstrString(name)),
+                jstrPair("path", jstrString(path))
+            ))
+    return ""
+
+fn buildThreadItemUserMessage(itemId: str, content: seq[str]): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("type", jstrString("userMessage")))
+    seqAdd(fields, jstrPair("id", jstrString(itemId)))
+    seqAdd(fields, jstrPair("content", jstrArray(content)))
+    return jstrObject(fields)
+
+fn buildThreadItemAgentMessage(itemId: str, text: str): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("type", jstrString("agentMessage")))
+    seqAdd(fields, jstrPair("id", jstrString(itemId)))
+    seqAdd(fields, jstrPair("text", jstrString(text)))
+    return jstrObject(fields)
+
+fn buildThreadTurn(turnId: str, items: seq[str], status: str): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("id", jstrString(turnId)))
+    seqAdd(fields, jstrPair("items", jstrArray(items)))
+    seqAdd(fields, jstrPair("status", jstrString(status)))
+    seqAdd(fields, jstrPair("error", jstrNull()))
+    return jstrObject(fields)
+
+fn threadTurns(threadId: str): seq[str] =
+    var outVal: seq[str] = newSeq[str]()
+    if len(threadId) == 0:
+        return outVal
+    let path = threadFilePath(threadId)
+    if len(path) == 0 || ! os.fileExists(path):
+        return outVal
+    let content = os.readFile(path)
+    if len(content) == 0:
+        return outVal
+    let lines = splitLinesSimple(content)
+    var turnIdx: int32 = 0
+    var idx: int32 = 1
+    while idx < len(lines):
+        let line = lines[idx]
+        if jsonExtractString(line, "type") == "turn":
+            var tokens = jsonExtractStringArray(line, "inputItems")
+            if len(tokens) == 0:
+                let inputText = jsonExtractString(line, "input")
+                if len(inputText) > 0:
+                    tokens = seqStr1(inputTokenText(inputText))
+            var inputs: seq[str] = newSeq[str]()
+            var ti: int32 = 0
+            while ti < len(tokens):
+                let inputJson = buildUserInputFromToken(tokens[ti])
+                if len(inputJson) > 0:
+                    seqAdd(inputs, inputJson)
+                ti = ti + 1
+            var items: seq[str] = newSeq[str]()
+            let turnId = "turn-" + intToStr(turnIdx + 1)
+            if len(inputs) > 0:
+                seqAdd(items, buildThreadItemUserMessage(turnId + "-user", inputs))
+            let agentOutput = jsonExtractString(line, "agentOutput")
+            if len(agentOutput) > 0:
+                seqAdd(items, buildThreadItemAgentMessage(turnId + "-agent", agentOutput))
+            seqAdd(outVal, buildThreadTurn(turnId, items, "completed"))
+            turnIdx = turnIdx + 1
+        idx = idx + 1
+    return outVal
+
+fn rollbackThreadTurns(threadId: str, numTurns: int32): bool =
+    if len(threadId) == 0 || numTurns <= 0:
+        return false
+    let path = threadFilePath(threadId)
+    if len(path) == 0 || ! os.fileExists(path):
+        return false
+    let content = os.readFile(path)
+    if len(content) == 0:
+        return true
+    let lines = splitLinesSimple(content)
+    if len(lines) <= 1:
+        return true
+    var turnIdxs: seq[int32] = newSeq[int32]()
+    var idx: int32 = 1
+    while idx < len(lines):
+        if jsonExtractString(lines[idx], "type") == "turn":
+            seqAdd(turnIdxs, idx)
+        idx = idx + 1
+    if len(turnIdxs) == 0:
+        return true
+    let total = len(turnIdxs)
+    var keepIdx = 0
+    if numTurns >= total:
+        keepIdx = 0
+    else:
+        keepIdx = turnIdxs[total - numTurns - 1]
+    var out = ""
+    var i: int32 = 0
+    while i <= keepIdx && i < len(lines):
+        if len(out) > 0:
+            out = out + "\n"
+        out = out + lines[i]
+        i = i + 1
+    if len(out) > 0:
+        out = out + "\n"
+    os.writeFile(path, out)
+    return true
+
+fn forkThread(threadId: str, preview: str, cwd: str, source: str): str =
+    if len(threadId) == 0:
+        return ""
+    let sourcePath = threadFilePath(threadId)
+    if len(sourcePath) == 0 || ! os.fileExists(sourcePath):
+        return ""
+    let content: str = os.readFile(sourcePath)
+    let lines: seq[str] = splitLinesSimple(content)
+    var header = ""
+    if len(lines) > 0:
+        header = argAt(lines, 0)
+    var finalPreview = preview
+    if len(finalPreview) == 0 && len(header) > 0:
+        finalPreview = jsonExtractString(header, "preview")
+    var finalCwd = cwd
+    if len(finalCwd) == 0 && len(header) > 0:
+        finalCwd = jsonExtractString(header, "cwd")
+    var finalSource = source
+    if len(finalSource) == 0 && len(header) > 0:
+        finalSource = jsonExtractString(header, "source")
+    let newId = newThreadId()
+    let createdAt: int32 = threadCreatedAtNow()
+    let headerJson = buildThreadHeaderJson(newId, finalPreview, createdAt, normalizeThreadCwd(finalCwd), finalSource)
+    var out = headerJson
+    var idx: int32 = 1
+    while idx < len(lines):
+        out = out + "\n"
+        out = out + argAt(lines, idx)
+        idx = idx + 1
+    out = out + "\n"
+    let threadsDir = ensureCodexDirs()
+    if len(threadsDir) == 0:
+        return ""
+    let newPath = threadFilePath(newId)
+    os.writeFile(newPath, out)
+    return newId
+
+fn threadLineFromFile(path: str): str =
+    if ! os.fileExists(path):
+        return ""
+    let content: str = os.readFile(path)
+    if len(content) == 0:
+        return ""
+    let lines: seq[str] = splitLinesSimple(content)
+    if len(lines) == 0:
+        return ""
+    let first = argAt(lines, 0)
+    var threadId = jsonExtractString(first, "id")
+    if len(threadId) == 0:
+        return ""
+    let preview = jsonExtractString(first, "preview")
+    let createdAt = jsonExtractInt(first, "createdAt", 0)
+    var line = threadId
+    if createdAt > 0:
+        line = line + " | " + intToStr(createdAt)
+    if len(preview) > 0:
+        line = line + " | " + preview
+    return line
+
+fn threadInfoFromFile(path: str): ThreadInfo =
+    var info: ThreadInfo = ThreadInfo(id: "", preview: "", createdAt: 0, cwd: "")
+    if ! os.fileExists(path):
+        return info
+    let content: str = os.readFile(path)
+    if len(content) == 0:
+        return info
+    let lines: seq[str] = splitLinesSimple(content)
+    if len(lines) == 0:
+        return info
+    let first = argAt(lines, 0)
+    let threadId = jsonExtractString(first, "id")
+    if len(threadId) == 0:
+        return info
+    info.id = threadId
+    info.preview = jsonExtractString(first, "preview")
+    info.createdAt = jsonExtractInt(first, "createdAt", 0)
+    info.cwd = jsonExtractString(first, "cwd")
+    return info
+
+fn normalizePathForMatch(path: str): str =
+    if path == nil || len(path) == 0:
+        return ""
+    var stop = len(path) - 1
+    while stop >= 0:
+        let ch = path[stop]
+        if ch != '/' && ch != '\\':
+            break
+        stop = stop - 1
+    if stop < 0:
+        return ""
+    if stop == len(path) - 1:
+        return path
+    return __cheng_slice_string(path, 0, stop, false)
+
+fn pathsMatchLocal(a: str, b: str): bool =
+    let na = normalizePathForMatch(a)
+    let nb = normalizePathForMatch(b)
+    if len(na) == 0 || len(nb) == 0:
+        return false
+    return na == nb
+
+fn sortThreadInfosByCreatedAtDesc(infos: var seq[ThreadInfo]) =
+    var i: int32 = 0
+    while i < len(infos):
+        var j: int32 = i + 1
+        while j < len(infos):
+            if infos[j].createdAt > infos[i].createdAt:
+                let tmp = infos[i]
+                infos[i] = infos[j]
+                infos[j] = tmp
+            j = j + 1
+        i = i + 1
+
+fn listThreadInfos(filterCwd: str, showAll: bool): seq[ThreadInfo] =
+    traceStorageLocal("listThreadInfos.begin")
+    var outVal: seq[ThreadInfo] = newSeq[ThreadInfo]()
+    let dir = codexThreadsDir()
+    traceStorageLocal("listThreadInfos.dir=" + dir)
+    if len(dir) == 0 || ! os.dirExists(dir):
+        traceStorageLocal("listThreadInfos.empty_dir")
+        return outVal
+    let files: seq[str] = os.walkDirRec(dir)
+    traceStorageLocal("listThreadInfos.files=" + intToStr(len(files)))
+    let normalizedFilter = normalizePathForMatch(filterCwd)
+    traceStorageLocal("listThreadInfos.filter=" + normalizedFilter)
+    var idx: int32 = 0
+    while idx < len(files):
+        let path = argAt(files, idx)
+        traceStorageLocal("listThreadInfos.path=" + path)
+        if endsWithSuffix(path, ".jsonl"):
+            traceStorageLocal("listThreadInfos.path.jsonl")
+            let info = threadInfoFromFile(path)
+            traceStorageLocal("listThreadInfos.path.info.ready")
+            if len(info.id) > 0:
+                if showAll || len(normalizedFilter) == 0:
+                    seqAdd(outVal, info)
+                else:
+                    if len(info.cwd) == 0 || pathsMatchLocal(info.cwd, normalizedFilter):
+                        seqAdd(outVal, info)
+        idx = idx + 1
+    sortThreadInfosByCreatedAtDesc(outVal)
+    return outVal
+
+fn archiveThread(threadId: str): bool =
+    if len(threadId) == 0:
+        return false
+    let sourcePath = threadFilePath(threadId)
+    if len(sourcePath) == 0 || ! os.fileExists(sourcePath):
+        return false
+    let home = codexHomeDir()
+    if len(home) == 0:
+        return false
+    let archiveDir = os.joinPath(home, "threads-archive")
+    if ! os.dirExists(archiveDir):
+        os.createDir(archiveDir)
+    let content = os.readFile(sourcePath)
+    let targetPath = os.joinPath(archiveDir, threadId + ".jsonl")
+    os.writeFile(targetPath, content)
+    os.removeFile(sourcePath)
+    return true
+
+fn listThreadLines(): seq[str] =
+    var outVal: seq[str] = newSeq[str]()
+    let dir = codexThreadsDir()
+    if len(dir) == 0 || ! os.dirExists(dir):
+        return outVal
+    let files: seq[str] = os.walkDirRec(dir)
+    var idx: int32 = 0
+    while idx < len(files):
+        let path = files[idx]
+        if endsWithSuffix(path, ".jsonl"):
+            let line = threadLineFromFile(path)
+            if len(line) > 0:
+                seqAdd(outVal, line)
+        idx = idx + 1
+    return outVal
+
+fn threadHistoryLines(threadId: str): seq[str] =
+    var outVal: seq[str] = newSeq[str]()
+    if len(threadId) == 0:
+        return outVal
+    let path: str = threadFilePath(threadId)
+    if len(path) == 0 || ! os.fileExists(path):
+        return outVal
+    let content: str = os.readFile(path)
+    if len(content) == 0:
+        return outVal
+    # Type annotations are important: current compiler can mis-infer locals and
+    # dispatch `len()` to the wrong overload (e.g. treating seq as str), which
+    # can SIGSEGV in strlen on arm64.
+    let lines: seq[str] = splitLinesSimple(content)
+    var idx: int32 = 1
+    while idx < len(lines):
+        let line: str = argAt(lines, idx)
+        let eventType: str = jsonExtractString(line, "type")
+        if eventType == "turn":
+            # Prefer the stored raw `input` text. Parsing `inputItems` into
+            # seq[str] has been crash-prone under the current ORC/seq runtime.
+            let inputText: str = jsonExtractString(line, "input")
+            if len(inputText) > 0:
+                seqAdd(outVal, "you: " + inputText)
+            let agentOutput: str = jsonExtractString(line, "agentOutput")
+            if len(agentOutput) > 0:
+                var prefix: str = jsonExtractString(line, "agentPrefix")
+                if len(prefix) == 0 || hasPrefix(prefix, "codex-cheng"):
+                    prefix = "codex: "
+                seqAdd(outVal, prefix + agentOutput)
+            let commandText: str = jsonExtractString(line, "command")
+            if len(commandText) > 0:
+                seqAdd(outVal, "exec: " + commandText)
+                let commandOutput: str = jsonExtractString(line, "commandOutput")
+                if len(commandOutput) > 0:
+                    let cmdLines: seq[str] = splitLinesSimple(commandOutput)
+                    var cidx: int32 = 0
+                    while cidx < len(cmdLines):
+                        seqAdd(outVal, "exec: " + argAt(cmdLines, cidx))
+                        cidx = cidx + 1
+                let exitCode: int32 = jsonExtractInt(line, "commandExit", -1)
+                if exitCode >= 0:
+                    seqAdd(outVal, "exec: exit=" + intToStr(exitCode))
+            let diffText: str = jsonExtractString(line, "diff")
+            if len(diffText) > 0:
+                let diffLines: seq[str] = splitLinesSimple(diffText)
+                var didx: int32 = 0
+                while didx < len(diffLines):
+                    seqAdd(outVal, "patch: " + argAt(diffLines, didx))
+                    didx = didx + 1
+            let mockText: str = jsonExtractString(line, "mock")
+            if len(mockText) > 0:
+                seqAdd(outVal, "tool: mock")
+                seqAdd(outVal, "tool: " + mockText)
+        elif eventType == "tool":
+            let toolName: str = jsonExtractString(line, "tool")
+            if len(toolName) > 0:
+                seqAdd(outVal, "tool: " + toolName)
+            let commandText: str = jsonExtractString(line, "command")
+            if len(commandText) > 0:
+                seqAdd(outVal, "exec: " + commandText)
+                let commandOutput: str = jsonExtractString(line, "commandOutput")
+                if len(commandOutput) > 0:
+                    let cmdLines: seq[str] = splitLinesSimple(commandOutput)
+                    var cidx: int32 = 0
+                    while cidx < len(cmdLines):
+                        seqAdd(outVal, "exec: " + argAt(cmdLines, cidx))
+                        cidx = cidx + 1
+                let exitCode: int32 = jsonExtractInt(line, "commandExit", -1)
+                if exitCode >= 0:
+                    seqAdd(outVal, "exec: exit=" + intToStr(exitCode))
+            let diffText: str = jsonExtractString(line, "diff")
+            if len(diffText) > 0:
+                let diffLines: seq[str] = splitLinesSimple(diffText)
+                var didx: int32 = 0
+                while didx < len(diffLines):
+                    seqAdd(outVal, "patch: " + argAt(diffLines, didx))
+                    didx = didx + 1
+            let outText: str = jsonExtractString(line, "output")
+            if len(outText) > 0:
+                seqAdd(outVal, "tool: " + outText)
+        idx = idx + 1
+    return outVal
+
+fn threadContextItems(threadId: str): seq[str] =
+    var outVal: seq[str] = newSeq[str]()
+    if len(threadId) == 0:
+        return outVal
+    # Type annotations are important: current compiler can mis-infer locals and
+    # dispatch `len()` to the wrong overload (e.g. treating seq as str), which
+    # can SIGSEGV in strlen on arm64.
+    let cwd: str = threadCwd(threadId)
+    let path: str = threadFilePath(threadId)
+    if len(path) == 0 || ! os.fileExists(path):
+        return outVal
+    let content: str = os.readFile(path)
+    if len(content) == 0:
+        return outVal
+    let lines: seq[str] = splitLinesSimple(content)
+    var idx: int32 = 1
+    while idx < len(lines):
+        let line: str = lines[idx]
+        let eventType: str = jsonExtractString(line, "type")
+        if eventType == "turn":
+            # Prefer the stored raw `input` text. Parsing `inputItems` into
+            # seq[str] has been crash-prone under the current ORC/seq runtime.
+            let inputText: str = jsonExtractString(line, "input")
+            if len(inputText) > 0:
+                seqAdd(outVal, buildInputMessage("user", inputText))
+            else:
+                let inputItems: seq[str] = jsonExtractStringArray(line, "inputItems")
+                if len(inputItems) > 0:
+                    let inputMsgs: seq[str] = inputTokensToMessages(inputItems, cwd)
+                    var ii: int32 = 0
+                    while ii < len(inputMsgs):
+                        seqAdd(outVal, inputMsgs[ii])
+                        ii = ii + 1
+            let agentOutput: str = jsonExtractString(line, "agentOutput")
+            if len(agentOutput) > 0:
+                seqAdd(outVal, buildAssistantMessage(agentOutput))
+            let commandText: str = jsonExtractString(line, "command")
+            if len(commandText) > 0:
+                # Build incrementally to avoid deep temporary chains.
+                var toolText: str = "Tool output (shell): "
+                toolText = toolText + commandText
+                let commandOutput: str = jsonExtractString(line, "commandOutput")
+                if len(commandOutput) > 0:
+                    toolText = toolText + "\n"
+                    toolText = toolText + commandOutput
+                seqAdd(outVal, buildAssistantMessage(toolText))
+            let diffText: str = jsonExtractString(line, "diff")
+            if len(diffText) > 0:
+                seqAdd(outVal, buildAssistantMessage("Tool output (apply_patch):\n" + diffText))
+            let mockText: str = jsonExtractString(line, "mock")
+            if len(mockText) > 0:
+                seqAdd(outVal, buildAssistantMessage("Tool output (mock):\n" + mockText))
+        elif eventType == "tool":
+            let toolName: str = jsonExtractString(line, "tool")
+            if toolName == "shell":
+                let commandText: str = jsonExtractString(line, "command")
+                # Build incrementally to avoid deep temporary chains.
+                var toolText: str = "Tool output (shell)"
+                if len(commandText) > 0:
+                    toolText = toolText + ": "
+                    toolText = toolText + commandText
+                let commandOutput: str = jsonExtractString(line, "commandOutput")
+                if len(commandOutput) > 0:
+                    toolText = toolText + "\n"
+                    toolText = toolText + commandOutput
+                seqAdd(outVal, buildAssistantMessage(toolText))
+            elif toolName == "apply_patch":
+                let diffText: str = jsonExtractString(line, "diff")
+                if len(diffText) > 0:
+                    seqAdd(outVal, buildAssistantMessage("Tool output (apply_patch):\n" + diffText))
+                else:
+                    let outText: str = jsonExtractString(line, "output")
+                    if len(outText) > 0:
+                        seqAdd(outVal, buildAssistantMessage("Tool output (apply_patch):\n" + outText))
+            elif toolName == "web_search":
+                let outText: str = jsonExtractString(line, "output")
+                if len(outText) > 0:
+                    seqAdd(outVal, buildAssistantMessage("Tool output (web_search):\n" + outText))
+            elif toolName == "mock":
+                let outText: str = jsonExtractString(line, "output")
+                if len(outText) > 0:
+                    seqAdd(outVal, buildAssistantMessage("Tool output (mock):\n" + outText))
+        idx = idx + 1
+    return outVal

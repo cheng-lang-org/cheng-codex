@@ -1,0 +1,5 @@
+package_id = "pkg://cheng/codex"
+
+[[dependencies]]
+package_id = "pkg://cheng/libp2p"
+channel = "edge"

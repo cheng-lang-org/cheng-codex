@@ -1,0 +1,251 @@
+version: 1
+goal: "cheng-codex CLI parity (full) + production closed loop"
+rows:
+  - global
+  - exec
+  - review
+  - resume_fork
+  - login_logout
+  - app_server
+  - app
+  - debug
+  - completion
+  - sandbox
+  - execpolicy
+  - apply
+  - cloud
+  - responses_proxy
+  - stdio_to_uds
+  - features
+  - mcp
+  - docs
+cols:
+  - contract
+  - impl
+  - tests
+  - docs
+  - release
+cells:
+  - id: global.contract
+    touch_scope:
+      - SPEC.md
+      - CONTRACT.md
+      - ACCEPTANCE.md
+      - TASK_MATRIX.yaml
+    depends_on: []
+    done_checks:
+      - ./tooling/closed_loop.sh --check preflight
+    outputs:
+      - spec/contract/acceptance frozen
+
+  - id: exec.impl
+    touch_scope:
+      - src/exec_cmd.cheng
+      - src/engine.cheng
+    depends_on:
+      - global.contract
+    done_checks:
+      - ./tooling/closed_loop.sh --check build
+    outputs:
+      - exec parity behavior
+
+  - id: exec.tests
+    touch_scope:
+      - tooling/closed_loop.sh
+      - tooling/login_smoke.sh
+      - tests
+    depends_on:
+      - exec.impl
+    done_checks:
+      - ./tooling/closed_loop.sh --check exec-smoke
+    outputs:
+      - exec smoke verified
+
+  - id: review.impl
+    touch_scope:
+      - src/exec_cmd.cheng
+    depends_on:
+      - global.contract
+    done_checks:
+      - ./tooling/closed_loop.sh --check build
+    outputs:
+      - review parity behavior
+
+  - id: resume_fork.impl
+    touch_scope:
+      - src/interactive.cheng
+      - src/main.cheng
+    depends_on:
+      - global.contract
+    done_checks:
+      - ./tooling/closed_loop.sh --check tui
+    outputs:
+      - resume/fork parity
+
+  - id: login_logout.impl
+    touch_scope:
+      - src/auth_login.cheng
+      - src/auth_store.cheng
+      - src/config.cheng
+    depends_on:
+      - global.contract
+    done_checks:
+      - ./tooling/closed_loop.sh --check login-smoke
+    outputs:
+      - login/logout parity
+
+  - id: app_server.impl
+    touch_scope:
+      - src/app_server.cheng
+      - src/app_server_test_client.cheng
+    depends_on:
+      - global.contract
+    done_checks:
+      - ./tooling/closed_loop.sh --check build
+    outputs:
+      - app-server parity
+
+  - id: app.impl
+    touch_scope:
+      - src/app_cmd.cheng
+      - src/main.cheng
+    depends_on:
+      - global.contract
+    done_checks:
+      - ./tooling/closed_loop.sh --check app
+    outputs:
+      - app parity
+
+  - id: debug.impl
+    touch_scope:
+      - src/main.cheng
+      - src/app_server_test_client.cheng
+    depends_on:
+      - global.contract
+    done_checks:
+      - ./tooling/closed_loop.sh --check debug
+    outputs:
+      - debug parity
+
+  - id: completion.impl
+    touch_scope:
+      - src/main.cheng
+    depends_on:
+      - global.contract
+    done_checks:
+      - ./tooling/closed_loop.sh --check completion
+    outputs:
+      - completion parity
+
+  - id: sandbox.impl
+    touch_scope:
+      - src/sandbox_runner.cheng
+      - src/seatbelt_base_policy.sbpl
+      - src/seatbelt_network_policy.sbpl
+    depends_on:
+      - global.contract
+    done_checks:
+      - ./tooling/closed_loop.sh --check build
+    outputs:
+      - sandbox parity
+
+  - id: execpolicy.impl
+    touch_scope:
+      - src/execpolicy_cmd.cheng
+      - src/execpolicy_runtime.cheng
+    depends_on:
+      - global.contract
+    done_checks:
+      - ./tooling/closed_loop.sh --check execpolicy
+    outputs:
+      - execpolicy parity
+
+  - id: apply.impl
+    touch_scope:
+      - src/cloud_tasks_cmd.cheng
+      - src/command_safety.cheng
+    depends_on:
+      - global.contract
+    done_checks:
+      - ./tooling/closed_loop.sh --check build
+    outputs:
+      - apply parity
+
+  - id: cloud.impl
+    touch_scope:
+      - src/cloud_tasks_cmd.cheng
+    depends_on:
+      - global.contract
+    done_checks:
+      - ./tooling/closed_loop.sh --check build
+    outputs:
+      - cloud parity
+
+  - id: responses_proxy.impl
+    touch_scope:
+      - src/responses_proxy_cmd.cheng
+      - src/posix_net.cheng
+    depends_on:
+      - global.contract
+    done_checks:
+      - ./tooling/closed_loop.sh --check build
+    outputs:
+      - responses-api-proxy parity
+
+  - id: stdio_to_uds.impl
+    touch_scope:
+      - src/stdio_to_uds_cmd.cheng
+    depends_on:
+      - global.contract
+    done_checks:
+      - ./tooling/closed_loop.sh --check build
+    outputs:
+      - stdio-to-uds parity
+
+  - id: features.impl
+    touch_scope:
+      - src/features.cheng
+    depends_on:
+      - global.contract
+    done_checks:
+      - ./tooling/closed_loop.sh --check build
+    outputs:
+      - features parity
+
+  - id: mcp.impl
+    touch_scope:
+      - src/main.cheng
+      - src/mcp_cmd.cheng
+      - src/common.cheng
+    depends_on:
+      - global.contract
+    done_checks:
+      - ./tooling/closed_loop.sh --check mcp
+    outputs:
+      - mcp parity
+
+  - id: docs.release
+    touch_scope:
+      - docs
+      - README.md
+    depends_on:
+      - exec.impl
+      - review.impl
+      - resume_fork.impl
+      - login_logout.impl
+      - app_server.impl
+      - app.impl
+      - debug.impl
+      - completion.impl
+      - sandbox.impl
+      - execpolicy.impl
+      - apply.impl
+      - cloud.impl
+      - responses_proxy.impl
+      - stdio_to_uds.impl
+      - features.impl
+      - mcp.impl
+    done_checks:
+      - ./tooling/closed_loop.sh
+    outputs:
+      - release gates passed

@@ -1,0 +1,505 @@
+# responses-api-proxy implementation (minimal)
+
+import system
+import cheng/web/std/server_http
+import std/os
+import seqs
+
+fn ord(ch: char): int32 =
+    return int32(ch)
+
+type
+    ResponsesProxyArgs =
+        port: int32
+        serverInfo: str
+        httpShutdown: bool
+        upstreamUrl: str
+    UpstreamResponse =
+        ok: bool
+        status: int32
+        contentType: str
+        responseBody: str
+
+var proxyTempSeq: int32 = 0
+
+fn defaultResponsesProxyArgs(): ResponsesProxyArgs =
+    ResponsesProxyArgs(port: 0, serverInfo: "", httpShutdown: false, upstreamUrl: "https://api.openai.com/v1/responses")
+
+fn responsesProxyUnexpectedArgWithUsage(arg: str): int32 =
+    var msg = "error: unexpected argument '"
+    msg = msg + arg
+    msg = msg + "' found"
+    printErr(msg)
+    printErr("")
+    printErr("Usage: codex responses-api-proxy [OPTIONS]")
+    printErr("")
+    printErr("For more information, try '--help'.")
+    return 2
+
+fn responsesProxyMissingValue(flagText: str): int32 =
+    # Match clap's wording for required option values.
+    printErr("error: a value is required for '" + flagText + "' but none was supplied")
+    printErr("")
+    printErr("For more information, try '--help'.")
+    return 2
+
+fn printResponsesApiProxyHelpShort(): int32 =
+    printLine("Internal: run the responses API proxy")
+    printLine("")
+    printLine("Usage: codex responses-api-proxy [OPTIONS]")
+    printLine("")
+    printLine("Options:")
+    printLine("  -c, --config <key=value>           Override a configuration value that would otherwise be loaded")
+    printLine("                                     from `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`)")
+    printLine("                                     to override nested values. The `value` portion is parsed as")
+    printLine("                                     TOML. If it fails to parse as TOML, the raw string is used as a")
+    printLine("                                     literal")
+    printLine("      --port <PORT>                  Port to listen on. If not set, an ephemeral port is used")
+    printLine("      --enable <FEATURE>             Enable a feature (repeatable). Equivalent to `-c")
+    printLine("                                     features.<name>=true`")
+    printLine("      --server-info <FILE>           Path to a JSON file to write startup info (single line).")
+    printLine("                                     Includes {\"port\": <u16>}")
+    printLine("      --disable <FEATURE>            Disable a feature (repeatable). Equivalent to `-c")
+    printLine("                                     features.<name>=false`")
+    printLine("      --http-shutdown                Enable HTTP shutdown endpoint at GET /shutdown")
+    printLine("      --upstream-url <UPSTREAM_URL>  Absolute URL the proxy should forward requests to (defaults to")
+    printLine("                                     OpenAI) [default: https://api.openai.com/v1/responses]")
+    printLine("  -h, --help                         Print help (see more with '--help')")
+    return 0
+
+fn printResponsesApiProxyHelpLong(): int32 =
+    printLine("Internal: run the responses API proxy")
+    printLine("")
+    printLine("Usage: codex responses-api-proxy [OPTIONS]")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printLine("      --port <PORT>")
+    printLine("          Port to listen on. If not set, an ephemeral port is used")
+    printLine("")
+    printEnableFlagHelp()
+    printLine("      --server-info <FILE>")
+    printLine("          Path to a JSON file to write startup info (single line). Includes {\"port\": <u16>}")
+    printLine("")
+    printDisableFlagHelp()
+    printLine("      --http-shutdown")
+    printLine("          Enable HTTP shutdown endpoint at GET /shutdown")
+    printLine("")
+    printLine("      --upstream-url <UPSTREAM_URL>")
+    printLine("          Absolute URL the proxy should forward requests to (defaults to OpenAI)")
+    printLine("          ")
+    printLine("          [default: https://api.openai.com/v1/responses]")
+    printLine("")
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn parseInt32Simple(text: str, defaultValue: int32): int32 =
+    if len(text) == 0:
+        return defaultValue
+    var i: int32 = 0
+    var sign = 1
+    if text[0] == '-':
+        sign = -1
+        i = i + 1
+    var value: int32 = 0
+    var saw = false
+    while i < len(text):
+        let ch = text[i]
+        if ch < '0' || ch > '9':
+            break
+        value = value * 10 + (ord(ch) - ord('0'))
+        saw = true
+        i = i + 1
+    if ! saw:
+        return defaultValue
+    return value * sign
+
+fn nextTempPath(prefix: str, suffix: str): str =
+    proxyTempSeq = proxyTempSeq + 1
+    let home = codexHomeDir()
+    var base: str = "/tmp"
+    if len(home) > 0:
+        base = os.joinPath(home, "tmp")
+    if ! os.dirExists(base):
+        os.createDir(base)
+    let ts = int64ToStr(times.toUnix(times.now()))
+    # Build incrementally to avoid deep temporary chains.
+    var name: str = prefix
+    name = name + "-"
+    name = name + ts
+    name = name + "-"
+    name = name + intToStr(proxyTempSeq)
+    name = name + suffix
+    return os.joinPath(base, name)
+
+fn parseResponsesProxyArgs(args: seq[str], start: int32): ResponsesProxyArgs =
+    var opts = defaultResponsesProxyArgs()
+    var i: int32 = start
+    while i < len(args):
+        let arg = args[i]
+        if arg == "--port" && i + 1 < len(args):
+            opts.port = parseInt32Simple(args[i + 1], 0)
+            i = i + 1
+        elif hasPrefix(arg, "--port:"):
+            opts.port = parseInt32Simple(dropPrefix(arg, "--port:"), 0)
+        elif arg == "--server-info" && i + 1 < len(args):
+            opts.serverInfo = args[i + 1]
+            i = i + 1
+        elif hasPrefix(arg, "--server-info:"):
+            opts.serverInfo = dropPrefix(arg, "--server-info:")
+        elif arg == "--http-shutdown":
+            opts.httpShutdown = true
+        elif arg == "--upstream-url" && i + 1 < len(args):
+            opts.upstreamUrl = args[i + 1]
+            i = i + 1
+        elif hasPrefix(arg, "--upstream-url:"):
+            opts.upstreamUrl = dropPrefix(arg, "--upstream-url:")
+        i = i + 1
+    return opts
+
+fn readAuthHeaderFromStdin(): str =
+    let stdinText = os.readAll(os.get_stdin())
+    if stdinText == nil:
+        return ""
+    let token = trimLine(stdinText)
+    if len(token) == 0:
+        return ""
+    if hasPrefix(token, "Bearer ") || hasPrefix(normalizePolicy(token), "bearer "):
+        return token
+    return "Bearer " + token
+
+fn splitLinesRaw(text: str): seq[str] =
+    var out: seq[str] = newSeq[str]()
+    if text == nil:
+        return out
+    var start: int32 = 0
+    var i: int32 = 0
+    while i < len(text):
+        if text[i] == '\n':
+            var endIdx: int32 = i - 1
+            if endIdx >= start && text[endIdx] == '\r':
+                endIdx = endIdx - 1
+            if endIdx >= start:
+                seqAdd(out, __cheng_slice_string(text, start, endIdx, false))
+            else:
+                seqAdd(out, "")
+            start = i + 1
+        i = i + 1
+    if start <= len(text) - 1:
+        seqAdd(out, __cheng_slice_string(text, start, len(text) - 1, false))
+    elif start == len(text):
+        seqAdd(out, "")
+    return out
+
+fn parseHeaderValue(headersText: str, key: str): str =
+    let keyLower = normalizePolicy(key)
+    let lines = splitLinesRaw(headersText)
+    var i: int32 = 0
+    while i < len(lines):
+        let line = lines[i]
+        let colon = indexOfSubstr(line, ":", 0)
+        if colon > 0:
+            let k = normalizePolicy(trimLine(__cheng_slice_string(line, 0, colon - 1, false)))
+            if k == keyLower:
+                let value = trimLine(__cheng_slice_string(line, colon + 1, len(line) - 1, false))
+                return value
+        i = i + 1
+    return ""
+
+fn parseStatusCode(headersText: str): int32 =
+    let lines = splitLinesRaw(headersText)
+    if len(lines) == 0:
+        return 0
+    let line = lines[0]
+    let sp = indexOfSubstr(line, " ", 0)
+    if sp < 0 || sp + 1 >= len(line):
+        return 0
+    return parseInt32Simple(trimLine(__cheng_slice_string(line, sp + 1, len(line) - 1, false)), 0)
+
+fn shouldForwardHeader(key: str): bool =
+    let k = normalizePolicy(key)
+    if k == "authorization" || k == "host" || k == "content-length" || k == "connection":
+        return false
+    if k == "transfer-encoding":
+        return false
+    return true
+
+fn buildForwardHeaderArgs(headers: HttpHeaders): str =
+    var parts: seq[str] = newSeq[str]()
+    var i: int32 = 0
+    while i < len(headers.items):
+        let item = headers.items[i]
+        if shouldForwardHeader(item.key):
+            seqAdd(parts, " -H ")
+            var headerLine: str = item.key
+            headerLine = headerLine + ": "
+            headerLine = headerLine + item.value
+            seqAdd(parts, shellQuote(headerLine))
+        i = i + 1
+    return joinPartsBalanced(parts)
+
+fn readHttpRequest(fd: int32, maxHeader: int32, maxBody: int32): str =
+    # Avoid repeated `raw = raw + chunk` growth (quadratic for long payloads).
+    var parts: seq[str] = newSeq[str]()
+    var totalLen: int32 = 0
+    var headerEnd: int32 = -1
+    var contentLen: int32 = -1
+    var tail: str = ""
+    while true:
+        let chunk: str = readChunk(fd, 4096)
+        if len(chunk) == 0:
+            break
+        seqAdd(parts, chunk)
+        totalLen = totalLen + len(chunk)
+        if headerEnd < 0:
+            let priorTailLen: int32 = len(tail)
+            let scan: str = tail + chunk
+            let idx: int32 = indexOfSubstr(scan, "\r\n\r\n", 0)
+            if len(scan) <= 3:
+                tail = scan
+            else:
+                tail = __cheng_slice_string(scan, len(scan) - 3, len(scan) - 1, false)
+            if idx >= 0:
+                headerEnd = (totalLen - len(chunk) - priorTailLen) + idx
+                # Compact so we can slice/parse headers without re-joining every chunk.
+                let joined: str = joinPartsBalanced(parts)
+                parts = newSeq[str]()
+                seqAdd(parts, joined)
+                totalLen = len(joined)
+                tail = ""
+                var head: str = ""
+                if headerEnd > 0:
+                    head = __cheng_slice_string(joined, 0, headerEnd - 1, false)
+                let lenText = parseHeaderValue(head, "content-length")
+                if len(lenText) > 0:
+                    contentLen = parseInt32Simple(lenText, 0)
+                else:
+                    contentLen = 0
+                if maxHeader > 0 && headerEnd > maxHeader:
+                    break
+        if headerEnd < 0:
+            if maxHeader > 0 && totalLen > maxHeader:
+                break
+            continue
+        let totalNeeded: int32 = headerEnd + 4 + contentLen
+        if totalLen >= totalNeeded:
+            break
+        if maxBody > 0 && totalLen > headerEnd + 4 + maxBody:
+            break
+    return joinPartsBalanced(parts)
+
+fn forwardUpstream(body: str, authHeader: str, upstreamUrl: str, headers: HttpHeaders): UpstreamResponse =
+    let reqPath = nextTempPath("proxy_req", ".json")
+    let hdrPath = nextTempPath("proxy_hdr", ".txt")
+    let bodyPath = nextTempPath("proxy_body", ".txt")
+    let headerArgs = buildForwardHeaderArgs(headers)
+    os.writeFile(reqPath, body)
+    # Build the curl command incrementally to avoid deep temporary chains.
+    var cmd: str = "curl -sS -D "
+    cmd = cmd + shellQuote(hdrPath)
+    cmd = cmd + " -o "
+    cmd = cmd + shellQuote(bodyPath)
+    cmd = cmd + " -H "
+    var authLine: str = "Authorization: "
+    authLine = authLine + authHeader
+    cmd = cmd + shellQuote(authLine)
+    cmd = cmd + " -H "
+    cmd = cmd + shellQuote("Content-Type: application/json")
+    cmd = cmd + headerArgs
+    cmd = cmd + " --data @"
+    cmd = cmd + shellQuote(reqPath)
+    cmd = cmd + " "
+    cmd = cmd + shellQuote(upstreamUrl)
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let res = os.execCmdEx(cmd, opts, os.getCurrentDir())
+    if res.exitCode != 0:
+        return UpstreamResponse(ok: false, status: 502, contentType: "text/plain", responseBody: res.output)
+    var headersText: str = ""
+    if os.fileExists(hdrPath):
+        let tmp = os.readFile(hdrPath)
+        if tmp != nil:
+            headersText = tmp
+    var respBody: str = ""
+    if os.fileExists(bodyPath):
+        let tmp = os.readFile(bodyPath)
+        if tmp != nil:
+            respBody = tmp
+    let status = parseStatusCode(headersText)
+    let contentType = parseHeaderValue(headersText, "content-type")
+    return UpstreamResponse(ok: true, status: status, contentType: contentType, responseBody: respBody)
+
+fn forwardUpstreamStream(body: str, authHeader: str, upstreamUrl: str, headers: HttpHeaders, clientFd: int32): bool =
+    var readFd: int32 = -1
+    var writeFd: int32 = -1
+    var pid: int64 = 0
+    let headerArgs = buildForwardHeaderArgs(headers)
+    # Build the curl command incrementally to avoid deep temporary chains.
+    var cmd: str = "curl -sS -i --no-buffer --http1.1"
+    cmd = cmd + " -H "
+    var authLine: str = "Authorization: "
+    authLine = authLine + authHeader
+    cmd = cmd + shellQuote(authLine)
+    cmd = cmd + " -H "
+    cmd = cmd + shellQuote("Content-Type: application/json")
+    cmd = cmd + headerArgs
+    cmd = cmd + " --data-binary @- "
+    cmd = cmd + shellQuote(upstreamUrl)
+    if ! pipeSpawn(cmd, os.getCurrentDir(), &readFd, &writeFd, &pid):
+        return false
+    if len(body) > 0:
+        writeAll(writeFd, body)
+    shutdownWrite(writeFd)
+    closeFd(writeFd)
+    var sentAny = false
+    while true:
+        let chunk = readChunk(readFd, 4096)
+        if len(chunk) == 0:
+            break
+        sentAny = true
+        writeAll(clientFd, chunk)
+    closeFd(readFd)
+    var exitCode: int32 = -1
+    ptyWait(pid, &exitCode)
+    return sentAny
+
+fn buildHttpResponse(status: int32, body: str, contentType: str): str =
+    var res = newResponse(status, body)
+    if len(contentType) > 0:
+        headerSet(res.headers, "Content-Type", contentType)
+    return responseToHttp(res)
+
+fn handleProxyClient(client: int32, opts: ResponsesProxyArgs, authHeader: str, shutdownRequested: var bool): bool =
+    shutdownRequested = false
+    let raw = readHttpRequest(client, 16384, 1048576)
+    if len(raw) == 0:
+        return false
+    let req = parseHttpRequest(raw)
+    if opts.httpShutdown && req.method == hmGet && req.path == "/shutdown":
+        let text = buildHttpResponse(200, "", "text/plain")
+        writeAll(client, text)
+        shutdownRequested = true
+        return true
+    if req.method != hmPost || req.path != "/v1/responses" || len(req.query) > 0:
+        let text = buildHttpResponse(403, "Forbidden", "text/plain")
+        writeAll(client, text)
+        return true
+    let streamed = forwardUpstreamStream(req.body, authHeader, opts.upstreamUrl, req.headers, client)
+    if ! streamed:
+        let upstream = forwardUpstream(req.body, authHeader, opts.upstreamUrl, req.headers)
+        var status = upstream.status
+        if status <= 0:
+            status = if upstream.ok: 200 else: 502
+        let respText = buildHttpResponse(status, upstream.responseBody, upstream.contentType)
+        writeAll(client, respText)
+    return true
+
+fn runResponsesApiProxyLocal(args: seq[str], start: int32): int32 =
+    # Ensure `--help/-h` doesn't touch networking or stdin (prevents crashes/hangs).
+    var sawLongHelp = false
+    var sawShortHelp = false
+    var i: int32 = start
+    while i < len(args):
+        let tok = args[i]
+        if tok == "--help":
+            sawLongHelp = true
+        elif tok == "-h":
+            sawShortHelp = true
+        i = i + 1
+    if sawLongHelp:
+        return printResponsesApiProxyHelpLong()
+    if sawShortHelp:
+        return printResponsesApiProxyHelpShort()
+
+    var opts = defaultResponsesProxyArgs()
+    i = start
+    while i < len(args):
+        let arg = args[i]
+        if arg == "--":
+            if i + 1 < len(args):
+                return responsesProxyUnexpectedArgWithUsage(args[i + 1])
+            break
+        if arg == "--port":
+            if i + 1 >= len(args):
+                return responsesProxyMissingValue("--port <PORT>")
+            opts.port = parseInt32Simple(args[i + 1], 0)
+            i = i + 2
+            continue
+        if hasPrefix(arg, "--port:"):
+            opts.port = parseInt32Simple(dropPrefix(arg, "--port:"), 0)
+            i = i + 1
+            continue
+        if arg == "--server-info":
+            if i + 1 >= len(args):
+                return responsesProxyMissingValue("--server-info <FILE>")
+            opts.serverInfo = args[i + 1]
+            i = i + 2
+            continue
+        if hasPrefix(arg, "--server-info:"):
+            opts.serverInfo = dropPrefix(arg, "--server-info:")
+            i = i + 1
+            continue
+        if arg == "--http-shutdown":
+            opts.httpShutdown = true
+            i = i + 1
+            continue
+        if arg == "--upstream-url":
+            if i + 1 >= len(args):
+                return responsesProxyMissingValue("--upstream-url <UPSTREAM_URL>")
+            opts.upstreamUrl = args[i + 1]
+            i = i + 2
+            continue
+        if hasPrefix(arg, "--upstream-url:"):
+            opts.upstreamUrl = dropPrefix(arg, "--upstream-url:")
+            i = i + 1
+            continue
+        return responsesProxyUnexpectedArgWithUsage(arg)
+
+    let authHeader = readAuthHeaderFromStdin()
+    if len(authHeader) == 0:
+        printErr("API key must be provided via stdin (e.g. printenv OPENAI_API_KEY | codex-cheng responses-api-proxy)")
+        return 2
+    let listener = createTcpListenerWithPort(opts.port)
+    if listener.fd < 0:
+        printErr("failed to bind responses-api-proxy")
+        return 1
+    let boundPort = if listener.port > 0: listener.port else: opts.port
+    if len(opts.serverInfo) > 0:
+        # Build incrementally to avoid deep temporary chains.
+        var info: str = "{\"port\":"
+        info = info + intToStr(boundPort)
+        info = info + ",\"pid\":"
+        info = info + intToStr(currentPid())
+        info = info + "}\n"
+        os.writeFile(opts.serverInfo, info)
+    printErr("responses-api-proxy listening on 127.0.0.1:" + intToStr(boundPort))
+    let osKind = detectOsKind()
+    let useFork = isFeatureEnabled("parallel") && (osKind == "macos" || osKind == "linux") && ! opts.httpShutdown
+    while true:
+        let client = acceptClient(listener.fd)
+        if client < 0:
+            continue
+        if useFork:
+            let pid = forkProcess()
+            if pid == 0:
+                closeFd(listener.fd)
+                var shutdownRequested = false
+                handleProxyClient(client, opts, authHeader, shutdownRequested)
+                closeFd(client)
+                exitProcess(0)
+            if pid > 0:
+                closeFd(client)
+                reapChildrenNoHang()
+                continue
+        var shutdownRequested = false
+        if ! handleProxyClient(client, opts, authHeader, shutdownRequested):
+            closeFd(client)
+            continue
+        if shutdownRequested:
+            closeFd(client)
+            closeFd(listener.fd)
+            exitProcess(0)
+        closeFd(client)
+        if useFork:
+            reapChildrenNoHang()
+    return 0

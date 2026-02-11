@@ -1,0 +1,1391 @@
+# Model client via Responses API (curl)
+
+import system
+import std/os
+import seqs
+
+fn ord(ch: char): int32 =
+    return int32(ch)
+
+fn traceModelLocal(msg: str) =
+    let enabled = normalizePolicy(trimLine(os.getEnv("CODEX_TRACE_MODEL")))
+    if enabled == "1" || enabled == "true" || enabled == "yes":
+        printErr("[model] " + msg)
+
+fn debugCrumb(label: str) =
+    let enabled = normalizePolicy(trimLine(os.getEnv("CODEX_DEBUG_CRUMB")))
+    if enabled != "1" && enabled != "true" && enabled != "yes":
+        return
+    let home = codexHomeDir()
+    var path: str = "/tmp/codex-crumb.txt"
+    if len(home) > 0:
+        path = os.joinPath(home, "crumb.txt")
+    var existing = ""
+    if os.fileExists(path):
+        existing = os.readFile(path)
+        if existing != nil && len(existing) > 65536:
+            existing = __cheng_slice_string(existing, len(existing) - 65536, len(existing) - 1, false)
+    var line = label
+    if len(line) == 0:
+        line = "<empty>"
+    if line[len(line) - 1] != '\n':
+        line = line + "\n"
+    os.writeFile(path, existing + line)
+
+fn writeCurlHeaderFile(homeDir: str, fileName: str, headerLine: str): str =
+    if len(homeDir) == 0 || len(fileName) == 0 || len(headerLine) == 0:
+        return ""
+    let tmpDir = os.joinPath(homeDir, "tmp")
+    if ! os.dirExists(tmpDir):
+        os.createDir(tmpDir)
+    let path = os.joinPath(tmpDir, fileName)
+    os.writeFile(path, headerLine)
+    return path
+
+type
+    ToolCall =
+        name: str
+        arguments: str
+        callId: str
+
+type
+    ModelResponse =
+        ok: bool
+        outputText: str
+        hasToolCall: bool
+        toolCall: ToolCall
+        webSearchQueries: seq[str]
+        responseId: str
+        error: str
+
+type
+    HttpSplit =
+        body: str
+        status: int32
+
+type
+    AuthInfo =
+        ok: bool
+        token: str
+        accountId: str
+
+fn jsonUnescape(text: str): str =
+    if text == nil:
+        return ""
+    var out = ""
+    var i: int32 = 0
+    while i < len(text):
+        let ch = text[i]
+        if ch == '\\' && i + 1 < len(text):
+            let next = text[i + 1]
+            if next == 'n':
+                out = out + "\n"
+            elif next == 'r':
+                out = out + "\r"
+            elif next == 't':
+                out = out + "\t"
+            elif next == '\\':
+                out = out + "\\"
+            elif next == '"':
+                out = out + "\""
+            else:
+                out = out + $ next
+            i = i + 2
+            continue
+        out = out + $ ch
+        i = i + 1
+    return out
+
+fn loadAuthForResponses(): AuthInfo =
+    var out: AuthInfo = AuthInfo(ok: false, token: "", accountId: "")
+    let provider = normalizeOssProviderConfig(readConfigValue("model_provider"))
+    traceModelLocal("loadAuth.provider=" + provider)
+    if len(provider) > 0 && provider != "openai":
+        out.ok = true
+        return out
+    var tokenVal = ""
+    var accountVal = ""
+    let envAccount = os.getEnv("CODEX_CHATGPT_ACCOUNT_ID")
+    if len(envAccount) > 0:
+        accountVal = envAccount
+    # Prefer config token, then env vars, then ChatGPT auth.json tokens.
+    let cfgToken = readConfigValue("auth.token")
+    if len(cfgToken) > 0 && ! isChatgptPlaceholderToken(cfgToken):
+        tokenVal = cfgToken
+    if len(tokenVal) == 0:
+        let env1 = os.getEnv("CODEX_API_KEY")
+        if len(env1) > 0 && ! isChatgptPlaceholderToken(env1):
+            tokenVal = env1
+    if len(tokenVal) == 0:
+        let env2 = os.getEnv("OPENAI_API_KEY")
+        if len(env2) > 0 && ! isChatgptPlaceholderToken(env2):
+            tokenVal = env2
+    if len(tokenVal) == 0:
+        var tokens: AuthTokens
+        if readChatgptTokens(tokens):
+            if shouldRefresh(tokens):
+                var updated: AuthTokens
+                var err = ""
+                if refreshTokens(authIssuerDefault(), authClientIdDefault(), tokens, updated, err):
+                    copyAuthTokens(tokens, updated)
+            if len(tokens.accessToken) > 0:
+                tokenVal = tokens.accessToken
+            elif len(tokens.idToken) > 0:
+                tokenVal = tokens.idToken
+            if len(accountVal) == 0:
+                if len(tokens.accountId) > 0:
+                    accountVal = tokens.accountId
+                else:
+                    accountVal = extractAccountIdFromJwt(tokens.idToken)
+    tokenVal = trimLine(tokenVal)
+    accountVal = trimLine(accountVal)
+    if len(tokenVal) == 0:
+        traceModelLocal("loadAuth.missing")
+        return out
+    if looksLikeJwt(tokenVal) && len(accountVal) == 0:
+        accountVal = extractAccountIdFromJwt(tokenVal)
+    out.ok = true
+    out.token = tokenVal
+    out.accountId = accountVal
+    var msg: str = "loadAuth.ok tokenLen="
+    msg = msg + intToStr(len(tokenVal))
+    msg = msg + " accountLen="
+    msg = msg + intToStr(len(accountVal))
+    traceModelLocal(msg)
+    return out
+
+fn normalizeOssProviderConfig(provider: str): str =
+    let normalized = normalizePolicy(trimLine(provider))
+    if normalized == "lm-studio":
+        return "lmstudio"
+    if normalized == "ollama_chat" || normalized == "ollamachat":
+        return "ollama-chat"
+    return normalized
+
+fn cloneText(value: str): str =
+    if value == nil:
+        return ""
+    var out = ""
+    var i: int32 = 0
+    while i < len(value):
+        let ch = value[i]
+        out = out + $ ch
+        i = i + 1
+    return out
+
+fn modelLooksLikePath(value: str): bool =
+    let trimmed = trimLine(value)
+    if len(trimmed) == 0:
+        return false
+    if trimmed[0] == '/':
+        return true
+    if len(trimmed) >= 3 && trimmed[1] == ':' && (trimmed[2] == '\\' || trimmed[2] == '/'):
+        return true
+    return false
+
+fn sanitizeModelValue(value: str): str =
+    let trimmed = trimLine(value)
+    if len(trimmed) == 0:
+        return ""
+    let parsed = parseModelAssignment(trimmed)
+    if len(parsed) > 0:
+        return parsed
+    if modelLooksLikePath(trimmed):
+        return ""
+    return trimmed
+
+fn parseModelAssignment(value: str): str =
+    let eq = findChar(value, '=')
+    if eq <= 0:
+        return ""
+    let keyText = normalizePolicy(trimLine(__cheng_slice_string(value, 0, eq - 1, false)))
+    if keyText != "model":
+        return ""
+    if eq + 1 <= len(value) - 1:
+        let rawValue = trimLine(__cheng_slice_string(value, eq + 1, len(value) - 1, false))
+        let decoded = unescapeConfigValue(rawValue)
+        if len(decoded) == 0 || modelLooksLikePath(decoded):
+            return ""
+        return decoded
+    return ""
+
+fn resolveModelForRequest(requested: str): str =
+    let cleaned = sanitizeModelValue(requested)
+    if len(cleaned) > 0:
+        let resolved = cloneText(cleaned)
+        debugModelResolution(requested, readConfigValue("model"), "", resolved)
+        return resolved
+    let cfgValue = readConfigValue("model")
+    let cfg = sanitizeModelValue(cfgValue)
+    if len(cfg) > 0:
+        let resolved = cloneText(cfg)
+        debugModelResolution(requested, cfgValue, "", resolved)
+        return resolved
+    let cfgRawValue = readModelFromConfigFile()
+    let cfgRaw = sanitizeModelValue(cfgRawValue)
+    if len(cfgRaw) > 0:
+        let resolved = cloneText(cfgRaw)
+        debugModelResolution(requested, cfgValue, cfgRawValue, resolved)
+        return resolved
+    let resolved = "gpt-5.1-codex"
+    debugModelResolution(requested, cfgValue, cfgRawValue, resolved)
+    return resolved
+
+fn debugModelResolution(requested: str, cfgValue: str, cfgRawValue: str, resolved: str) =
+    let enabled = normalizePolicy(trimLine(os.getEnv("CODEX_DEBUG_MODEL")))
+    if enabled != "1" && enabled != "true" && enabled != "yes":
+        return
+    let home = codexHomeDir()
+    var path: str = "/tmp/codex-debug-model.txt"
+    if len(home) > 0:
+        path = os.joinPath(home, "debug_model.txt")
+    # Build incrementally to avoid deep temporary chains.
+    var content: str = "requested="
+    content = content + requested
+    content = content + "\n"
+    content = content + "config="
+    content = content + cfgValue
+    content = content + "\n"
+    content = content + "config_file="
+    content = content + cfgRawValue
+    content = content + "\n"
+    content = content + "resolved="
+    content = content + resolved
+    content = content + "\n"
+    os.writeFile(path, content)
+
+fn debugHttpLog(label: str, details: str) =
+    let enabled = normalizePolicy(trimLine(os.getEnv("CODEX_DEBUG_HTTP")))
+    if enabled != "1" && enabled != "true" && enabled != "yes":
+        return
+    let home = codexHomeDir()
+    var path: str = "/tmp/codex-debug-http.txt"
+    if len(home) > 0:
+        path = os.joinPath(home, "debug_http.txt")
+    var prefix: str = ""
+    if len(label) > 0:
+        prefix = label + "\n"
+    var existing = ""
+    if os.fileExists(path):
+        existing = os.readFile(path)
+    var out: str = existing
+    out = out + prefix
+    out = out + details
+    out = out + "\n"
+    os.writeFile(path, out)
+
+fn defaultBaseUrlForAuth(): str =
+    let cfgToken = readConfigValue("auth.token")
+    if len(cfgToken) > 0 && ! isChatgptPlaceholderToken(cfgToken):
+        if looksLikeJwt(cfgToken):
+            return "https://chatgpt.com/backend-api/codex"
+        return "https://api.openai.com/v1"
+    var apiKey = ""
+    if readAuthJsonApiKey(apiKey) && len(apiKey) > 0 && ! isChatgptPlaceholderToken(apiKey):
+        return "https://api.openai.com/v1"
+    let env1 = os.getEnv("CODEX_API_KEY")
+    if len(env1) > 0 && ! isChatgptPlaceholderToken(env1):
+        return "https://api.openai.com/v1"
+    let env2 = os.getEnv("OPENAI_API_KEY")
+    if len(env2) > 0 && ! isChatgptPlaceholderToken(env2):
+        return "https://api.openai.com/v1"
+    var tokens: AuthTokens
+    if readChatgptTokens(tokens):
+        if len(tokens.accessToken) > 0 || len(tokens.idToken) > 0:
+            return "https://chatgpt.com/backend-api/codex"
+    return "https://api.openai.com/v1"
+
+fn loadBaseUrl(): str =
+    let env1 = os.getEnv("CODEX_BASE_URL")
+    if len(env1) > 0:
+        return env1
+    let env2 = os.getEnv("OPENAI_BASE_URL")
+    if len(env2) > 0:
+        return env2
+    let cfg = readConfigValue("api.base_url")
+    if len(cfg) > 0:
+        return cfg
+    let provider = normalizeOssProviderConfig(readConfigValue("model_provider"))
+    if provider == "lmstudio":
+        return "http://localhost:1234/v1"
+    if provider == "ollama":
+        return "http://localhost:11434/v1"
+    if provider == "ollama-chat":
+        return "http://localhost:11434/v1"
+    let ossProvider = normalizeOssProviderConfig(readConfigValue("oss_provider"))
+    if ossProvider == "lmstudio":
+        return "http://localhost:1234/v1"
+    if ossProvider == "ollama":
+        return "http://localhost:11434/v1"
+    if ossProvider == "ollama-chat":
+        return "http://localhost:11434/v1"
+    return defaultBaseUrlForAuth()
+
+fn loadModel(): str =
+    let cfg = readConfigValue("model")
+    if len(cfg) > 0 && ! modelLooksLikePath(cfg):
+        return cloneText(cfg)
+    let cfgRaw = readModelFromConfigFile()
+    if len(cfgRaw) > 0 && ! modelLooksLikePath(cfgRaw):
+        return cfgRaw
+    let env1 = os.getEnv("CODEX_MODEL")
+    if len(env1) > 0:
+        return cloneText(env1)
+    let env2 = os.getEnv("OPENAI_MODEL")
+    if len(env2) > 0:
+        return cloneText(env2)
+    let provider = normalizeOssProviderConfig(readConfigValue("model_provider"))
+    if provider == "lmstudio":
+        return "openai/gpt-oss-20b"
+    if provider == "ollama" || provider == "ollama-chat":
+        return "gpt-oss:20b"
+    let ossProvider = normalizeOssProviderConfig(readConfigValue("oss_provider"))
+    if ossProvider == "lmstudio":
+        return "openai/gpt-oss-20b"
+    if ossProvider == "ollama" || ossProvider == "ollama-chat":
+        return "gpt-oss:20b"
+    return "gpt-5.1-codex"
+
+fn loadReviewModel(): str =
+    let cfg = readConfigValue("review_model")
+    if len(cfg) > 0:
+        return cloneText(cfg)
+    return "gpt-5.1-codex-max"
+
+fn loadWireApi(): str =
+    let env = os.getEnv("CODEX_WIRE_API")
+    if len(env) > 0:
+        return normalizePolicy(trimLine(env))
+    let cfg = readConfigValue("wire_api")
+    if len(cfg) > 0:
+        return normalizePolicy(trimLine(cfg))
+    let provider = normalizeOssProviderConfig(readConfigValue("model_provider"))
+    if provider == "ollama-chat":
+        return "chat"
+    let ossProvider = normalizeOssProviderConfig(readConfigValue("oss_provider"))
+    if ossProvider == "ollama-chat":
+        return "chat"
+    if provider == "ollama" || provider == "lmstudio":
+        return "responses"
+    if ossProvider == "ollama" || ossProvider == "lmstudio":
+        return "responses"
+    return "responses"
+
+fn loadPromptFile(path: str): str =
+    if path == nil || len(path) == 0:
+        return ""
+    if os.fileExists(path):
+        return os.readFile(path)
+    return ""
+
+fn readModelFromConfigFile(): str =
+    let path = codexConfigPath()
+    if len(path) == 0 || ! os.fileExists(path):
+        return ""
+    let content = os.readFile(path)
+    if len(content) == 0:
+        return ""
+    let lines = splitLinesSimple(content)
+    var idx: int32 = 0
+    while idx < len(lines):
+        let line = trimLine(lines[idx])
+        if len(line) == 0 || line[0] == '#':
+            idx = idx + 1
+            continue
+        let eq = findChar(line, '=')
+        if eq <= 0:
+            idx = idx + 1
+            continue
+        let keyText = trimLine(__cheng_slice_string(line, 0, eq - 1, false))
+        if keyText == "model":
+            if eq + 1 <= len(line) - 1:
+                let valueText = trimLine(__cheng_slice_string(line, eq + 1, len(line) - 1, false))
+                return unescapeConfigValue(valueText)
+            return ""
+        idx = idx + 1
+    return ""
+
+fn findPromptFile(fileName: str): str =
+    let cwd = currentDirSafe()
+    var candidates: seq[str] = newSeq[str]()
+    seqAdd(candidates, os.joinPath(cwd, fileName))
+    seqAdd(candidates, os.joinPath(os.joinPath(cwd, "prompts"), fileName))
+    seqAdd(candidates, os.joinPath(os.joinPath(os.joinPath(cwd, "codex-cheng"), "prompts"), fileName))
+    seqAdd(candidates, os.joinPath(os.joinPath(os.joinPath(cwd, "cheng-codex"), "prompts"), fileName))
+    seqAdd(candidates, os.joinPath(os.joinPath(os.joinPath(cwd, ".."), "prompts"), fileName))
+    seqAdd(candidates, os.joinPath(os.joinPath(os.joinPath(os.joinPath(cwd, ".."), "codex-cheng"), "prompts"), fileName))
+    seqAdd(candidates, os.joinPath(os.joinPath(os.joinPath(os.joinPath(cwd, ".."), "cheng-codex"), "prompts"), fileName))
+    var i: int32 = 0
+    while i < len(candidates):
+        let candidate = argAt(candidates, i)
+        if len(candidate) > 0 && os.fileExists(candidate):
+            return candidate
+        i = i + 1
+    return ""
+
+fn basePromptPath(): str =
+    return findPromptFile("base_prompt.md")
+
+fn reviewPromptPath(): str =
+    return findPromptFile("review_prompt.md")
+
+fn fallbackBaseInstructions(): str =
+    return "You are a coding agent running in the Codex CLI."
+
+fn loadBaseInstructions(): str =
+    let path = basePromptPath()
+    let content = loadPromptFile(path)
+    if len(content) > 0:
+        return content
+    return fallbackBaseInstructions()
+
+fn loadReviewInstructions(): str =
+    let path = reviewPromptPath()
+    let content = loadPromptFile(path)
+    if len(content) > 0:
+        return content
+    return "You are a coding agent reviewing code. Focus on bugs, regressions, and missing tests."
+
+fn toLowerAscii(text: str): str =
+    if len(text) == 0:
+        return ""
+    var out = ""
+    var i: int32 = 0
+    while i < len(text):
+        let ch = text[i]
+        if ch >= 'A' && ch <= 'Z':
+            out = out + $ char(ord(ch) + 32)
+        else:
+            out = out + $ ch
+        i = i + 1
+    return out
+
+fn fileExtensionLower(path: str): str =
+    if len(path) == 0:
+        return ""
+    var idx: int32 = len(path) - 1
+    while idx >= 0:
+        let ch = path[idx]
+        if ch == '.':
+            if idx + 1 <= len(path) - 1:
+                return toLowerAscii(__cheng_slice_string(path, idx + 1, len(path) - 1, false))
+            return ""
+        if ch == '/' || ch == '\\':
+            break
+        idx = idx - 1
+    return ""
+
+fn mimeTypeForPath(path: str): str =
+    let ext = fileExtensionLower(path)
+    if ext == "png":
+        return "image/png"
+    if ext == "jpg" || ext == "jpeg":
+        return "image/jpeg"
+    if ext == "gif":
+        return "image/gif"
+    if ext == "webp":
+        return "image/webp"
+    return "image/png"
+
+fn base64EncodeFile(path: str): str =
+    if len(path) == 0 || ! os.fileExists(path):
+        return ""
+    let cmd = "base64 " + shellQuote(path) + " | tr -d '\\n'"
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let res = os.execCmdEx(cmd, opts, currentDirSafe())
+    var output = res.output
+    if output == nil:
+        output = ""
+    return trimLine(output)
+
+fn buildInputImageMessage(path: str): str =
+    let mime = mimeTypeForPath(path)
+    let encoded = base64EncodeFile(path)
+    if len(encoded) == 0:
+        return ""
+    # Build incrementally to avoid deep temporary chains.
+    var dataUrl: str = "data:"
+    dataUrl = dataUrl + mime
+    dataUrl = dataUrl + ";base64,"
+    dataUrl = dataUrl + encoded
+    var contentItems: seq[str] = newSeq[str]()
+    seqAdd(contentItems, jstrObject(seqStr2(jstrPair("type", jstrString("input_image")), jstrPair("image_url", jstrString(dataUrl)))))
+    var msgPairs: seq[str] = newSeq[str]()
+    seqAdd(msgPairs, jstrPair("type", jstrString("message")))
+    seqAdd(msgPairs, jstrPair("role", jstrString("user")))
+    seqAdd(msgPairs, jstrPair("content", jstrArray(contentItems)))
+    return jstrObject(msgPairs)
+
+fn buildInputImageUrlMessage(url: str): str =
+    if len(url) == 0:
+        return ""
+    var contentItems: seq[str] = newSeq[str]()
+    seqAdd(contentItems, jstrObject(seqStr2(
+        jstrPair("type", jstrString("input_image")),
+        jstrPair("image_url", jstrString(url))
+    )))
+    var msgPairs: seq[str] = newSeq[str]()
+    seqAdd(msgPairs, jstrPair("type", jstrString("message")))
+    seqAdd(msgPairs, jstrPair("role", jstrString("user")))
+    seqAdd(msgPairs, jstrPair("content", jstrArray(contentItems)))
+    return jstrObject(msgPairs)
+
+fn parseConfigBool(raw: str, outValue: var bool): bool =
+    if len(raw) == 0:
+        return false
+    let norm = normalizePolicy(trimLine(raw))
+    if norm == "true" || norm == "1" || norm == "yes":
+        outValue = true
+        return true
+    if norm == "false" || norm == "0" || norm == "no":
+        outValue = false
+        return true
+    return false
+
+fn configBoolValueLocal(key: str, defaultValue: bool): bool =
+    var value = defaultValue
+    if parseConfigBool(readConfigValue(key), value):
+        return value
+    return defaultValue
+
+fn configBoolValueAny(keys: seq[str], defaultValue: bool): bool =
+    var idx: int32 = 0
+    while idx < len(keys):
+        var value = defaultValue
+        if parseConfigBool(readConfigValue(keys[idx]), value):
+            return value
+        idx = idx + 1
+    return defaultValue
+
+fn buildToolsJson(disableWebSearch: bool, disableViewImage: bool): str =
+    var tools: seq[str] = newSeq[str]()
+    let enableShell = configBoolValueLocal("features.shell_tool", true)
+    let enableCollab = configBoolValueLocal("features.collab", false)
+    let enableViewImage = (! disableViewImage) && configBoolValueAny(seqStr2("features.view_image_tool", "tools.view_image"), true)
+    let enableWebSearch = (! disableWebSearch) && configBoolValueAny(seqStr4("features.web_search_request", "web_search_request", "tools.web_search", "web_search"), false)
+    if enableShell:
+        let shellTool = "{\"type\":\"function\",\"name\":\"shell_command\",\"description\":\"Run a shell command\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},\"workdir\":{\"type\":\"string\"},\"login\":{\"type\":\"boolean\"},\"timeout_ms\":{\"type\":\"number\"},\"sandbox_permissions\":{\"type\":\"string\",\"enum\":[\"use_default\",\"require_escalated\"]},\"justification\":{\"type\":\"string\"}},\"required\":[\"command\"]}}"
+        seqAdd(tools, shellTool)
+    let patchTool = "{\"type\":\"function\",\"name\":\"apply_patch\",\"description\":\"Apply a unified diff patch\",\"parameters\":{\"type\":\"object\",\"properties\":{\"patch\":{\"type\":\"string\"}},\"required\":[\"patch\"]}}"
+    seqAdd(tools, patchTool)
+    let planTool = "{\"type\":\"function\",\"name\":\"update_plan\",\"description\":\"Updates the task plan. Provide an optional explanation and a list of plan items, each with a step and status. At most one step can be in_progress at a time.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"explanation\":{\"type\":\"string\"},\"plan\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"step\":{\"type\":\"string\"},\"status\":{\"type\":\"string\"}},\"required\":[\"step\",\"status\"]}}},\"required\":[\"plan\"]}}"
+    seqAdd(tools, planTool)
+    if enableCollab:
+        let spawnAgentTool = "{\"type\":\"function\",\"name\":\"spawn_agent\",\"description\":\"Spawn a new agent and return its id.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"message\":{\"type\":\"string\",\"description\":\"Initial message to send to the new agent.\"},\"agent_type\":{\"type\":\"string\",\"description\":\"Optional agent type to spawn (default, orchestrator, worker).\"}},\"required\":[\"message\"]}}"
+        let sendInputTool = "{\"type\":\"function\",\"name\":\"send_input\",\"description\":\"Send a message to an existing agent.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"Identifier of the agent to message.\"},\"message\":{\"type\":\"string\",\"description\":\"Message to send to the agent.\"},\"interrupt\":{\"type\":\"boolean\",\"description\":\"When true, interrupt the agent before sending the message.\"}},\"required\":[\"id\",\"message\"]}}"
+        let waitTool = "{\"type\":\"function\",\"name\":\"wait\",\"description\":\"Wait for agents and return their statuses. If no agent is done, no status get returned.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Identifiers of the agents to wait on.\"},\"timeout_ms\":{\"type\":\"number\",\"description\":\"Optional timeout in milliseconds.\"}},\"required\":[\"ids\"]}}"
+        let closeAgentTool = "{\"type\":\"function\",\"name\":\"close_agent\",\"description\":\"Close an agent and return its last known status.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"Identifier of the agent to close.\"}},\"required\":[\"id\"]}}"
+        seqAdd(tools, spawnAgentTool)
+        seqAdd(tools, sendInputTool)
+        seqAdd(tools, waitTool)
+        seqAdd(tools, closeAgentTool)
+    if enableViewImage:
+        let viewImageTool = "{\"type\":\"function\",\"name\":\"view_image\",\"description\":\"Attach a local image (by filesystem path) to the conversation context for this turn.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}"
+        seqAdd(tools, viewImageTool)
+    if enableWebSearch:
+        let webSearchTool = "{\"type\":\"web_search\"}"
+        seqAdd(tools, webSearchTool)
+    return jstrArray(tools)
+
+fn buildChatToolsJson(disableViewImage: bool): str =
+    var tools: seq[str] = newSeq[str]()
+    let enableShell = configBoolValueLocal("features.shell_tool", true)
+    let enableCollab = configBoolValueLocal("features.collab", false)
+    let enableViewImage = (! disableViewImage) && configBoolValueAny(seqStr2("features.view_image_tool", "tools.view_image"), true)
+    if enableShell:
+        let shellTool = "{\"type\":\"function\",\"function\":{\"name\":\"shell_command\",\"description\":\"Run a shell command\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},\"workdir\":{\"type\":\"string\"},\"login\":{\"type\":\"boolean\"},\"timeout_ms\":{\"type\":\"number\"},\"sandbox_permissions\":{\"type\":\"string\",\"enum\":[\"use_default\",\"require_escalated\"]},\"justification\":{\"type\":\"string\"}},\"required\":[\"command\"]}}}"
+        seqAdd(tools, shellTool)
+    let patchTool = "{\"type\":\"function\",\"function\":{\"name\":\"apply_patch\",\"description\":\"Apply a unified diff patch\",\"parameters\":{\"type\":\"object\",\"properties\":{\"patch\":{\"type\":\"string\"}},\"required\":[\"patch\"]}}}"
+    seqAdd(tools, patchTool)
+    let planTool = "{\"type\":\"function\",\"function\":{\"name\":\"update_plan\",\"description\":\"Updates the task plan. Provide an optional explanation and a list of plan items, each with a step and status. At most one step can be in_progress at a time.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"explanation\":{\"type\":\"string\"},\"plan\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"step\":{\"type\":\"string\"},\"status\":{\"type\":\"string\"}},\"required\":[\"step\",\"status\"]}}},\"required\":[\"plan\"]}}}"
+    seqAdd(tools, planTool)
+    if enableCollab:
+        let spawnAgentTool = "{\"type\":\"function\",\"function\":{\"name\":\"spawn_agent\",\"description\":\"Spawn a new agent and return its id.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"message\":{\"type\":\"string\",\"description\":\"Initial message to send to the new agent.\"},\"agent_type\":{\"type\":\"string\",\"description\":\"Optional agent type to spawn (default, orchestrator, worker).\"}},\"required\":[\"message\"]}}}"
+        let sendInputTool = "{\"type\":\"function\",\"function\":{\"name\":\"send_input\",\"description\":\"Send a message to an existing agent.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"Identifier of the agent to message.\"},\"message\":{\"type\":\"string\",\"description\":\"Message to send to the agent.\"},\"interrupt\":{\"type\":\"boolean\",\"description\":\"When true, interrupt the agent before sending the message.\"}},\"required\":[\"id\",\"message\"]}}}"
+        let waitTool = "{\"type\":\"function\",\"function\":{\"name\":\"wait\",\"description\":\"Wait for agents and return their statuses. If no agent is done, no status get returned.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Identifiers of the agents to wait on.\"},\"timeout_ms\":{\"type\":\"number\",\"description\":\"Optional timeout in milliseconds.\"}},\"required\":[\"ids\"]}}}"
+        let closeAgentTool = "{\"type\":\"function\",\"function\":{\"name\":\"close_agent\",\"description\":\"Close an agent and return its last known status.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"Identifier of the agent to close.\"}},\"required\":[\"id\"]}}}"
+        seqAdd(tools, spawnAgentTool)
+        seqAdd(tools, sendInputTool)
+        seqAdd(tools, waitTool)
+        seqAdd(tools, closeAgentTool)
+    if enableViewImage:
+        let viewImageTool = "{\"type\":\"function\",\"function\":{\"name\":\"view_image\",\"description\":\"Attach a local image (by filesystem path) to the conversation context for this turn.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}}"
+        seqAdd(tools, viewImageTool)
+    return jstrArray(tools)
+
+fn buildChatMessage(role: str, text: str, imageUrl: str): str =
+    var pairs: seq[str] = newSeq[str]()
+    seqAdd(pairs, jstrPair("role", jstrString(role)))
+    if len(imageUrl) > 0:
+        var contentItems: seq[str] = newSeq[str]()
+        if len(text) > 0:
+            let textItem = jstrObject(seqStr2(
+                jstrPair("type", jstrString("text")),
+                jstrPair("text", jstrString(text))
+            ))
+            seqAdd(contentItems, textItem)
+        let imageObj = jstrObject(seqStr2(
+            jstrPair("type", jstrString("image_url")),
+            jstrPair("image_url", jstrObject(seqStr1(jstrPair("url", jstrString(imageUrl)))))
+        ))
+        seqAdd(contentItems, imageObj)
+        seqAdd(pairs, jstrPair("content", jstrArray(contentItems)))
+    else:
+        seqAdd(pairs, jstrPair("content", jstrString(text)))
+    return jstrObject(pairs)
+
+fn instructionTextForRequest(instructions: str): str =
+    instructions
+    return "You are Codex."
+
+fn buildChatToolMessage(callId: str, content: str): str =
+    var pairs: seq[str] = newSeq[str]()
+    seqAdd(pairs, jstrPair("role", jstrString("tool")))
+    if len(callId) > 0:
+        seqAdd(pairs, jstrPair("tool_call_id", jstrString(callId)))
+    seqAdd(pairs, jstrPair("content", jstrString(content)))
+    return jstrObject(pairs)
+
+fn extractItemText(payload: str): str =
+    var text = ""
+    var idx: int32 = 0
+    while true:
+        let found = indexOfSubstr(payload, "\"type\":\"input_text\"", idx)
+        if found < 0:
+            break
+        let value = jsonExtractStringAfter(payload, "text", found)
+        if len(value) > 0:
+            if len(text) > 0:
+                text = text + value
+            else:
+                text = value
+        idx = found + 5
+    idx = 0
+    while true:
+        let found = indexOfSubstr(payload, "\"type\":\"output_text\"", idx)
+        if found < 0:
+            break
+        let value = jsonExtractStringAfter(payload, "text", found)
+        if len(value) > 0:
+            if len(text) > 0:
+                text = text + value
+            else:
+                text = value
+        idx = found + 5
+    return text
+
+fn extractItemImageUrl(payload: str): str =
+    let idx = indexOfSubstr(payload, "\"type\":\"input_image\"", 0)
+    if idx < 0:
+        return ""
+    var url = jsonExtractStringAfter(payload, "image_url", idx)
+    if len(url) == 0:
+        url = jsonExtractStringAfter(payload, "url", idx)
+    return url
+
+fn inputItemToChatMessage(item: str): str =
+    let kind = jsonExtractString(item, "type")
+    if kind == "message":
+        let role = jsonExtractString(item, "role")
+        let text = extractItemText(item)
+        let imageUrl = extractItemImageUrl(item)
+        if len(text) == 0 && len(imageUrl) == 0:
+            return ""
+        return buildChatMessage(role, text, imageUrl)
+    if kind == "function_call_output":
+        let callId = jsonExtractString(item, "call_id")
+        var content: str = jsonExtractString(item, "output")
+        if len(content) == 0:
+            # Back-compat with older internal representation.
+            content = jsonExtractString(item, "content")
+        return buildChatToolMessage(callId, content)
+    return ""
+
+fn buildChatMessages(instructions: str, inputItems: seq[str]): seq[str] =
+    var messages: seq[str] = newSeq[str]()
+    let systemText = instructionTextForRequest(instructions)
+    if len(systemText) > 0:
+        seqAdd(messages, buildChatMessage("system", systemText, ""))
+    var idx: int32 = 0
+    while idx < len(inputItems):
+        let msg = inputItemToChatMessage(inputItems[idx])
+        if len(msg) > 0:
+            seqAdd(messages, msg)
+        idx = idx + 1
+    return messages
+
+fn buildInputMessage(role: str, text: str): str =
+    var contentItems: seq[str] = newSeq[str]()
+    seqAdd(contentItems, jstrObject(seqStr2(jstrPair("type", jstrString("input_text")), jstrPair("text", jstrString(text)))))
+    var msgPairs: seq[str] = newSeq[str]()
+    seqAdd(msgPairs, jstrPair("type", jstrString("message")))
+    seqAdd(msgPairs, jstrPair("role", jstrString(role)))
+    seqAdd(msgPairs, jstrPair("content", jstrArray(contentItems)))
+    return jstrObject(msgPairs)
+
+fn buildAssistantMessage(text: str): str =
+    var contentItems: seq[str] = newSeq[str]()
+    seqAdd(contentItems, jstrObject(seqStr2(jstrPair("type", jstrString("output_text")), jstrPair("text", jstrString(text)))))
+    var msgPairs: seq[str] = newSeq[str]()
+    seqAdd(msgPairs, jstrPair("type", jstrString("message")))
+    seqAdd(msgPairs, jstrPair("role", jstrString("assistant")))
+    seqAdd(msgPairs, jstrPair("content", jstrArray(contentItems)))
+    return jstrObject(msgPairs)
+
+fn buildToolCall(callId: str, name: str, arguments: str): str =
+    # Some backends (notably chatgpt.com/backend-api) require the original
+    # function_call item to be present in `input` when sending a matching
+    # function_call_output, otherwise they reject with:
+    # "No tool call found for function call output with call_id ...".
+    var pairs: seq[str] = newSeq[str]()
+    seqAdd(pairs, jstrPair("type", jstrString("function_call")))
+    seqAdd(pairs, jstrPair("call_id", jstrString(callId)))
+    seqAdd(pairs, jstrPair("name", jstrString(name)))
+    seqAdd(pairs, jstrPair("arguments", jstrString(arguments)))
+    return jstrObject(pairs)
+
+fn buildToolOutput(callId: str, content: str, success: bool): str =
+    # Responses API expects `output` to be a string (or an array of content
+    # objects), not a nested object. Encode tool success into the output text.
+    # Keep the `success` parameter for callers, but do not serialize it here.
+    success
+    var pairs: seq[str] = newSeq[str]()
+    seqAdd(pairs, jstrPair("type", jstrString("function_call_output")))
+    seqAdd(pairs, jstrPair("call_id", jstrString(callId)))
+    seqAdd(pairs, jstrPair("output", jstrString(content)))
+    return jstrObject(pairs)
+
+fn buildResponsesRequest(model: str, instructions: str, inputItems: seq[str], useTools: bool, outputSchemaJson: str, disableWebSearch: bool, disableViewImage: bool, previousResponseId: str): str =
+    traceModelLocal("buildResponsesRequest.begin")
+    # Keep `previousResponseId` for future compatibility (OpenAI Responses API
+    # supports it), but chatgpt.com/backend-api rejects unknown parameters.
+    previousResponseId
+    var pairs: seq[str] = newSeq[str]()
+    traceModelLocal("buildResponsesRequest.pairs.new")
+    seqAdd(pairs, jstrPair("model", jstrString(model)))
+    traceModelLocal("buildResponsesRequest.model.added")
+    let requestInstructions = instructionTextForRequest(instructions)
+    seqAdd(pairs, jstrPair("instructions", jstrString(requestInstructions)))
+    traceModelLocal("buildResponsesRequest.instructions.added")
+    seqAdd(pairs, jstrPair("input", jstrArray(inputItems)))
+    traceModelLocal("buildResponsesRequest.input.added")
+    seqAdd(pairs, jstrPair("stream", jstrBool(true)))
+    traceModelLocal("buildResponsesRequest.stream.added")
+    seqAdd(pairs, jstrPair("store", jstrBool(false)))
+    traceModelLocal("buildResponsesRequest.store.added")
+    if len(outputSchemaJson) > 0:
+        let responseFormat = "{\"type\":\"json_schema\",\"json_schema\":" + outputSchemaJson + "}"
+        seqAdd(pairs, jstrPair("response_format", responseFormat))
+        traceModelLocal("buildResponsesRequest.schema.added")
+    if useTools:
+        seqAdd(pairs, jstrPair("tools", buildToolsJson(disableWebSearch, disableViewImage)))
+        seqAdd(pairs, jstrPair("tool_choice", jstrString("auto")))
+        seqAdd(pairs, jstrPair("parallel_tool_calls", jstrBool(false)))
+        traceModelLocal("buildResponsesRequest.tools.added")
+    traceModelLocal("buildResponsesRequest.before.object")
+    return jstrObject(pairs)
+
+fn buildChatRequest(model: str, instructions: str, inputItems: seq[str], useTools: bool, outputSchemaJson: str, disableViewImage: bool): str =
+    var pairs: seq[str] = newSeq[str]()
+    seqAdd(pairs, jstrPair("model", jstrString(model)))
+    let messages = buildChatMessages(instructions, inputItems)
+    seqAdd(pairs, jstrPair("messages", jstrArray(messages)))
+    if len(outputSchemaJson) > 0:
+        let responseFormat = "{\"type\":\"json_schema\",\"json_schema\":" + outputSchemaJson + "}"
+        seqAdd(pairs, jstrPair("response_format", responseFormat))
+    if useTools:
+        seqAdd(pairs, jstrPair("tools", buildChatToolsJson(disableViewImage)))
+        seqAdd(pairs, jstrPair("tool_choice", jstrString("auto")))
+    return jstrObject(pairs)
+
+fn stripTrailingSlash(text: str): str =
+    if len(text) == 0:
+        return ""
+    var endIdx: int32 = len(text) - 1
+    while endIdx >= 0 && text[endIdx] == '/':
+        endIdx = endIdx - 1
+    if endIdx < 0:
+        return ""
+    return __cheng_slice_string(text, 0, endIdx, false)
+
+fn normalizeResponsesUrl(baseUrl: str): str =
+    let trimmed = trimLine(baseUrl)
+    if len(trimmed) == 0:
+        return ""
+    let url = stripTrailingSlash(trimmed)
+    if endsWithSuffix(url, "/responses"):
+        return url
+    if endsWithSuffix(url, "/v1"):
+        return url + "/responses"
+    return url + "/responses"
+
+fn normalizeChatUrl(baseUrl: str): str =
+    let trimmed = trimLine(baseUrl)
+    if len(trimmed) == 0:
+        return ""
+    var url = stripTrailingSlash(trimmed)
+    if endsWithSuffix(url, "/responses"):
+        let cut = len(url) - len("/responses") - 1
+        if cut >= 0:
+            url = __cheng_slice_string(url, 0, cut, false)
+    if endsWithSuffix(url, "/chat/completions"):
+        return url
+    if endsWithSuffix(url, "/v1/chat/completions"):
+        return url
+    if endsWithSuffix(url, "/v1/chat"):
+        return url + "/completions"
+    if endsWithSuffix(url, "/v1"):
+        return url + "/chat/completions"
+    return url + "/v1/chat/completions"
+
+fn writeTempRequest(body: str): str =
+    let home = codexHomeDir()
+    if len(home) == 0:
+        return ""
+    if ! os.dirExists(home):
+        os.createDir(home)
+    let path = os.joinPath(home, "last_request.json")
+    os.writeFile(path, body)
+    return path
+
+fn findLastIndexOfSubstr(text: str, needle: str): int32 =
+    var idx: int32 = -1
+    var start: int32 = 0
+    while true:
+        let found = indexOfSubstr(text, needle, start)
+        if found < 0:
+            break
+        idx = found
+        start = found + len(needle)
+    return idx
+
+fn splitHttpStatus(output: str): HttpSplit =
+    let marker = "HTTP_STATUS:"
+    let idx = findLastIndexOfSubstr(output, marker)
+    if idx < 0:
+        let lines = splitLinesSimple(output)
+        if len(lines) == 0:
+            return HttpSplit(body: output, status: 0)
+        let first = lines[0]
+        if ! hasPrefix(first, "HTTP/"):
+            return HttpSplit(body: output, status: 0)
+        let status = parseHttpStatusLine(first)
+        var bodyStart: int32 = -1
+        var i: int32 = 1
+        while i < len(lines):
+            if len(lines[i]) == 0:
+                bodyStart = i + 1
+                break
+            i = i + 1
+        if bodyStart < 0 || bodyStart >= len(lines):
+            return HttpSplit(body: "", status: status)
+        var bodyLines: seq[str] = newSeq[str]()
+        var j: int32 = bodyStart
+        while j < len(lines):
+            seqAdd(bodyLines, lines[j])
+            j = j + 1
+        let bodyText = joinLinesSimple(bodyLines)
+        return HttpSplit(body: bodyText, status: status)
+    let statusStart = idx + len(marker)
+    var i: int32 = statusStart
+    var code: int32 = 0
+    var saw = false
+    while i < len(output):
+        let ch = output[i]
+        if ch < '0' || ch > '9':
+            break
+        code = code * 10 + (ord(ch) - ord('0'))
+        saw = true
+        i = i + 1
+    var bodyText: str = ""
+    if idx > 0:
+        bodyText = __cheng_slice_string(output, 0, idx - 1, false)
+    if ! saw:
+        return HttpSplit(body: bodyText, status: 0)
+    return HttpSplit(body: bodyText, status: code)
+
+fn joinLinesSimple(parts: seq[str]): str =
+    var out = ""
+    var idx: int32 = 0
+    while idx < len(parts):
+        if len(out) == 0:
+            out = parts[idx]
+        else:
+            out = out + "\n"
+            out = out + parts[idx]
+        idx = idx + 1
+    return out
+
+fn parseHttpStatusLine(line: str): int32 =
+    if len(line) == 0:
+        return 0
+    var idx: int32 = 0
+    while idx < len(line) && line[idx] != ' ':
+        idx = idx + 1
+    while idx < len(line) && line[idx] == ' ':
+        idx = idx + 1
+    var code: int32 = 0
+    var saw = false
+    while idx < len(line):
+        let ch = line[idx]
+        if ch < '0' || ch > '9':
+            break
+        code = code * 10 + (ord(ch) - ord('0'))
+        saw = true
+        idx = idx + 1
+    if saw:
+        return code
+    return 0
+
+fn extractSseEventData(payload: str, targetEvent: str): str =
+    if len(payload) == 0 || len(targetEvent) == 0:
+        return ""
+    let needle = "event: " + targetEvent
+    let pos = findLastIndexOfSubstr(payload, needle)
+    if pos < 0:
+        return ""
+    let nl = indexOfSubstr(payload, "\n", pos)
+    if nl < 0:
+        return ""
+    var idx: int32 = nl + 1
+    var out = ""
+    while idx < len(payload):
+        # Blank line -> end of event
+        if payload[idx] == '\n':
+            break
+        if payload[idx] == '\r' && idx + 1 < len(payload) && payload[idx + 1] == '\n':
+            break
+        if indexOfSubstr(payload, "data:", idx) != idx:
+            break
+        var dataStart: int32 = idx + len("data:")
+        if dataStart < len(payload) && payload[dataStart] == ' ':
+            dataStart = dataStart + 1
+        var lineEnd = indexOfSubstr(payload, "\n", idx)
+        if lineEnd < 0:
+            lineEnd = len(payload)
+        var dataEnd: int32 = lineEnd - 1
+        if dataEnd >= dataStart && payload[dataEnd] == '\r':
+            dataEnd = dataEnd - 1
+        var part = ""
+        if dataEnd >= dataStart:
+            part = __cheng_slice_string(payload, dataStart, dataEnd, false)
+        let trimmed = trimLine(part)
+        if len(trimmed) > 0 && trimmed != "[DONE]":
+            if len(out) == 0:
+                out = trimmed
+            else:
+                out = out + "\n" + trimmed
+        if lineEnd >= len(payload):
+            break
+        idx = lineEnd + 1
+    return out
+
+fn extractSseDataLineAfterEvent(payload: str, targetEvent: str): str =
+    if len(payload) == 0 || len(targetEvent) == 0:
+        return ""
+    let needle = "event: " + targetEvent
+    let pos = findLastIndexOfSubstr(payload, needle)
+    if pos < 0:
+        return ""
+    var dataPos = indexOfSubstr(payload, "\ndata:", pos)
+    if dataPos >= 0:
+        dataPos = dataPos + 1
+    else:
+        dataPos = indexOfSubstr(payload, "\r\ndata:", pos)
+        if dataPos >= 0:
+            dataPos = dataPos + 2
+    if dataPos < 0:
+        return ""
+    var start: int32 = dataPos + len("data:")
+    if start < len(payload) && payload[start] == ' ':
+        start = start + 1
+    var endNl = indexOfSubstr(payload, "\n", start)
+    if endNl < 0:
+        endNl = len(payload)
+    var endIdx: int32 = endNl - 1
+    if endIdx >= start && payload[endIdx] == '\r':
+        endIdx = endIdx - 1
+    if endIdx < start:
+        return ""
+    return trimLine(__cheng_slice_string(payload, start, endIdx, false))
+
+fn extractOutputText(payload: str): str =
+    var text = jsonExtractString(payload, "output_text")
+    if len(text) > 0:
+        return text
+    var idx: int32 = 0
+    while true:
+        let found = indexOfSubstr(payload, "\"type\":\"output_text\"", idx)
+        if found < 0:
+            break
+        let value = jsonExtractStringAfter(payload, "text", found)
+        if len(value) > 0:
+            if len(text) > 0:
+                text = text + value
+            else:
+                text = value
+        idx = found + 5
+    return text
+
+fn extractChatContent(payload: str): str =
+    let msgIdx = jsonFindKeyAfter(payload, "message", 0)
+    if msgIdx >= 0:
+        let content = jsonExtractStringAfter(payload, "content", msgIdx)
+        if len(content) > 0:
+            return content
+    return jsonExtractString(payload, "content")
+
+fn extractChatToolCalls(payload: str): seq[ToolCall] =
+    var outVal: seq[ToolCall] = newSeq[ToolCall]()
+    var idx: int32 = 0
+    while true:
+        let found = indexOfSubstr(payload, "\"tool_calls\"", idx)
+        if found < 0:
+            break
+        var inner: int32 = found
+        while true:
+            let funcIdx = indexOfSubstr(payload, "\"function\"", inner)
+            if funcIdx < 0:
+                break
+            let name = jsonExtractStringAfter(payload, "name", funcIdx)
+            let argsRaw = jsonExtractStringAfter(payload, "arguments", funcIdx)
+            let callId = jsonExtractStringAfter(payload, "id", funcIdx)
+            if len(name) > 0:
+                var call: ToolCall = ToolCall()
+                call.name = name
+                call.arguments = jsonUnescape(argsRaw)
+                call.callId = callId
+                seqAdd(outVal, call)
+            inner = funcIdx + 9
+        idx = found + 10
+    var funcIdx: int32 = 0
+    while true:
+        let found = indexOfSubstr(payload, "\"function_call\"", funcIdx)
+        if found < 0:
+            break
+        let name = jsonExtractStringAfter(payload, "name", found)
+        let argsRaw = jsonExtractStringAfter(payload, "arguments", found)
+        if len(name) > 0:
+            var call: ToolCall = ToolCall()
+            call.name = name
+            call.arguments = jsonUnescape(argsRaw)
+            call.callId = ""
+            seqAdd(outVal, call)
+        funcIdx = found + 9
+    return outVal
+
+fn extractFunctionCalls(payload: str): seq[ToolCall] =
+    var outVal: seq[ToolCall] = newSeq[ToolCall]()
+    var idx: int32 = 0
+    while true:
+        let found = indexOfSubstr(payload, "\"type\":\"function_call\"", idx)
+        if found < 0:
+            break
+        let name = jsonExtractStringAfter(payload, "name", found)
+        let argsRaw = jsonExtractStringAfter(payload, "arguments", found)
+        let callId = jsonExtractStringAfter(payload, "call_id", found)
+        if len(name) > 0:
+            var call: ToolCall = ToolCall()
+            call.name = name
+            call.arguments = jsonUnescape(argsRaw)
+            call.callId = callId
+            seqAdd(outVal, call)
+        idx = found + 5
+    return outVal
+
+fn extractWebSearchQueries(payload: str): seq[str] =
+    var outVal: seq[str] = newSeq[str]()
+    var idx: int32 = 0
+    while true:
+        let typeIdx = jsonFindKeyAfter(payload, "type", idx)
+        if typeIdx < 0:
+            break
+        let kind = jsonExtractStringAfter(payload, "type", typeIdx)
+        if kind == "web_search_call":
+            let query = jsonExtractStringAfter(payload, "query", typeIdx)
+            if len(query) > 0:
+                seqAdd(outVal, query)
+        idx = typeIdx + 6
+    return outVal
+
+fn extractResponseId(payload: str): str =
+    return jsonExtractString(payload, "id")
+
+fn extractFirstChatToolCall(payload: str): ToolCall =
+    var call: ToolCall = ToolCall()
+    call.name = ""
+    call.arguments = ""
+    call.callId = ""
+    let toolCallsIdx = indexOfSubstr(payload, "\"tool_calls\"", 0)
+    if toolCallsIdx >= 0:
+        let funcIdx = indexOfSubstr(payload, "\"function\"", toolCallsIdx)
+        if funcIdx >= 0:
+            let name = jsonExtractStringAfter(payload, "name", funcIdx)
+            let argsRaw = jsonExtractStringAfter(payload, "arguments", funcIdx)
+            let callId = jsonExtractStringAfter(payload, "id", funcIdx)
+            if len(name) > 0:
+                call.name = name
+                call.arguments = jsonUnescape(argsRaw)
+                call.callId = callId
+                return call
+    let fcIdx = indexOfSubstr(payload, "\"function_call\"", 0)
+    if fcIdx >= 0:
+        let name = jsonExtractStringAfter(payload, "name", fcIdx)
+        let argsRaw = jsonExtractStringAfter(payload, "arguments", fcIdx)
+        if len(name) > 0:
+            call.name = name
+            call.arguments = jsonUnescape(argsRaw)
+            call.callId = ""
+            return call
+    return call
+
+fn extractFirstFunctionCall(payload: str): ToolCall =
+    var call: ToolCall = ToolCall()
+    call.name = ""
+    call.arguments = ""
+    call.callId = ""
+    let found = indexOfSubstr(payload, "\"type\":\"function_call\"", 0)
+    if found < 0:
+        return call
+    let name = jsonExtractStringAfter(payload, "name", found)
+    let argsRaw = jsonExtractStringAfter(payload, "arguments", found)
+    let callId = jsonExtractStringAfter(payload, "call_id", found)
+    if len(name) > 0:
+        call.name = name
+        call.arguments = jsonUnescape(argsRaw)
+        call.callId = callId
+    return call
+
+fn callChatCompletionsApi(model: str, instructions: str, inputItems: seq[str], useTools: bool, outputSchemaJson: str, disableViewImage: bool): ModelResponse =
+    traceModelLocal("callChat.begin")
+    var res: ModelResponse = ModelResponse(ok: false, outputText: "", hasToolCall: false, toolCall: ToolCall(name: "", arguments: "", callId: ""), webSearchQueries: newSeq[str](), responseId: "", error: "")
+    let auth = loadAuthForResponses()
+    if ! auth.ok:
+        res.error = "missing auth token"
+        return res
+    let token = auth.token
+    let accountId = auth.accountId
+    traceModelLocal("callChat.auth.loaded")
+    let resolvedModel = resolveModelForRequest(model)
+    traceModelLocal("callChat.model.resolved")
+    let baseUrl = normalizeChatUrl(loadBaseUrl())
+    if len(baseUrl) == 0:
+        res.error = "missing base url"
+        return res
+    traceModelLocal("callChat.baseUrl.ready")
+    let bodyJson = buildChatRequest(resolvedModel, instructions, inputItems, useTools, outputSchemaJson, disableViewImage)
+    traceModelLocal("callChat.request.built")
+    let path = writeTempRequest(bodyJson)
+    if len(path) == 0:
+        res.error = "request write failed"
+        return res
+    traceModelLocal("callChat.request.written")
+    let homeDir = codexHomeDir()
+    # Build the curl command incrementally to avoid deep temporary chains.
+    var cmd: str = "curl -sS -N --connect-timeout 10 --max-time 90 -w "
+    cmd = cmd + shellQuote("HTTP_STATUS:%{http_code}")
+    cmd = cmd + " -H "
+    cmd = cmd + shellQuote("Content-Type: application/json")
+    if len(token) > 0:
+        let authHdr = writeCurlHeaderFile(homeDir, "hdr_auth.txt", "Authorization: Bearer " + token)
+        if len(authHdr) > 0:
+            cmd = cmd + " -H "
+            var hdrRef: str = "@"
+            hdrRef = hdrRef + authHdr
+            cmd = cmd + shellQuote(hdrRef)
+    if len(accountId) > 0:
+        let accHdr = writeCurlHeaderFile(homeDir, "hdr_acc.txt", "ChatGPT-Account-Id: " + accountId)
+        if len(accHdr) > 0:
+            cmd = cmd + " -H "
+            var hdrRef: str = "@"
+            hdrRef = hdrRef + accHdr
+            cmd = cmd + shellQuote(hdrRef)
+    # Build incrementally to avoid deep temporary chains (msg is constructed even if tracing is off).
+    var meta: str = "callChat.auth.meta token_len="
+    meta = meta + intToStr(len(token))
+    meta = meta + " account_len="
+    meta = meta + intToStr(len(accountId))
+    traceModelLocal(meta)
+    cmd = cmd + " --data @"
+    cmd = cmd + shellQuote(path)
+    cmd = cmd + " "
+    cmd = cmd + shellQuote(baseUrl)
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    debugHttpLog("curl_request", cmd)
+    traceModelLocal("callChat.before.exec")
+    let result = os.execCmdEx(cmd, opts, currentDirSafe())
+    var outText: str = result.output
+    if outText == nil:
+        outText = ""
+    traceModelLocal("callChat.after.exec")
+    var curlMeta: str = "exit="
+    curlMeta = curlMeta + intToStr(result.exitCode)
+    curlMeta = curlMeta + "\nbytes="
+    curlMeta = curlMeta + intToStr(len(outText))
+    debugHttpLog("curl_result", curlMeta)
+    var split = splitHttpStatus(outText)
+    if split.body == nil:
+        split.body = ""
+    traceModelLocal("callChat.after.split")
+    var statusMeta: str = "callChat.status="
+    statusMeta = statusMeta + intToStr(split.status)
+    statusMeta = statusMeta + " exit="
+    statusMeta = statusMeta + intToStr(result.exitCode)
+    traceModelLocal(statusMeta)
+    if split.status < 200 || split.status >= 300:
+        res.error = "http status "
+        res.error = res.error + intToStr(split.status)
+        res.outputText = split.body
+        return res
+    res.ok = true
+    res.outputText = extractChatContent(split.body)
+    let call = extractFirstChatToolCall(split.body)
+    if len(call.name) > 0:
+        res.hasToolCall = true
+        res.toolCall.name = call.name
+        res.toolCall.arguments = call.arguments
+        res.toolCall.callId = call.callId
+    res.webSearchQueries = newSeq[str]()
+    res.responseId = extractResponseId(split.body)
+    return res
+
+fn callResponsesApi(model: str, instructions: str, inputItems: seq[str], useTools: bool, outputSchemaJson: str, disableWebSearch: bool, disableViewImage: bool, previousResponseId: str): ModelResponse =
+    traceModelLocal("callResponses.begin")
+    debugCrumb("callResponses.begin")
+    let wire = loadWireApi()
+    if wire == "chat" || wire == "chatcompletions":
+        traceModelLocal("callResponses.route.chat")
+        previousResponseId
+        return callChatCompletionsApi(model, instructions, inputItems, useTools, outputSchemaJson, disableViewImage)
+    var res: ModelResponse = ModelResponse(ok: false, outputText: "", hasToolCall: false, toolCall: ToolCall(name: "", arguments: "", callId: ""), webSearchQueries: newSeq[str](), responseId: "", error: "")
+    let auth = loadAuthForResponses()
+    if ! auth.ok:
+        res.error = "missing auth token"
+        return res
+    let token = auth.token
+    let accountId = auth.accountId
+    var authMeta: str = "callResponses.auth.loaded token_len="
+    authMeta = authMeta + intToStr(len(token))
+    authMeta = authMeta + " account_len="
+    authMeta = authMeta + intToStr(len(accountId))
+    traceModelLocal(authMeta)
+    debugCrumb("callResponses.auth.loaded")
+    let resolvedModel = resolveModelForRequest(model)
+    traceModelLocal("callResponses.model.resolved")
+    let baseUrl = normalizeResponsesUrl(loadBaseUrl())
+    if len(baseUrl) == 0:
+        res.error = "missing base url"
+        return res
+    traceModelLocal("callResponses.baseUrl.ready")
+    debugCrumb("callResponses.baseUrl.ready")
+    let bodyJson = buildResponsesRequest(resolvedModel, instructions, inputItems, useTools, outputSchemaJson, disableWebSearch, disableViewImage, previousResponseId)
+    traceModelLocal("callResponses.request.built")
+    let path = writeTempRequest(bodyJson)
+    if len(path) == 0:
+        res.error = "request write failed"
+        return res
+    traceModelLocal("callResponses.request.written")
+    debugCrumb("callResponses.request.written")
+    let homeDir = codexHomeDir()
+    var respPath = ""
+    if len(homeDir) > 0:
+        respPath = os.joinPath(homeDir, "last_response.sse")
+    # Build the curl command incrementally to avoid deep temporary chains.
+    var cmd = "curl -sS -N --connect-timeout 10 --max-time 90"
+    cmd = cmd + " -w "
+    cmd = cmd + shellQuote("HTTP_STATUS:%{http_code}")
+    if len(respPath) > 0:
+        cmd = cmd + " -o "
+        cmd = cmd + shellQuote(respPath)
+    cmd = cmd + " -H "
+    cmd = cmd + shellQuote("Content-Type: application/json")
+    if len(token) > 0:
+        let authHdr = writeCurlHeaderFile(homeDir, "hdr_auth.txt", "Authorization: Bearer " + token)
+        if len(authHdr) > 0:
+            cmd = cmd + " -H "
+            var hdrRef: str = "@"
+            hdrRef = hdrRef + authHdr
+            cmd = cmd + shellQuote(hdrRef)
+    if len(accountId) > 0:
+        let accHdr = writeCurlHeaderFile(homeDir, "hdr_acc.txt", "ChatGPT-Account-Id: " + accountId)
+        if len(accHdr) > 0:
+            cmd = cmd + " -H "
+            var hdrRef: str = "@"
+            hdrRef = hdrRef + accHdr
+            cmd = cmd + shellQuote(hdrRef)
+    var meta: str = "callResponses.auth.meta token_len="
+    meta = meta + intToStr(len(token))
+    meta = meta + " account_len="
+    meta = meta + intToStr(len(accountId))
+    traceModelLocal(meta)
+    debugCrumb("callResponses.cmd.ready")
+    cmd = cmd + " --data @"
+    cmd = cmd + shellQuote(path)
+    cmd = cmd + " "
+    cmd = cmd + shellQuote(baseUrl)
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    debugHttpLog("curl_request", cmd)
+    traceModelLocal("callResponses.before.exec")
+    debugCrumb("callResponses.before.exec")
+    let result = os.execCmdEx(cmd, opts, currentDirSafe())
+    var outText: str = result.output
+    if outText == nil:
+        outText = ""
+    traceModelLocal("callResponses.after.exec")
+    debugCrumb("callResponses.after.exec")
+    var curlMeta: str = "exit="
+    curlMeta = curlMeta + intToStr(result.exitCode)
+    curlMeta = curlMeta + "\nbytes="
+    curlMeta = curlMeta + intToStr(len(outText))
+    debugHttpLog("curl_result", curlMeta)
+    var split = splitHttpStatus(outText)
+    if split.body == nil:
+        split.body = ""
+    var bodyText = ""
+    if len(respPath) > 0 && os.fileExists(respPath):
+        bodyText = os.readFile(respPath)
+        if bodyText == nil:
+            bodyText = ""
+    traceModelLocal("callResponses.after.split")
+    var statusMeta: str = "callResponses.status="
+    statusMeta = statusMeta + intToStr(split.status)
+    statusMeta = statusMeta + " exit="
+    statusMeta = statusMeta + intToStr(result.exitCode)
+    traceModelLocal(statusMeta)
+    debugCrumb("callResponses.after.split status=" + intToStr(split.status))
+    if split.status == 0 && result.exitCode != 0:
+        res.error = "request failed"
+        res.outputText = outText
+        return res
+    if split.status < 200 || split.status >= 300:
+        res.error = "http status "
+        res.error = res.error + intToStr(split.status)
+        res.outputText = bodyText
+        return res
+    traceModelLocal("callResponses.http.ok")
+    debugCrumb("callResponses.http.ok")
+    var payload = extractSseDataLineAfterEvent(bodyText, "response.completed")
+    if len(payload) == 0:
+        payload = bodyText
+    debugCrumb("callResponses.sse.extracted")
+    res.ok = true
+    traceModelLocal("callResponses.parse.begin")
+    debugCrumb("callResponses.parse.begin")
+    res.outputText = extractOutputText(payload)
+    traceModelLocal("callResponses.parse.output.len=" + intToStr(len(res.outputText)))
+    debugCrumb("callResponses.parse.output")
+    let call = extractFirstFunctionCall(payload)
+    if len(call.name) > 0:
+        res.hasToolCall = true
+        res.toolCall.name = call.name
+        res.toolCall.arguments = call.arguments
+        res.toolCall.callId = call.callId
+    var toolName = ""
+    if res.hasToolCall:
+        toolName = res.toolCall.name
+    traceModelLocal("callResponses.parse.tool=" + toolName)
+    res.webSearchQueries = extractWebSearchQueries(payload)
+    res.responseId = extractResponseId(payload)
+    traceModelLocal("callResponses.parse.done")
+    debugCrumb("callResponses.done")
+    return res

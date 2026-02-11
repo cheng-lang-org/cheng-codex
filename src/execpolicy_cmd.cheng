@@ -1,0 +1,1134 @@
+# Execpolicy check (prefix_rule subset)
+
+import system
+import std/os
+import seqs
+import cheng/codex/common
+type
+    ExecPolicyRule =
+        pattern: seq[seq[str]]
+        decision: str
+
+    ParsedValue =
+        kind: int32
+        strVal: str
+        listVal: seq[ParsedValue]
+
+    ParenBlock =
+        block: str
+        endIdx: int32
+
+    ParseIdentifierResult =
+        ok: bool
+        name: str
+        next: int32
+
+    ParseStringResult =
+        ok: bool
+        value: str
+        next: int32
+        err: str
+
+    ParseStringListResult =
+        ok: bool
+        items: seq[str]
+        next: int32
+        err: str
+
+    ParsePatternResult =
+        ok: bool
+        pattern: seq[seq[str]]
+        next: int32
+        err: str
+
+    ParseRuleResult =
+        ok: bool
+        rule: ExecPolicyRule
+        err: str
+
+    ParseRulesResult =
+        ok: bool
+        rules: seq[ExecPolicyRule]
+        err: str
+
+const
+    pvString = 1
+    pvList = 2
+
+fn isSpaceLocal(ch: char): bool =
+    ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'
+
+fn skipSpaces(text: str, idx: var int32) =
+    var pos: int32 = 0
+    pos = idx + 0
+    while pos < len(text) && isSpaceLocal(text[pos]):
+        pos = pos + 1
+    idx = pos
+
+fn stripComments(text: str): str =
+    if text == nil:
+        return ""
+    var out = ""
+    var i: int32 = 0
+    var inString = false
+    while i < len(text):
+        let ch = text[i]
+        if ch == '"' && (i == 0 || text[i - 1] != '\\'):
+            inString = ! inString
+            out = out + $ ch
+            i = i + 1
+            continue
+        if ch == '#' && ! inString:
+            while i < len(text) && text[i] != '\n':
+                i = i + 1
+            continue
+        out = out + $ ch
+        i = i + 1
+    return out
+
+fn skipSpacesPos(text: str, start: int32): int32 =
+    var pos = start
+    while pos < len(text) && isSpaceLocal(text[pos]):
+        pos = pos + 1
+    return pos
+
+fn isIdentChar(ch: char): bool =
+    (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-'
+
+fn parseIdentifierAt(text: str, start: int32): ParseIdentifierResult =
+    var out: ParseIdentifierResult
+    out.ok = false
+    out.name = ""
+    out.next = start
+    var pos = skipSpacesPos(text, start)
+    let begin = pos
+    while pos < len(text) && isIdentChar(text[pos]):
+        pos = pos + 1
+    if pos <= begin:
+        return out
+    out.ok = true
+    out.name = __cheng_slice_string(text, begin, pos - 1, false)
+    out.next = pos
+    return out
+
+fn parseStringLiteralAt(text: str, start: int32): ParseStringResult =
+    var out: ParseStringResult
+    out.ok = false
+    out.value = ""
+    out.next = start
+    out.err = ""
+    if start >= len(text) || text[start] != '"':
+        out.err = "invalid string literal"
+        return out
+    var value = ""
+    var idx = start + 1
+    while idx < len(text):
+        let ch = text[idx]
+        if ch == '\\' && idx + 1 < len(text):
+            let next = text[idx + 1]
+            if next == 'n':
+                value = value + "\n"
+            elif next == 'r':
+                value = value + "\r"
+            elif next == 't':
+                value = value + "\t"
+            else:
+                value = value + $ next
+            idx = idx + 2
+            continue
+        if ch == '"':
+            out.ok = true
+            out.value = value
+            out.next = idx + 1
+            return out
+        value = value + $ ch
+        idx = idx + 1
+    out.err = "unterminated string literal"
+    return out
+
+fn parseStringListAt(text: str, start: int32): ParseStringListResult =
+    var out: ParseStringListResult
+    out.ok = false
+    out.items = newSeq[str]()
+    out.next = start
+    out.err = ""
+    if start >= len(text) || text[start] != '[':
+        out.err = "expected list"
+        return out
+    var pos = start + 1
+    while pos < len(text):
+        pos = skipSpacesPos(text, pos)
+        if pos >= len(text):
+            out.err = "unterminated list"
+            return out
+        let ch = text[pos]
+        if ch == ']':
+            out.ok = true
+            out.next = pos + 1
+            return out
+        if ch != '"':
+            out.err = "list item must be string"
+            return out
+        let parsed = parseStringLiteralAt(text, pos)
+        if ! parsed.ok:
+            out.err = parsed.err
+            return out
+        seqAdd(out.items, parsed.value)
+        pos = skipSpacesPos(text, parsed.next)
+        if pos < len(text) && text[pos] == ',':
+            pos = pos + 1
+    out.err = "unterminated list"
+    return out
+
+fn parsePatternValueAt(text: str, start: int32): ParsePatternResult =
+    var out: ParsePatternResult
+    out.ok = false
+    out.pattern = newSeq[seq[str]]()
+    out.next = start
+    out.err = ""
+    if start >= len(text) || text[start] != '[':
+        out.err = "expected list"
+        return out
+    var pos = start + 1
+    while pos < len(text):
+        pos = skipSpacesPos(text, pos)
+        if pos >= len(text):
+            out.err = "unterminated pattern"
+            return out
+        let ch = text[pos]
+        if ch == ']':
+            pos = pos + 1
+            if len(out.pattern) == 0:
+                out.err = "pattern cannot be empty"
+                return out
+            out.ok = true
+            out.next = pos
+            return out
+        if ch == '"':
+            let parsed = parseStringLiteralAt(text, pos)
+            if ! parsed.ok:
+                out.err = parsed.err
+                return out
+            seqAdd(out.pattern, seqStr1(parsed.value))
+            pos = skipSpacesPos(text, parsed.next)
+            if pos < len(text) && text[pos] == ',':
+                pos = pos + 1
+            continue
+        if ch == '[':
+            let parsed = parseStringListAt(text, pos)
+            if ! parsed.ok:
+                out.err = parsed.err
+                return out
+            if len(parsed.items) == 0:
+                out.err = "pattern alternatives cannot be empty"
+                return out
+            seqAdd(out.pattern, parsed.items)
+            pos = skipSpacesPos(text, parsed.next)
+            if pos < len(text) && text[pos] == ',':
+                pos = pos + 1
+            continue
+        out.err = "unexpected token in pattern"
+        return out
+    out.err = "unterminated pattern"
+    return out
+
+fn skipUnknownValue(text: str, start: int32): int32 =
+    if start >= len(text):
+        return start
+    let ch = text[start]
+    if ch == '"':
+        let parsed = parseStringLiteralAt(text, start)
+        if parsed.ok:
+            return parsed.next
+        return -1
+    if ch == '[':
+        var pos = start
+        var depth: int32 = 0
+        var inString = false
+        while pos < len(text):
+            let cur = text[pos]
+            if cur == '"' && (pos == 0 || text[pos - 1] != '\\'):
+                inString = ! inString
+                pos = pos + 1
+                continue
+            if ! inString:
+                if cur == '[':
+                    depth = depth + 1
+                elif cur == ']':
+                    depth = depth - 1
+                    if depth == 0:
+                        return pos + 1
+            pos = pos + 1
+        return -1
+    var pos = start
+    while pos < len(text):
+        let cur = text[pos]
+        if cur == ',' || cur == '\n' || cur == '\r':
+            return pos
+        pos = pos + 1
+    return pos
+
+fn normalizeDecisionValue(value: str): str =
+    let norm = normalizePolicy(trimLine(value))
+    if len(norm) == 0:
+        return "allow"
+    if norm == "allow" || norm == "prompt" || norm == "forbidden":
+        return norm
+    return ""
+
+fn parseStringLiteral(text: str, startIdx: int32, outValue: var str): int32 =
+    var value = ""
+    outValue = ""
+    if startIdx >= len(text) || text[startIdx] != '"':
+        return -1
+    var idx: int32 = startIdx + 1
+    while idx < len(text):
+        let ch = text[idx]
+        if ch == '\\' && idx + 1 < len(text):
+            let next = text[idx + 1]
+            if next == 'n':
+                value = value + "\n"
+            elif next == 'r':
+                value = value + "\r"
+            elif next == 't':
+                value = value + "\t"
+            else:
+                value = value + $ next
+            idx = idx + 2
+            continue
+        if ch == '"':
+            outValue = value
+            return idx + 1
+        value = value + $ ch
+        idx = idx + 1
+    return -1
+
+fn parseListValue(text: str, idx: var int32, outItems: var seq[ParsedValue], err: var str): bool =
+    err = ""
+    var items: seq[ParsedValue] = newSeq[ParsedValue]()
+    var pos: int32 = 0
+    pos = idx + 0
+    if pos >= len(text) || text[pos] != '[':
+        err = "expected list"
+        return false
+    pos = pos + 1
+    while pos < len(text):
+        idx = pos
+        skipSpaces(text, idx)
+        pos = idx + 0
+        if pos >= len(text):
+            err = "unterminated list"
+            return false
+        let ch = text[pos]
+        if ch == ']':
+            pos = pos + 1
+            idx = pos
+            outItems = items
+            return true
+        var item: ParsedValue
+        if ch == '"':
+            var value = ""
+            let nextIdx = parseStringLiteral(text, pos, value)
+            if nextIdx < 0:
+                err = "invalid str literal"
+                return false
+            item.kind = pvString
+            item.strVal = value
+            seqAdd(items, item)
+            pos = nextIdx
+        elif ch == '[':
+            var nested: seq[ParsedValue]
+            var nestedErr = ""
+            if ! parseListValue(text, idx, nested, nestedErr):
+                err = nestedErr
+                return false
+            pos = idx + 0
+            item.kind = pvList
+            item.listVal = nested
+            seqAdd(items, item)
+        else:
+            err = "unexpected token in list"
+            return false
+        idx = pos
+        skipSpaces(text, idx)
+        pos = idx + 0
+        if pos < len(text) && text[pos] == ',':
+            pos = pos + 1
+            continue
+    err = "unterminated list"
+    return false
+
+fn parseIdentifier(text: str, idx: var int32): str =
+    skipSpaces(text, idx)
+    var pos: int32 = 0
+    pos = idx + 0
+    var start = pos
+    while pos < len(text):
+        let ch = text[pos]
+        if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-':
+            pos = pos + 1
+        else:
+            break
+    idx = pos
+    if pos <= start:
+        return ""
+    return __cheng_slice_string(text, start, pos - 1, false)
+
+fn parseExampleString(text: str, outTokens: var seq[str], err: var str): bool =
+    err = ""
+    var tokens: seq[str] = newSeq[str]()
+    if text == nil:
+        err = "empty example"
+        return false
+    var i: int32 = 0
+    var current = ""
+    var inSingle = false
+    var inDouble = false
+    while i < len(text):
+        let ch = text[i]
+        if inSingle:
+            if ch == '\'':
+                inSingle = false
+            else:
+                current = current + $ ch
+            i = i + 1
+            continue
+        if inDouble:
+            if ch == '"':
+                inDouble = false
+                i = i + 1
+                continue
+            if ch == '\\' && i + 1 < len(text):
+                let next = text[i + 1]
+                if next == 'n':
+                    current = current + "\n"
+                elif next == 'r':
+                    current = current + "\r"
+                elif next == 't':
+                    current = current + "\t"
+                else:
+                    current = current + $ next
+                i = i + 2
+                continue
+            current = current + $ ch
+            i = i + 1
+            continue
+        if isSpaceLocal(ch):
+            if len(current) > 0:
+                seqAdd(tokens, current)
+                current = ""
+            i = i + 1
+            continue
+        if ch == '"':
+            inDouble = true
+            i = i + 1
+            continue
+        if ch == '\'':
+            inSingle = true
+            i = i + 1
+            continue
+        if ch == '\\' && i + 1 < len(text):
+            let next = text[i + 1]
+            current = current + $ next
+            i = i + 2
+            continue
+        current = current + $ ch
+        i = i + 1
+    if inSingle || inDouble:
+        err = "unterminated quote in example"
+        return false
+    if len(current) > 0:
+        seqAdd(tokens, current)
+    if len(tokens) == 0:
+        err = "empty example"
+        return false
+    outTokens = tokens
+    return true
+
+fn parsePattern(items: seq[ParsedValue], outPattern: var seq[seq[str]], err: var str): bool =
+    err = ""
+    var pattern: seq[seq[str]] = newSeq[seq[str]]()
+    var i: int32 = 0
+    while i < len(items):
+        let item = items[i]
+        if item.kind == pvString:
+            seqAdd(pattern, seqStr1(item.strVal))
+        elif item.kind == pvList:
+            var alts: seq[str] = newSeq[str]()
+            var j: int32 = 0
+            while j < len(item.listVal):
+                let altItem = item.listVal[j]
+                if altItem.kind != pvString:
+                    err = "pattern alternatives must be strings"
+                    return false
+                seqAdd(alts, altItem.strVal)
+                j = j + 1
+            if len(alts) == 0:
+                err = "pattern alternatives cannot be empty"
+                return false
+            seqAdd(pattern, alts)
+        else:
+            err = "invalid pattern element"
+            return false
+        i = i + 1
+    if len(pattern) == 0:
+        err = "pattern cannot be empty"
+        return false
+    outPattern = pattern
+    return true
+
+fn parseExamples(items: seq[ParsedValue], outExamples: var seq[seq[str]], err: var str): bool =
+    err = ""
+    var examples: seq[seq[str]] = newSeq[seq[str]]()
+    var i: int32 = 0
+    while i < len(items):
+        let item = items[i]
+        if item.kind == pvString:
+            var tokens: seq[str]
+            var splitErr = ""
+            if ! parseExampleString(item.strVal, tokens, splitErr):
+                err = splitErr
+                return false
+            seqAdd(examples, tokens)
+        elif item.kind == pvList:
+            var tokens: seq[str] = newSeq[str]()
+            var j: int32 = 0
+            while j < len(item.listVal):
+                let tokenItem = item.listVal[j]
+                if tokenItem.kind != pvString:
+                    err = "example list must contain strings"
+                    return false
+                seqAdd(tokens, tokenItem.strVal)
+                j = j + 1
+            if len(tokens) == 0:
+                err = "example list cannot be empty"
+                return false
+            seqAdd(examples, tokens)
+        else:
+            err = "invalid example"
+            return false
+        i = i + 1
+    outExamples = examples
+    return true
+
+fn parseDecisionValue(value: str, outDecision: var str): bool =
+    let norm = normalizePolicy(trimLine(value))
+    if len(norm) == 0:
+        outDecision = "allow"
+        return true
+    if norm == "allow" || norm == "prompt" || norm == "forbidden":
+        outDecision = norm
+        return true
+    return false
+
+fn ruleMatchPrefix(rule: var ExecPolicyRule, tokens: seq[str]): seq[str] =
+    var empty: seq[str] = newSeq[str]()
+    if len(tokens) < len(rule.pattern):
+        return empty
+    var idx: int32 = 0
+    while idx < len(rule.pattern):
+        let alts = rule.pattern[idx]
+        var matched = false
+        var j: int32 = 0
+        while j < len(alts):
+            if tokens[idx] == alts[j]:
+                matched = true
+                break
+            j = j + 1
+        if ! matched:
+            return empty
+        idx = idx + 1
+    var prefix: seq[str] = newSeq[str]()
+    var k: int32 = 0
+    while k < len(rule.pattern):
+        seqAdd(prefix, tokens[k])
+        k = k + 1
+    return prefix
+
+fn validateExamples(rule: var ExecPolicyRule, matches: seq[seq[str]], notMatches: seq[seq[str]], err: var str): bool =
+    err = ""
+    var i: int32 = 0
+    while i < len(matches):
+        let example = matches[i]
+        let prefix = ruleMatchPrefix(rule, example)
+        if len(prefix) == 0:
+            err = "match example did not match rule"
+            return false
+        i = i + 1
+    i = 0
+    while i < len(notMatches):
+        let example = notMatches[i]
+        let prefix = ruleMatchPrefix(rule, example)
+        if len(prefix) > 0:
+            err = "not_match example matched rule"
+            return false
+        i = i + 1
+    return true
+
+fn parsePrefixRuleBlock(block: str, outRule: var ExecPolicyRule, err: var str): bool =
+    err = ""
+    var idx: int32 = 0
+    var loopCount: int32 = 0
+    var pattern: seq[seq[str]] = newSeq[seq[str]]()
+    var decision = "allow"
+    var matchExamples: seq[seq[str]] = newSeq[seq[str]]()
+    var notMatchExamples: seq[seq[str]] = newSeq[seq[str]]()
+    while idx < len(block):
+        loopCount = loopCount + 1
+        if loopCount > len(block) + 64:
+            err = "parser stalled in prefix_rule block"
+            return false
+        skipSpaces(block, idx)
+        if idx >= len(block):
+            break
+        var keyIdx: int32 = idx
+        let key = parseIdentifier(block, keyIdx)
+        idx = keyIdx
+        if len(key) == 0:
+            idx = idx + 1
+            continue
+        skipSpaces(block, idx)
+        if idx < len(block) && block[idx] == '=':
+            idx = idx + 1
+        else:
+            continue
+        skipSpaces(block, idx)
+        if key == "decision":
+            var value = ""
+            let nextIdx = parseStringLiteral(block, idx, value)
+            if nextIdx < 0:
+                err = "invalid decision"
+                return false
+            if ! parseDecisionValue(value, decision):
+                err = "invalid decision value"
+                return false
+            idx = nextIdx
+        elif key == "pattern":
+            var items: seq[ParsedValue]
+            var listErr = ""
+            var listIdx: int32 = idx
+            if ! parseListValue(block, listIdx, items, listErr):
+                err = listErr
+                return false
+            idx = listIdx
+            var patErr = ""
+            if ! parsePattern(items, pattern, patErr):
+                err = patErr
+                return false
+        elif key == "match" || key == "not_match":
+            var items: seq[ParsedValue]
+            var listErr = ""
+            var listIdx: int32 = idx
+            if ! parseListValue(block, listIdx, items, listErr):
+                err = listErr
+                return false
+            idx = listIdx
+            var exErr = ""
+            var examples: seq[seq[str]]
+            if ! parseExamples(items, examples, exErr):
+                err = exErr
+                return false
+            if key == "match":
+                matchExamples = examples
+            else:
+                notMatchExamples = examples
+        else:
+            if idx < len(block) && block[idx] == '[':
+                var skipItems: seq[ParsedValue]
+                var skipErr = ""
+                var skipIdx: int32 = idx
+                if ! parseListValue(block, skipIdx, skipItems, skipErr):
+                    err = skipErr
+                    return false
+                idx = skipIdx
+            elif idx < len(block) && block[idx] == '"':
+                var skipVal = ""
+                let nextIdx = parseStringLiteral(block, idx, skipVal)
+                if nextIdx < 0:
+                    err = "invalid value"
+                    return false
+                idx = nextIdx
+        skipSpaces(block, idx)
+        if idx < len(block) && block[idx] == ',':
+            idx = idx + 1
+    outRule.pattern = pattern
+    outRule.decision = decision
+    var checkErr = ""
+    if ! validateExamples(outRule, matchExamples, notMatchExamples, checkErr):
+        err = checkErr
+        return false
+    return true
+
+fn extractParenBlock(text: str, startIdx: int32): ParenBlock =
+    var idx: int32 = startIdx
+    if idx >= len(text) || text[idx] != '(':
+        return ParenBlock(block: "", endIdx: -1)
+    var depth: int32 = 0
+    var inString = false
+    while idx < len(text):
+        let ch = text[idx]
+        if ch == '"' && (idx == 0 || text[idx - 1] != '\\'):
+            inString = ! inString
+        if ! inString:
+            if ch == '(':
+                depth = depth + 1
+            elif ch == ')':
+                depth = depth - 1
+                if depth == 0:
+                    let block = __cheng_slice_string(text, startIdx + 1, idx - 1, false)
+                    return ParenBlock(block: block, endIdx: idx + 1)
+        idx = idx + 1
+    return ParenBlock(block: "", endIdx: -1)
+
+fn parseRulesFromText(text: str, outRules: var seq[ExecPolicyRule], err: var str): bool =
+    err = ""
+    var rulesOut: seq[ExecPolicyRule] = newSeq[ExecPolicyRule]()
+    let cleaned = stripComments(text)
+    var idx: int32 = 0
+    while idx < len(cleaned):
+        let start = indexOfSubstr(cleaned, "prefix_rule", idx)
+        if start < 0:
+            break
+        let openIdx = indexOfSubstr(cleaned, "(", start)
+        if openIdx < 0:
+            err = "prefix_rule missing '('"
+            return false
+        let res = extractParenBlock(cleaned, openIdx)
+        if res.endIdx < 0:
+            err = "unterminated prefix_rule"
+            return false
+        var rule: ExecPolicyRule
+        var blockErr = ""
+        if ! parsePrefixRuleBlock(res.block, rule, blockErr):
+            err = blockErr
+            return false
+        seqAdd(rulesOut, rule)
+        idx = res.endIdx
+    outRules = rulesOut
+    return true
+
+fn parseExecPolicyFiles(paths: seq[str], outRules: var seq[ExecPolicyRule], err: var str): bool =
+    err = ""
+    var rulesOut: seq[ExecPolicyRule] = newSeq[ExecPolicyRule]()
+    var idx: int32 = 0
+    while idx < len(paths):
+        let path = "" + paths[idx]
+        if os.fileExists(path):
+            let content = os.readFile(path)
+            if content != nil && len(content) > 0:
+                var rules: seq[ExecPolicyRule]
+                var parseErr = ""
+                if ! parseRulesFromText(content, rules, parseErr):
+                    # Build incrementally to avoid deep temporary chains.
+                    var msg: str = parseErr
+                    msg = msg + " ("
+                    msg = msg + path
+                    msg = msg + ")"
+                    err = msg
+                    return false
+                var j: int32 = 0
+                while j < len(rules):
+                    seqAdd(rulesOut, rules[j])
+                    j = j + 1
+        idx = idx + 1
+    outRules = rulesOut
+    return true
+
+fn parsePrefixRuleBlockSafe(block: str): ParseRuleResult =
+    var out: ParseRuleResult
+    out.ok = false
+    out.err = ""
+    out.rule.pattern = newSeq[seq[str]]()
+    out.rule.decision = "allow"
+    var idx: int32 = 0
+    var guard: int32 = 0
+    while idx < len(block):
+        guard = guard + 1
+        if guard > len(block) + 128:
+            out.err = "parser stalled in prefix_rule block"
+            return out
+        idx = skipSpacesPos(block, idx)
+        if idx >= len(block):
+            break
+        let ident = parseIdentifierAt(block, idx)
+        if ! ident.ok:
+            idx = idx + 1
+            continue
+        let key = ident.name
+        idx = skipSpacesPos(block, ident.next)
+        if idx >= len(block) || block[idx] != '=':
+            idx = ident.next
+            continue
+        idx = skipSpacesPos(block, idx + 1)
+        if key == "pattern":
+            let parsed = parsePatternValueAt(block, idx)
+            if ! parsed.ok:
+                out.err = parsed.err
+                return out
+            out.rule.pattern = parsed.pattern
+            idx = parsed.next
+        elif key == "decision":
+            let parsed = parseStringLiteralAt(block, idx)
+            if ! parsed.ok:
+                out.err = parsed.err
+                return out
+            let normalized = normalizeDecisionValue(parsed.value)
+            if len(normalized) == 0:
+                out.err = "invalid decision value"
+                return out
+            out.rule.decision = normalized
+            idx = parsed.next
+        else:
+            let nextIdx = skipUnknownValue(block, idx)
+            if nextIdx < 0:
+                out.err = "invalid value"
+                return out
+            idx = nextIdx
+        idx = skipSpacesPos(block, idx)
+        if idx < len(block) && block[idx] == ',':
+            idx = idx + 1
+    if len(out.rule.pattern) == 0:
+        out.err = "pattern cannot be empty"
+        return out
+    out.ok = true
+    return out
+
+fn parseRulesFromTextSafe(text: str): ParseRulesResult =
+    var out: ParseRulesResult
+    out.ok = false
+    out.err = ""
+    out.rules = newSeq[ExecPolicyRule]()
+    let cleaned = stripComments(text)
+    var idx: int32 = 0
+    while idx < len(cleaned):
+        let start = indexOfSubstr(cleaned, "prefix_rule", idx)
+        if start < 0:
+            break
+        let openIdx = indexOfSubstr(cleaned, "(", start)
+        if openIdx < 0:
+            out.err = "prefix_rule missing '('"
+            return out
+        let paren = extractParenBlock(cleaned, openIdx)
+        if paren.endIdx < 0:
+            out.err = "unterminated prefix_rule"
+            return out
+        let parsed = parsePrefixRuleBlockSafe(paren.block)
+        if ! parsed.ok:
+            out.err = parsed.err
+            return out
+        seqAdd(out.rules, parsed.rule)
+        idx = paren.endIdx
+    out.ok = true
+    return out
+
+fn parseExecPolicyFilesSafe(paths: seq[str]): ParseRulesResult =
+    var out: ParseRulesResult
+    out.ok = false
+    out.err = ""
+    out.rules = newSeq[ExecPolicyRule]()
+    var idx: int32 = 0
+    while idx < len(paths):
+        let path = "" + paths[idx]
+        if os.fileExists(path):
+            let content = os.readFile(path)
+            if content != nil && len(content) > 0:
+                let parsed = parseRulesFromTextSafe(content)
+                if ! parsed.ok:
+                    # Build incrementally to avoid deep temporary chains.
+                    var msg: str = parsed.err
+                    msg = msg + " ("
+                    msg = msg + path
+                    msg = msg + ")"
+                    out.err = msg
+                    return out
+                var j: int32 = 0
+                while j < len(parsed.rules):
+                    seqAdd(out.rules, parsed.rules[j])
+                    j = j + 1
+        idx = idx + 1
+    out.ok = true
+    return out
+
+fn decisionRank(decision: str): int32 =
+    let norm = normalizePolicy(trimLine(decision))
+    if norm == "forbidden":
+        return 3
+    if norm == "prompt":
+        return 2
+    if norm == "allow":
+        return 1
+    return 0
+
+fn indentSpaces(level: int32): str =
+    if level <= 0:
+        return ""
+    var out = ""
+    var i: int32 = 0
+    while i < level:
+        out = out + "  "
+        i = i + 1
+    return out
+
+fn prettyJson(payload: str): str =
+    if payload == nil || len(payload) == 0:
+        return ""
+    var out = ""
+    var indent: int32 = 0
+    var inString = false
+    var escape = false
+    var i: int32 = 0
+    while i < len(payload):
+        let ch = payload[i]
+        if inString:
+            out = out + $ ch
+            if escape:
+                escape = false
+            else:
+                if ch == '\\':
+                    escape = true
+                elif ch == '"':
+                    inString = false
+            i = i + 1
+            continue
+        if ch == '"':
+            inString = true
+            out = out + $ ch
+        elif ch == '{' || ch == '[':
+            indent = indent + 1
+            out = out + $ ch
+            out = out + "\n"
+            out = out + indentSpaces(indent)
+        elif ch == '}' || ch == ']':
+            indent = indent - 1
+            if indent < 0:
+                indent = 0
+            out = out + "\n"
+            out = out + indentSpaces(indent)
+            out = out + $ ch
+        elif ch == ',':
+            out = out + $ ch
+            out = out + "\n"
+            out = out + indentSpaces(indent)
+        elif ch == ':':
+            out = out + ": "
+        elif isSpaceLocal(ch):
+            ch
+        else:
+            out = out + $ ch
+        i = i + 1
+    return out
+
+fn runExecpolicy(args: seq[str], start: int32): int32 =
+    if start >= len(args):
+        # Clap: missing subcommand prints short help + exit 2.
+        printLine("Execpolicy tooling")
+        printLine("")
+        printLine("Usage: codex execpolicy [OPTIONS] <COMMAND>")
+        printLine("")
+        printLine("Commands:")
+        printLine("  check  Check execpolicy files against a command")
+        printLine("  help   Print this message or the help of the given subcommand(s)")
+        printLine("")
+        printLine("Options:")
+        printLine("  -c, --config <key=value>  Override a configuration value that would otherwise be loaded from")
+        printLine("                            `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`) to override")
+        printLine("                            nested values. The `value` portion is parsed as TOML. If it fails to")
+        printLine("                            parse as TOML, the raw string is used as a literal")
+        printLine("      --enable <FEATURE>    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+        printLine("      --disable <FEATURE>   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+        printLine("  -h, --help                Print help (see more with '--help')")
+        return 2
+    var sub = argAt(args, start)
+    if sub == "--help":
+        printLine("Execpolicy tooling")
+        printLine("")
+        printLine("Usage: codex execpolicy [OPTIONS] <COMMAND>")
+        printLine("")
+        printLine("Commands:")
+        printLine("  check  Check execpolicy files against a command")
+        printLine("  help   Print this message or the help of the given subcommand(s)")
+        printLine("")
+        printLine("Options:")
+        printConfigFlagHelp()
+        printEnableFlagHelp()
+        printDisableFlagHelp()
+        printLine("  -h, --help")
+        printLine("          Print help (see a summary with '-h')")
+        return 0
+    if sub == "-h":
+        printLine("Execpolicy tooling")
+        printLine("")
+        printLine("Usage: codex execpolicy [OPTIONS] <COMMAND>")
+        printLine("")
+        printLine("Commands:")
+        printLine("  check  Check execpolicy files against a command")
+        printLine("  help   Print this message or the help of the given subcommand(s)")
+        printLine("")
+        printLine("Options:")
+        printLine("  -c, --config <key=value>  Override a configuration value that would otherwise be loaded from")
+        printLine("                            `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`) to override")
+        printLine("                            nested values. The `value` portion is parsed as TOML. If it fails to")
+        printLine("                            parse as TOML, the raw string is used as a literal")
+        printLine("      --enable <FEATURE>    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+        printLine("      --disable <FEATURE>   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+        printLine("  -h, --help                Print help (see more with '--help')")
+        return 0
+    if sub == "help":
+        if start + 1 < len(args) && argAt(args, start + 1) == "check":
+            printLine("Check execpolicy files against a command")
+            printLine("")
+            printLine("Usage: codex execpolicy check [OPTIONS] --rules <PATH> <COMMAND>...")
+            printLine("")
+            printLine("Arguments:")
+            printLine("  <COMMAND>...")
+            printLine("          Command tokens to check against the policy")
+            printLine("")
+            printLine("Options:")
+            printConfigFlagHelp()
+            printLine("  -r, --rules <PATH>")
+            printLine("          Paths to execpolicy rule files to evaluate (repeatable)")
+            printLine("")
+            printEnableFlagHelp()
+            printLine("      --pretty")
+            printLine("          Pretty-print the JSON output")
+            printLine("")
+            printDisableFlagHelp()
+            printLine("  -h, --help")
+            printLine("          Print help (see a summary with '-h')")
+            return 0
+        # `codex execpolicy help` prints the execpolicy long help.
+        printLine("Execpolicy tooling")
+        printLine("")
+        printLine("Usage: codex execpolicy [OPTIONS] <COMMAND>")
+        printLine("")
+        printLine("Commands:")
+        printLine("  check  Check execpolicy files against a command")
+        printLine("  help   Print this message or the help of the given subcommand(s)")
+        printLine("")
+        printLine("Options:")
+        printConfigFlagHelp()
+        printEnableFlagHelp()
+        printDisableFlagHelp()
+        printLine("  -h, --help")
+        printLine("          Print help (see a summary with '-h')")
+        return 0
+    if sub != "check":
+        printErr("error: unrecognized subcommand '" + sub + "'")
+        printErr("")
+        printErr("Usage: codex execpolicy [OPTIONS] <COMMAND>")
+        printErr("")
+        printErr("For more information, try '--help'.")
+        return 2
+
+    # `execpolicy check` help handling.
+    if argListContains(args, start + 1, "--help"):
+        printLine("Check execpolicy files against a command")
+        printLine("")
+        printLine("Usage: codex execpolicy check [OPTIONS] --rules <PATH> <COMMAND>...")
+        printLine("")
+        printLine("Arguments:")
+        printLine("  <COMMAND>...")
+        printLine("          Command tokens to check against the policy")
+        printLine("")
+        printLine("Options:")
+        printConfigFlagHelp()
+        printLine("  -r, --rules <PATH>")
+        printLine("          Paths to execpolicy rule files to evaluate (repeatable)")
+        printLine("")
+        printEnableFlagHelp()
+        printLine("      --pretty")
+        printLine("          Pretty-print the JSON output")
+        printLine("")
+        printDisableFlagHelp()
+        printLine("  -h, --help")
+        printLine("          Print help (see a summary with '-h')")
+        return 0
+    if argListContains(args, start + 1, "-h"):
+        printLine("Check execpolicy files against a command")
+        printLine("")
+        printLine("Usage: codex execpolicy check [OPTIONS] --rules <PATH> <COMMAND>...")
+        printLine("")
+        printLine("Arguments:")
+        printLine("  <COMMAND>...  Command tokens to check against the policy")
+        printLine("")
+        printLine("Options:")
+        printLine("  -c, --config <key=value>  Override a configuration value that would otherwise be loaded from")
+        printLine("                            `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`) to override")
+        printLine("                            nested values. The `value` portion is parsed as TOML. If it fails to")
+        printLine("                            parse as TOML, the raw string is used as a literal")
+        printLine("  -r, --rules <PATH>        Paths to execpolicy rule files to evaluate (repeatable)")
+        printLine("      --enable <FEATURE>    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+        printLine("      --pretty              Pretty-print the JSON output")
+        printLine("      --disable <FEATURE>   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+        printLine("  -h, --help                Print help (see more with '--help')")
+        return 0
+
+    var rulesPaths: seq[str] = newSeq[str]()
+    var pretty = false
+    var cmdParts: seq[str] = newSeq[str]()
+    var i: int32 = start + 1
+    while i < len(args):
+        let arg = argAt(args, i)
+        if arg == "--":
+            var j: int32 = i + 1
+            while j < len(args):
+                let part = "" + argAt(args, j)
+                seqAdd(cmdParts, part)
+                j = j + 1
+            break
+        elif arg == "--rules" || arg == "-r":
+            if i + 1 < len(args):
+                let path = "" + argAt(args, i + 1)
+                seqAdd(rulesPaths, path)
+                i = i + 1
+            else:
+                printErr("execpolicy: missing --rules value")
+                return 2
+        elif hasPrefix(arg, "--rules:"):
+            seqAdd(rulesPaths, "" + dropPrefix(arg, "--rules:"))
+        elif arg == "--pretty":
+            pretty = true
+        else:
+            seqAdd(cmdParts, "" + arg)
+        i = i + 1
+    if len(rulesPaths) == 0:
+        printErr("execpolicy check --rules <file> <command...>")
+        return 2
+    if len(cmdParts) == 0:
+        printErr("execpolicy: missing command")
+        return 2
+    let parsed = parseExecPolicyFilesSafe(rulesPaths)
+    if ! parsed.ok:
+        printErr("execpolicy parse error: " + parsed.err)
+        return 1
+    let rules = parsed.rules
+    var matchedRules: seq[str] = newSeq[str]()
+    var bestDecision = ""
+    var bestRank: int32 = 0
+    var idx: int32 = 0
+    while idx < len(rules):
+        let rule = rules[idx]
+        let prefix = ruleMatchPrefix(rule, cmdParts)
+        if len(prefix) > 0:
+            var prefixItems: seq[str] = newSeq[str]()
+            var p: int32 = 0
+            while p < len(prefix):
+                seqAdd(prefixItems, jstrString(prefix[p]))
+                p = p + 1
+            var fields: seq[str] = newSeq[str]()
+            seqAdd(fields, jstrPair("matchedPrefix", jstrArray(prefixItems)))
+            seqAdd(fields, jstrPair("decision", jstrString(rule.decision)))
+            seqAdd(matchedRules, jstrObject(seqStr1(jstrPair("prefixRuleMatch", jstrObject(fields)))))
+            let rank = decisionRank(rule.decision)
+            if rank > bestRank:
+                bestRank = rank
+                bestDecision = rule.decision
+        idx = idx + 1
+    var output = "{\"matchedRules\":" + jstrArray(matchedRules)
+    if len(bestDecision) > 0:
+        output = output + ",\"decision\":" + jstrString(bestDecision)
+    output = output + "}"
+    if pretty:
+        output = prettyJson(output)
+    printLine(output)
+    return 0

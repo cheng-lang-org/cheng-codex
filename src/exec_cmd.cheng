@@ -1,0 +1,2600 @@
+# Exec command (aligned subset)
+
+import system
+import std/os
+import seqs
+import cheng/codex/posix_net
+import cheng/codex/common
+
+fn ord(ch: char): int32 =
+    return int32(ch)
+
+type
+    ExecOptions =
+        prompt: str
+        jsonMode: bool
+        images: seq[str]
+        model: str
+        oss: bool
+        ossProvider: str
+        sandboxMode: str
+        profile: str
+        fullAuto: bool
+        bypass: bool
+        cwd: str
+        skipGitRepoCheck: bool
+        addDirs: seq[str]
+        ephemeral: bool
+        outputSchemaPath: str
+        outputSchemaJson: str
+        lastMessagePath: str
+        color: str
+        approvalPolicy: str
+        webSearch: bool
+        noAltScreen: bool
+        baseInstructions: str
+        developerInstructions: str
+
+type
+    ReviewOptions =
+        uncommitted: bool
+        baseBranch: str
+        commitSha: str
+        commitTitle: str
+        prompt: str
+
+    ReviewRootCli =
+        uncommitted: bool
+        baseBranch: str
+        commitSha: str
+        commitTitle: str
+        promptArg: str
+        showHelp: bool
+        errArg: str
+        errTip: str
+
+    ExecCliParse =
+        opts: ExecOptions
+        cmd: str
+        cmdIndex: int32
+        showHelp: bool
+        showVersion: bool
+        errArg: str
+        errTip: str
+
+    ExecResumeCli =
+        opts: ExecOptions
+        sessionId: str
+        promptArg: str
+        last: bool
+        showAll: bool
+        showHelp: bool
+        errArg: str
+        errTip: str
+
+    ExecReviewCli =
+        opts: ExecOptions
+        review: ReviewOptions
+        showHelp: bool
+        errArg: str
+        errTip: str
+
+    ParsedResumeArgs =
+        threadId: str
+        last: bool
+        showAll: bool
+        prompt: str
+
+fn splitByChar(text: str, sep: char): seq[str] =
+    var outVal: seq[str] = newSeq[str]()
+    if text == nil:
+        return outVal
+    var start: int32 = 0
+    var i: int32 = 0
+    while i < len(text):
+        if text[i] == sep:
+            if i >= start:
+                seqAdd(outVal, __cheng_slice_string(text, start, i - 1, false))
+            else:
+                seqAdd(outVal, "")
+            start = i + 1
+        i = i + 1
+    if start <= len(text) - 1:
+        seqAdd(outVal, __cheng_slice_string(text, start, len(text) - 1, false))
+    elif start == len(text):
+        seqAdd(outVal, "")
+    return outVal
+
+fn appendCommaSeparatedLocal(outList: var seq[str], raw: str) =
+    let parts = splitByChar(raw, ',')
+    var i: int32 = 0
+    while i < len(parts):
+        let part = trimLine(argAt(parts, i))
+        if len(part) > 0:
+            seqAdd(outList, part)
+        i = i + 1
+
+fn readPromptFromStdin(): str =
+    let stdinText = os.readAll(os.get_stdin())
+    if stdinText != nil && len(stdinText) > 0:
+        return trimLine(stdinText)
+    return ""
+
+fn traceExecLocal(msg: str) =
+    let enabled = normalizePolicy(trimLine(os.getEnv("CODEX_TRACE_EXEC")))
+    if enabled == "1" || enabled == "true" || enabled == "yes":
+        printErr("[exec] " + msg)
+
+fn execOptionSkipCountLocal(args: seq[str], idx: int32): int32 =
+    let arg = argAt(args, idx)
+    if arg == "--json" || arg == "--experimental-json":
+        return 0
+    if arg == "--oss":
+        return 0
+    if arg == "--full-auto":
+        return 0
+    if arg == "--dangerously-bypass-approvals-and-sandbox" || arg == "--yolo":
+        return 0
+    if arg == "--search":
+        return 0
+    if arg == "--no-alt-screen":
+        return 0
+    if arg == "--image" || arg == "-i":
+        if idx + 1 < len(args):
+            return 1
+        return 0
+    if arg == "--model" || arg == "-m":
+        if idx + 1 < len(args):
+            return 1
+        return 0
+    if arg == "--local-provider":
+        if idx + 1 < len(args):
+            return 1
+        return 0
+    if arg == "--sandbox" || arg == "-s":
+        if idx + 1 < len(args):
+            return 1
+        return 0
+    if arg == "--ask-for-approval" || arg == "-a" || arg == "--approval-policy":
+        if idx + 1 < len(args):
+            return 1
+        return 0
+    if arg == "--profile" || arg == "-p":
+        if idx + 1 < len(args):
+            return 1
+        return 0
+    if arg == "--cd" || arg == "-C":
+        if idx + 1 < len(args):
+            return 1
+        return 0
+    if arg == "--add-dir":
+        if idx + 1 < len(args):
+            return 1
+        return 0
+    if arg == "--output-schema":
+        if idx + 1 < len(args):
+            return 1
+        return 0
+    if arg == "--output-last-message" || arg == "-o":
+        if idx + 1 < len(args):
+            return 1
+        return 0
+    if arg == "--color":
+        if idx + 1 < len(args):
+            return 1
+        return 0
+    if arg == "--prompt":
+        if idx + 1 < len(args):
+            return 1
+        return 0
+    if hasPrefix(arg, "--image:"):
+        return 0
+    if hasPrefix(arg, "--model:"):
+        return 0
+    if hasPrefix(arg, "--local-provider:"):
+        return 0
+    if hasPrefix(arg, "--sandbox:"):
+        return 0
+    if hasPrefix(arg, "--ask-for-approval:"):
+        return 0
+    if hasPrefix(arg, "--approval-policy:"):
+        return 0
+    if hasPrefix(arg, "--profile:"):
+        return 0
+    if hasPrefix(arg, "--cd:"):
+        return 0
+    if hasPrefix(arg, "--add-dir:"):
+        return 0
+    if hasPrefix(arg, "--output-schema:"):
+        return 0
+    if hasPrefix(arg, "--output-last-message:"):
+        return 0
+    if hasPrefix(arg, "--color:"):
+        return 0
+    if hasPrefix(arg, "--prompt:"):
+        return 0
+    return -1
+
+fn isOptionLikeExecLocal(arg: str): bool =
+    if arg == nil || len(arg) == 0:
+        return false
+    return arg[0] == '-'
+
+fn printReviewHelpRoot(): int32 =
+    printLine("Run a code review non-interactively")
+    printLine("")
+    printLine("Usage: codex review [OPTIONS] [PROMPT]")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [PROMPT]")
+    printLine("          Custom review instructions. If `-` is used, read from stdin")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printLine("      --uncommitted")
+    printLine("          Review staged, unstaged, and untracked changes")
+    printLine("")
+    printLine("      --base <BRANCH>")
+    printLine("          Review changes against the given base branch")
+    printLine("")
+    printEnableFlagHelp()
+    printLine("      --commit <SHA>")
+    printLine("          Review the changes introduced by a commit")
+    printLine("")
+    printDisableFlagHelp()
+    printLine("      --title <TITLE>")
+    printLine("          Optional commit title to display in the review summary")
+    printLine("")
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn printReviewHelpRootShort(): int32 =
+    printLine("Run a code review non-interactively")
+    printLine("")
+    printLine("Usage: codex review [OPTIONS] [PROMPT]")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [PROMPT]  Custom review instructions. If `-` is used, read from stdin")
+    printLine("")
+    printLine("Options:")
+    printLine("  -c, --config <key=value>  Override a configuration value that would otherwise be loaded from")
+    printLine("                            `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`) to override")
+    printLine("                            nested values. The `value` portion is parsed as TOML. If it fails to")
+    printLine("                            parse as TOML, the raw string is used as a literal")
+    printLine("      --uncommitted         Review staged, unstaged, and untracked changes")
+    printLine("      --base <BRANCH>       Review changes against the given base branch")
+    printLine("      --enable <FEATURE>    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    printLine("      --commit <SHA>        Review the changes introduced by a commit")
+    printLine("      --disable <FEATURE>   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    printLine("      --title <TITLE>       Optional commit title to display in the review summary")
+    printLine("  -h, --help                Print help (see more with '--help')")
+    return 0
+
+fn parseReviewRootCli(args: seq[str], start: int32): ReviewRootCli =
+    var cli: ReviewRootCli
+    cli.uncommitted = false
+    cli.baseBranch = ""
+    cli.commitSha = ""
+    cli.commitTitle = ""
+    cli.promptArg = ""
+    cli.showHelp = false
+    cli.errArg = ""
+    cli.errTip = ""
+    var stopParsing = false
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if ! stopParsing && (arg == "--help" || arg == "-h"):
+            cli.showHelp = true
+            return cli
+        if ! stopParsing && arg == "--":
+            stopParsing = true
+            i = i + 1
+            continue
+        if ! stopParsing && isOptionLikeExecLocal(arg):
+            if arg == "--uncommitted":
+                cli.uncommitted = true
+            elif arg == "--base":
+                if i + 1 >= len(args):
+                    cli.errArg = arg
+                    cli.errTip = "missing value for --base"
+                    return cli
+                cli.baseBranch = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--commit":
+                if i + 1 >= len(args):
+                    cli.errArg = arg
+                    cli.errTip = "missing value for --commit"
+                    return cli
+                cli.commitSha = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--title":
+                if i + 1 >= len(args):
+                    cli.errArg = arg
+                    cli.errTip = "missing value for --title"
+                    return cli
+                cli.commitTitle = argAt(args, i + 1)
+                i = i + 1
+            else:
+                cli.errArg = arg
+                cli.errTip = "to pass '" + arg + "' as a value, use '-- " + arg + "'"
+                return cli
+            i = i + 1
+            continue
+        # Positional prompt.
+        if len(cli.promptArg) == 0:
+            cli.promptArg = arg
+        else:
+            cli.errArg = arg
+            return cli
+        i = i + 1
+    # Validate clap conflicts/requires.
+    var targetCount: int32 = 0
+    if cli.uncommitted:
+        targetCount = targetCount + 1
+    if len(cli.baseBranch) > 0:
+        targetCount = targetCount + 1
+    if len(cli.commitSha) > 0:
+        targetCount = targetCount + 1
+    if len(cli.promptArg) > 0:
+        targetCount = targetCount + 1
+    if targetCount > 1:
+        cli.errArg = "conflict"
+        cli.errTip = "conflicting arguments: use only one of --uncommitted, --base, --commit, or PROMPT"
+        return cli
+    if len(cli.commitTitle) > 0 && len(cli.commitSha) == 0:
+        cli.errArg = "--title"
+        cli.errTip = "--title requires --commit"
+        return cli
+    return cli
+
+fn runReviewRoot(args: seq[str], start: int32): int32 =
+    let cli = parseReviewRootCli(args, start)
+    if cli.showHelp:
+        if wantsLongHelp(args, start):
+            return printReviewHelpRoot()
+        return printReviewHelpRootShort()
+    if len(cli.errArg) > 0:
+        if len(cli.errTip) > 0:
+            printErr("error: " + cli.errTip)
+        else:
+            printErr("error: unexpected argument '" + cli.errArg + "' found")
+        return 2
+    # Build the review target.
+    var targetCount: int32 = 0
+    if cli.uncommitted:
+        targetCount = targetCount + 1
+    if len(cli.baseBranch) > 0:
+        targetCount = targetCount + 1
+    if len(cli.commitSha) > 0:
+        targetCount = targetCount + 1
+    if len(cli.promptArg) > 0:
+        targetCount = targetCount + 1
+    if targetCount == 0:
+        printErr("Error: Specify --uncommitted, --base, --commit, or provide custom review instructions")
+        return 1
+    var review = ReviewOptions(uncommitted: cli.uncommitted, baseBranch: cli.baseBranch, commitSha: cli.commitSha, commitTitle: cli.commitTitle, prompt: "")
+    if len(cli.promptArg) > 0:
+        var p = cli.promptArg
+        if p == "-":
+            p = readPromptFromStdin()
+        p = trimLine(p)
+        if len(p) == 0:
+            printErr("Error: Review prompt cannot be empty")
+            return 1
+        review.prompt = p
+    let promptText = buildReviewPrompt(review, currentDirSafe())
+    if len(promptText) == 0:
+        printErr("Error: Specify --uncommitted, --base, --commit, or provide custom review instructions")
+        return 1
+    var execOpts = defaultExecOptions()
+    execOpts.cwd = currentDirSafe()
+    execOpts.prompt = promptText
+    execOpts.outputSchemaJson = ""
+    if len(execOpts.approvalPolicy) == 0:
+        let cfgApproval = readConfigValue("approval_policy")
+        if len(cfgApproval) > 0:
+            execOpts.approvalPolicy = cfgApproval
+        else:
+            execOpts.approvalPolicy = "never"
+    return runExecFlow(execOpts, "review")
+
+fn parseResumeArgsLocal(args: seq[str], start: int32): ParsedResumeArgs =
+    var res: ParsedResumeArgs = ParsedResumeArgs(threadId: "", last: false, showAll: false, prompt: "")
+    var promptParts: seq[str] = newSeq[str]()
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if arg == "--":
+            var j: int32 = i + 1
+            while j < len(args):
+                seqAdd(promptParts, argAt(args, j))
+                j = j + 1
+            break
+        if arg == "--last":
+            res.last = true
+        elif arg == "--all":
+            res.showAll = true
+        elif arg == "--prompt" && i + 1 < len(args):
+            seqAdd(promptParts, argAt(args, i + 1))
+            i = i + 1
+        elif hasPrefix(arg, "--prompt:"):
+            seqAdd(promptParts, dropPrefix(arg, "--prompt:"))
+        else:
+            let skipCount = execOptionSkipCountLocal(args, i)
+            if skipCount >= 0:
+                i = i + skipCount
+            else:
+                if len(res.threadId) == 0 && ! res.last:
+                    res.threadId = arg
+                else:
+                    seqAdd(promptParts, arg)
+        i = i + 1
+    if len(promptParts) > 0:
+        res.prompt = joinArgs(promptParts, 0)
+    return res
+
+fn parseResumeCwdLocal(args: seq[str], start: int32): str =
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if arg == "--":
+            break
+        if arg == "--cd" || arg == "-C":
+            if i + 1 < len(args):
+                return argAt(args, i + 1)
+            return ""
+        if hasPrefix(arg, "--cd:"):
+            return dropPrefix(arg, "--cd:")
+        i = i + 1
+    return ""
+
+fn normalizeSandboxModeLocal(mode: str): str =
+    let normalized = normalizePolicy(trimLine(mode))
+    if len(normalized) == 0:
+        return ""
+    if normalized == "read-only" || normalized == "readonly":
+        return "read-only"
+    if normalized == "workspace-write" || normalized == "workspacewrite":
+        return "workspace-write"
+    if normalized == "danger-full-access" || normalized == "dangerfullaccess":
+        return "danger-full-access"
+    return normalized
+
+fn normalizeOssProviderLocal(provider: str): str =
+    let normalized = normalizePolicy(trimLine(provider))
+    if normalized == "lm-studio":
+        return "lmstudio"
+    if normalized == "ollama_chat" || normalized == "ollamachat":
+        return "ollama-chat"
+    return normalized
+
+fn ossProviderBaseUrl(provider: str): str =
+    if provider == "lmstudio":
+        return "http://localhost:1234/v1"
+    if provider == "ollama" || provider == "ollama-chat":
+        return "http://localhost:11434/v1"
+    return ""
+
+fn ossProviderPort(provider: str): int32 =
+    if provider == "lmstudio":
+        return 1234
+    if provider == "ollama" || provider == "ollama-chat":
+        return 11434
+    return 0
+
+fn defaultModelForOssProvider(provider: str): str =
+    if provider == "lmstudio":
+        return "openai/gpt-oss-20b"
+    if provider == "ollama" || provider == "ollama-chat":
+        return "gpt-oss:20b"
+    return ""
+
+fn ensureOssProviderReady(provider: str, err: var str): bool =
+    err = ""
+    let port = ossProviderPort(provider)
+    if port <= 0:
+        return true
+    if canConnectTcp(port):
+        return true
+    # Build incrementally to avoid deep temporary chains.
+    var msg: str = "OSS setup failed: could not connect to "
+    msg = msg + provider
+    msg = msg + " on localhost:"
+    msg = msg + intToStr(port)
+    err = msg
+    return false
+
+fn defaultExecOptions(): ExecOptions =
+    ExecOptions(
+        prompt: "",
+        jsonMode: false,
+        images: newSeq[str](),
+        model: "",
+        oss: false,
+        ossProvider: "",
+        sandboxMode: "",
+        profile: "",
+        fullAuto: false,
+        bypass: false,
+        cwd: "",
+        skipGitRepoCheck: false,
+        addDirs: newSeq[str](),
+        ephemeral: false,
+        outputSchemaPath: "",
+        outputSchemaJson: "",
+        lastMessagePath: "",
+        color: "auto",
+        approvalPolicy: "",
+        webSearch: false,
+        noAltScreen: false,
+        baseInstructions: "",
+        developerInstructions: ""
+    )
+
+fn parseExecArgs(args: seq[str], start: int32): ExecOptions =
+    var opts = defaultExecOptions()
+    var promptParts: seq[str] = newSeq[str]()
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if arg == "--help" || arg == "-h":
+            printLine("usage: codex exec [options] [prompt]")
+            printLine("  --json                output JSONL events")
+            printLine("  --image, -i <file>    attach image(s), comma-separated")
+            printLine("  --model, -m <id>      model id")
+            printLine("  --sandbox, -s <mode>  read-only|workspace-write|danger-full-access")
+            printLine("  --full-auto           approval on-request + sandbox workspace-write")
+            printLine("  --dangerously-bypass-approvals-and-sandbox")
+            printLine("  --ask-for-approval, -a <policy>  untrusted|on-failure|on-request|never")
+            printLine("  --search              enable web search tool")
+            return opts
+        if arg == "--json" || arg == "--experimental-json":
+            opts.jsonMode = true
+        elif arg == "--image" || arg == "-i":
+            if i + 1 < len(args):
+                let items = splitByChar(argAt(args, i + 1), ',')
+                var j: int32 = 0
+                while j < len(items):
+                    if len(items[j]) > 0:
+                        seqAdd(opts.images, items[j])
+                    j = j + 1
+                i = i + 1
+        elif hasPrefix(arg, "--image:"):
+            let items = splitByChar(dropPrefix(arg, "--image:"), ',')
+            var j: int32 = 0
+            while j < len(items):
+                if len(items[j]) > 0:
+                    seqAdd(opts.images, items[j])
+                j = j + 1
+        elif arg == "--model" || arg == "-m":
+            if i + 1 < len(args):
+                opts.model = argAt(args, i + 1)
+                i = i + 1
+        elif hasPrefix(arg, "--model:"):
+            opts.model = dropPrefix(arg, "--model:")
+        elif arg == "--oss":
+            opts.oss = true
+        elif arg == "--local-provider":
+            if i + 1 < len(args):
+                opts.ossProvider = argAt(args, i + 1)
+                i = i + 1
+        elif hasPrefix(arg, "--local-provider:"):
+            opts.ossProvider = dropPrefix(arg, "--local-provider:")
+        elif arg == "--sandbox" || arg == "-s":
+            if i + 1 < len(args):
+                opts.sandboxMode = argAt(args, i + 1)
+                i = i + 1
+        elif hasPrefix(arg, "--sandbox:"):
+            opts.sandboxMode = dropPrefix(arg, "--sandbox:")
+        elif arg == "--ask-for-approval" || arg == "-a" || arg == "--approval-policy":
+            if i + 1 < len(args):
+                opts.approvalPolicy = argAt(args, i + 1)
+                i = i + 1
+        elif hasPrefix(arg, "--ask-for-approval:"):
+            opts.approvalPolicy = dropPrefix(arg, "--ask-for-approval:")
+        elif hasPrefix(arg, "--approval-policy:"):
+            opts.approvalPolicy = dropPrefix(arg, "--approval-policy:")
+        elif arg == "--profile" || arg == "-p":
+            if i + 1 < len(args):
+                opts.profile = argAt(args, i + 1)
+                i = i + 1
+        elif hasPrefix(arg, "--profile:"):
+            opts.profile = dropPrefix(arg, "--profile:")
+        elif arg == "--full-auto":
+            opts.fullAuto = true
+        elif arg == "--dangerously-bypass-approvals-and-sandbox" || arg == "--yolo":
+            opts.bypass = true
+        elif arg == "--search":
+            opts.webSearch = true
+        elif arg == "--no-alt-screen":
+            opts.noAltScreen = true
+        elif arg == "--cd" || arg == "-C":
+            if i + 1 < len(args):
+                opts.cwd = argAt(args, i + 1)
+                i = i + 1
+        elif hasPrefix(arg, "--cd:"):
+            opts.cwd = dropPrefix(arg, "--cd:")
+        elif arg == "--add-dir":
+            if i + 1 < len(args):
+                seqAdd(opts.addDirs, argAt(args, i + 1))
+                i = i + 1
+        elif hasPrefix(arg, "--add-dir:"):
+            seqAdd(opts.addDirs, dropPrefix(arg, "--add-dir:"))
+        elif arg == "--output-schema":
+            if i + 1 < len(args):
+                opts.outputSchemaPath = argAt(args, i + 1)
+                i = i + 1
+        elif hasPrefix(arg, "--output-schema:"):
+            opts.outputSchemaPath = dropPrefix(arg, "--output-schema:")
+        elif arg == "--output-last-message" || arg == "-o":
+            if i + 1 < len(args):
+                opts.lastMessagePath = argAt(args, i + 1)
+                i = i + 1
+        elif hasPrefix(arg, "--output-last-message:"):
+            opts.lastMessagePath = dropPrefix(arg, "--output-last-message:")
+        elif arg == "--color":
+            if i + 1 < len(args):
+                opts.color = argAt(args, i + 1)
+                i = i + 1
+        elif hasPrefix(arg, "--color:"):
+            opts.color = dropPrefix(arg, "--color:")
+        elif arg == "--prompt":
+            if i + 1 < len(args):
+                opts.prompt = argAt(args, i + 1)
+                i = i + 1
+        elif hasPrefix(arg, "--prompt:"):
+            opts.prompt = dropPrefix(arg, "--prompt:")
+        else:
+            seqAdd(promptParts, arg)
+        i = i + 1
+    if len(opts.prompt) == 0 && len(promptParts) > 0:
+        opts.prompt = joinArgs(promptParts, 0)
+    return opts
+
+fn loadOutputSchemaJson(path: str): str =
+    if len(path) == 0 || ! os.fileExists(path):
+        return ""
+    let content = os.readFile(path)
+    if content == nil:
+        return ""
+    let trimmed = trimLine(content)
+    return trimmed
+
+fn isInsideGitRepoLocal(cwd: str): bool =
+    # Avoid `let x = if ...: <str> else: <str>`: current compiler/runtime can mis-handle
+    # transient `str` values and crash in `strlen`.
+    var workDir: str = currentDirSafe()
+    if len(cwd) > 0:
+        workDir = cwd
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let res = os.execCmdEx("git rev-parse --is-inside-work-tree", opts, workDir)
+    if res.exitCode != 0:
+        return false
+    let out = normalizePolicy(trimLine(res.output))
+    return out == "true"
+
+fn enforceGitRepoCheckLocal(opts: ExecOptions): bool =
+    if opts.skipGitRepoCheck || opts.bypass:
+        return true
+    var workDir: str = currentDirSafe()
+    if len(opts.cwd) > 0:
+        workDir = opts.cwd
+    if isInsideGitRepoLocal(workDir):
+        return true
+    printErr("Not inside a trusted directory and --skip-git-repo-check was not specified.")
+    return false
+
+fn applyExecEphemeralLocal(opts: ExecOptions) =
+    # `--ephemeral` disables persisting session files to disk.
+    if opts.ephemeral:
+        setStorageWritesEnabled(false)
+    else:
+        setStorageWritesEnabled(true)
+
+fn applyExecOverrides(opts: ExecOptions, err: var str): bool =
+    err = ""
+    if len(opts.model) > 0:
+        addConfigOverride("model", opts.model)
+    if len(opts.sandboxMode) > 0:
+        addConfigOverride("sandbox_mode", normalizeSandboxModeLocal(opts.sandboxMode))
+    if len(opts.profile) > 0:
+        addConfigOverride("config_profile", opts.profile)
+    if len(opts.approvalPolicy) > 0:
+        addConfigOverride("approval_policy", normalizePolicy(trimLine(opts.approvalPolicy)))
+    if opts.fullAuto:
+        addConfigOverride("approval_policy", "on-request")
+        addConfigOverride("sandbox_mode", "workspace-write")
+    if opts.bypass:
+        addConfigOverride("approval_policy", "never")
+        addConfigOverride("sandbox_mode", "danger-full-access")
+    if opts.webSearch:
+        addConfigOverride("features.web_search_request", "true")
+    if opts.oss:
+        var provider = opts.ossProvider
+        if len(provider) == 0:
+            provider = readConfigValue("oss_provider")
+        if len(provider) == 0:
+            provider = readConfigValue("model_provider")
+        provider = normalizeOssProviderLocal(provider)
+        if len(provider) == 0:
+            err = "No default OSS provider configured. Use --local-provider=provider or set oss_provider to one of: lmstudio, ollama, ollama-chat in config.toml"
+            return false
+        if provider != "lmstudio" && provider != "ollama" && provider != "ollama-chat":
+            err = "Unknown OSS provider: " + provider
+            return false
+        addConfigOverride("oss_provider", provider)
+        let baseUrlCfg = readConfigValue("api.base_url")
+        let baseUrl = ossProviderBaseUrl(provider)
+        if len(baseUrl) > 0 && len(baseUrlCfg) == 0:
+            addConfigOverride("api.base_url", baseUrl)
+        addConfigOverride("model_provider", "oss")
+        if provider == "ollama-chat":
+            addConfigOverride("wire_api", "chat")
+        if len(opts.model) == 0:
+            let defaultModel = defaultModelForOssProvider(provider)
+            if len(defaultModel) > 0:
+                addConfigOverride("model", defaultModel)
+        if len(baseUrlCfg) == 0:
+            var readyErr = ""
+            if ! ensureOssProviderReady(provider, readyErr):
+                err = readyErr
+                return false
+    if opts.noAltScreen:
+        addConfigOverride("tui.alternate_screen", "never")
+    return true
+
+fn execEvent(eventType: str, pairs: seq[str]): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("type", jstrString(eventType)))
+    var idx: int32 = 0
+    while idx < len(pairs):
+        seqAdd(fields, pairs[idx])
+        idx = idx + 1
+    return jstrObject(fields)
+
+fn emitExecEvent(jsonMode: bool, eventType: str, pairs: seq[str]) =
+    if ! jsonMode:
+        return
+    printLine(execEvent(eventType, pairs))
+
+fn execUsageZero(): str =
+    let usageFields: seq[str] = seqStr3(
+        jstrPair("input_tokens", "0"),
+        jstrPair("cached_input_tokens", "0"),
+        jstrPair("output_tokens", "0")
+    )
+    return jstrObject(usageFields)
+
+fn execItemAgentMessage(itemId: str, text: str): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("id", jstrString(itemId)))
+    seqAdd(fields, jstrPair("type", jstrString("agent_message")))
+    seqAdd(fields, jstrPair("text", jstrString(text)))
+    return jstrObject(fields)
+
+fn execItemCommand(itemId: str, command: str, output: str, status: str, exitCode: int32): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("id", jstrString(itemId)))
+    seqAdd(fields, jstrPair("type", jstrString("command_execution")))
+    seqAdd(fields, jstrPair("command", jstrString(command)))
+    seqAdd(fields, jstrPair("aggregated_output", jstrString(output)))
+    seqAdd(fields, jstrPair("status", jstrString(status)))
+    if exitCode >= 0:
+        seqAdd(fields, jstrPair("exit_code", intToStr(exitCode)))
+    return jstrObject(fields)
+
+fn execItemFileChange(itemId: str, changes: seq[str], status: str): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("id", jstrString(itemId)))
+    seqAdd(fields, jstrPair("type", jstrString("file_change")))
+    seqAdd(fields, jstrPair("changes", jstrArray(changes)))
+    seqAdd(fields, jstrPair("status", jstrString(status)))
+    return jstrObject(fields)
+
+fn execItemWebSearch(itemId: str, query: str, status: str): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("id", jstrString(itemId)))
+    seqAdd(fields, jstrPair("type", jstrString("web_search")))
+    if len(query) > 0:
+        seqAdd(fields, jstrPair("query", jstrString(query)))
+    seqAdd(fields, jstrPair("status", jstrString(status)))
+    return jstrObject(fields)
+
+fn execItemTodoList(itemId: str, items: seq[str]): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("id", jstrString(itemId)))
+    seqAdd(fields, jstrPair("type", jstrString("todo_list")))
+    seqAdd(fields, jstrPair("items", jstrArray(items)))
+    return jstrObject(fields)
+
+fn todoItemsFromPlanArgs(payload: str): seq[str] =
+    var items: seq[str] = newSeq[str]()
+    var idx: int32 = 0
+    while idx < len(payload):
+        let stepIdx = jsonFindKeyAfter(payload, "step", idx)
+        if stepIdx < 0:
+            break
+        let stepText = jsonExtractStringAfter(payload, "step", stepIdx)
+        let statusText = normalizePolicy(jsonExtractStringAfter(payload, "status", stepIdx))
+        if len(stepText) > 0:
+            let completed = statusText == "completed"
+            seqAdd(items, jstrObject(seqStr2(
+                jstrPair("text", jstrString(stepText)),
+                jstrPair("completed", jstrBool(completed))
+            )))
+        idx = stepIdx + 4
+    return items
+
+fn parseDiffChanges(diffText: str): seq[str] =
+    var changes: seq[str] = newSeq[str]()
+    if len(diffText) == 0:
+        return changes
+    let lines = splitLinesSimple(diffText)
+    var currentPath = ""
+    var currentKind = "update"
+    var idx: int32 = 0
+    while idx < len(lines):
+        let line = lines[idx]
+        if hasPrefix(line, "diff --git "):
+            if len(currentPath) > 0:
+                seqAdd(changes, jstrObject(seqStr2(jstrPair("path", jstrString(currentPath)), jstrPair("kind", jstrString(currentKind)))))
+            currentKind = "update"
+            var pathStart = indexOfSubstr(line, " a/", 0)
+            if pathStart >= 0:
+                pathStart = pathStart + 3
+                let pathEnd = indexOfSubstr(line, " b/", pathStart)
+                if pathEnd > pathStart:
+                    currentPath = __cheng_slice_string(line, pathStart, pathEnd - 1, false)
+            else:
+                currentPath = ""
+        elif hasPrefix(line, "new file mode"):
+            currentKind = "add"
+        elif hasPrefix(line, "deleted file mode"):
+            currentKind = "delete"
+        idx = idx + 1
+    if len(currentPath) > 0:
+        seqAdd(changes, jstrObject(seqStr2(jstrPair("path", jstrString(currentPath)), jstrPair("kind", jstrString(currentKind)))))
+    return changes
+
+fn approvalRequiresRequestLocal(policy: str): bool =
+    let normalized = normalizePolicy(trimLine(policy))
+    if normalized == "untrusted" || normalized == "unlesstrusted":
+        return true
+    if normalized == "on-request" || normalized == "onrequest":
+        return true
+    return false
+
+fn wantsNoSandboxApprovalLocal(policy: str): bool =
+    let normalized = normalizePolicy(trimLine(policy))
+    if normalized == "never":
+        return false
+    if normalized == "on-request" || normalized == "onrequest":
+        return false
+    return true
+
+fn approvalKeyForCommandLocal(commandTokens: seq[str], commandText: str, cwd: str, sandboxPermissions: str): str =
+    var cmdItems: seq[str] = newSeq[str]()
+    if len(commandTokens) > 0:
+        var i: int32 = 0
+        while i < len(commandTokens):
+            seqAdd(cmdItems, jstrString(commandTokens[i]))
+            i = i + 1
+    else:
+        seqAdd(cmdItems, jstrString(commandText))
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("command", jstrArray(cmdItems)))
+    seqAdd(fields, jstrPair("cwd", jstrString(cwd)))
+    seqAdd(fields, jstrPair("sandboxPermissions", jstrString(sandboxPermissions)))
+    return jstrObject(fields)
+
+fn approvalCacheHasLocal(keys: seq[str], key: str): bool =
+    var i: int32 = 0
+    while i < len(keys):
+        if keys[i] == key:
+            return true
+        i = i + 1
+    return false
+
+fn approvalCacheAddLocal(keys: var seq[str], key: str) =
+    if len(key) == 0:
+        return
+    var i: int32 = 0
+    while i < len(keys):
+        if keys[i] == key:
+            return
+        i = i + 1
+    seqAdd(keys, key)
+
+fn parseIndexLocal(text: str): int32 =
+    if text == nil:
+        return -1
+    var s = trimLine(text)
+    if len(s) == 0:
+        return -1
+    var i: int32 = 0
+    var value: int32 = 0
+    while i < len(s):
+        let ch = s[i]
+        if ch < '0' || ch > '9':
+            return -1
+        value = value * 10 + (ord(ch) - ord('0'))
+        i = i + 1
+    return value
+
+fn minInt32Local(a: int32, b: int32): int32 =
+    if a < b:
+        return a
+    return b
+
+fn threadInfoAtLocal(infos: seq[ThreadInfo], idx: int32): ThreadInfo =
+    if idx < 0 || idx >= len(infos):
+        return ThreadInfo(id: "", preview: "", createdAt: 0, cwd: "")
+    return get[ThreadInfo](infos, idx)
+
+fn formatThreadAgeLocal(createdAt: int32): str =
+    if createdAt <= 0:
+        return "unknown"
+    let nowTs = getTime().unix
+    var delta = nowTs - int64(createdAt)
+    if delta < 0:
+        delta = 0
+    if delta < 60:
+        return intToStr(int32(delta)) + "s ago"
+    if delta < 3600:
+        return intToStr(int32(delta / 60)) + "m ago"
+    if delta < 86400:
+        return intToStr(int32(delta / 3600)) + "h ago"
+    return intToStr(int32(delta / 86400)) + "d ago"
+
+fn threadTitleLocal(info: ThreadInfo): str =
+    if len(info.preview) > 0:
+        return info.preview
+    return info.id
+
+fn threadMetaLocal(info: ThreadInfo, showCwd: bool): str =
+    var meta = info.id
+    if len(meta) == 0:
+        meta = "unknown"
+    meta = meta + "  -  " + formatThreadAgeLocal(info.createdAt)
+    if showCwd && len(info.cwd) > 0:
+        meta = meta + "  @ " + info.cwd
+    return meta
+
+fn tuiAltScreenEnabledLocal(): bool =
+    if ! ansiEnabled():
+        return false
+    let mode = normalizePolicy(trimLine(readConfigValue("tui.alternate_screen")))
+    if mode == "never" || mode == "false" || mode == "0":
+        return false
+    return true
+
+fn tuiEnterAltScreenLocal(useAlt: bool) =
+    if ! useAlt:
+        return
+    printUi("\x1b[?1049h\x1b[?25l")
+
+fn tuiExitAltScreenLocal(useAlt: bool) =
+    if ! useAlt:
+        return
+    printUi("\x1b[?25h\x1b[?1049l")
+
+fn renderThreadListTui(header: str, infos: seq[ThreadInfo], showCwd: bool) =
+    let total = len(infos)
+    renderThreadListTuiRange(header, infos, showCwd, 0, total, total, "")
+
+fn renderThreadListTuiRange(header: str, infos: seq[ThreadInfo], showCwd: bool, start: int32, endIdx: int32, total: int32, filter: str) =
+    traceExecLocal("renderThreadListTuiRange.begin")
+    printUi("\x1b[2J\x1b[H")
+    traceExecLocal("renderThreadListTuiRange.beforeHeader")
+    tuiHeader("Codex")
+    traceExecLocal("renderThreadListTuiRange.afterHeader")
+    if len(header) > 0:
+        printUi(ansiBold(header))
+    printUi("")
+    if len(filter) > 0:
+        printUi(ansiDim("Filter: " + filter))
+    if total <= 0:
+        printUi(ansiDim("No sessions found."))
+        printUi("")
+        return
+    let showStart = if endIdx > 0: start + 1 else: 0
+    let showEnd = endIdx
+    # Build incrementally to avoid deep temporary chains.
+    var msg: str = "Showing "
+    msg = msg + intToStr(showStart)
+    msg = msg + "-"
+    msg = msg + intToStr(showEnd)
+    msg = msg + " of "
+    msg = msg + intToStr(total)
+    printUi(ansiDim(msg))
+    printUi("")
+    var idx: int32 = start
+    var displayIdx: int32 = 1
+    while idx < endIdx:
+        traceExecLocal("renderThreadListTuiRange.item=" + intToStr(idx))
+        let info = threadInfoAtLocal(infos, idx)
+        let title = threadTitleLocal(info)
+        let label = ansiCyan(intToStr(displayIdx) + ")")
+        printUi(label + " " + title)
+        let meta = threadMetaLocal(info, showCwd)
+        if len(meta) > 0:
+            printUi(ansiDim("   " + meta))
+        displayIdx = displayIdx + 1
+        idx = idx + 1
+    printUi("")
+
+fn threadMatchesFilterLocal(info: ThreadInfo, filter: str): bool =
+    let needle = normalizePolicy(trimLine(filter))
+    if len(needle) == 0:
+        return true
+    let title = normalizePolicy(threadTitleLocal(info))
+    if indexOfSubstr(title, needle, 0) >= 0:
+        return true
+    let id = normalizePolicy(info.id)
+    if indexOfSubstr(id, needle, 0) >= 0:
+        return true
+    let cwd = normalizePolicy(info.cwd)
+    if indexOfSubstr(cwd, needle, 0) >= 0:
+        return true
+    return false
+
+fn filterThreadInfosLocal(infos: seq[ThreadInfo], filter: str): seq[ThreadInfo] =
+    if len(filter) == 0:
+        return infos
+    var outVal: seq[ThreadInfo] = newSeq[ThreadInfo]()
+    var idx: int32 = 0
+    while idx < len(infos):
+        let info = threadInfoAtLocal(infos, idx)
+        if threadMatchesFilterLocal(info, filter):
+            seqAdd(outVal, info)
+        idx = idx + 1
+    return outVal
+
+fn appendImageContextItems(contextItems: var seq[str], images: seq[str]): bool =
+    var idx: int32 = 0
+    while idx < len(images):
+        let msg = buildInputImageMessage(images[idx])
+        if len(msg) == 0:
+            printErr("failed to attach image: " + images[idx])
+            return false
+        seqAdd(contextItems, msg)
+        idx = idx + 1
+    return true
+
+fn threadLabelLocal(info: ThreadInfo, showCwd: bool): str =
+    var line = info.id
+    if info.createdAt > 0:
+        line = line + " | " + formatThreadAgeLocal(info.createdAt)
+    if len(info.preview) > 0:
+        line = line + " | " + info.preview
+    if showCwd && len(info.cwd) > 0:
+        line = line + " | " + info.cwd
+    return line
+
+fn selectThreadIdTui(infos: seq[ThreadInfo], showCwd: bool): str =
+    if len(infos) == 0:
+        printUi("resume: no sessions")
+        return ""
+    let useAlt = tuiAltScreenEnabledLocal()
+    tuiEnterAltScreenLocal(useAlt)
+    var filter = ""
+    var page: int32 = 0
+    let pageSize: int32 = 10
+    var result = ""
+    while true:
+        let filtered = filterThreadInfosLocal(infos, filter)
+        let total = len(filtered)
+        var start: int32 = page * pageSize
+        if total <= 0:
+            page = 0
+            start = 0
+        elif start >= total:
+            page = 0
+            start = 0
+        let endIdx = minInt32Local(start + pageSize, total)
+        renderThreadListTuiRange("Select a session", filtered, showCwd, start, endIdx, total, filter)
+        if total > 0:
+            printUi(ansiDim("Enter number or session id (empty to cancel). '/' to filter, n/p to page."))
+        else:
+            printUi(ansiDim("No sessions. '/' to filter, empty to cancel."))
+        let rl = stdinReadLine()
+        if ! rl.ok:
+            break
+        let trimmed = trimLine(rl.line)
+        let lowered = normalizePolicy(trimmed)
+        if len(trimmed) == 0:
+            break
+        if trimmed == "/" || lowered == "s" || lowered == "search":
+            printUi(ansiDim("Filter:"))
+            let filterRl = stdinReadLine()
+            if filterRl.ok:
+                filter = trimLine(filterRl.line)
+                page = 0
+            continue
+        if lowered == "n" || lowered == "next":
+            if endIdx < total:
+                page = page + 1
+            continue
+        if lowered == "p" || lowered == "prev" || lowered == "previous":
+            if page > 0:
+                page = page - 1
+            continue
+        let pick = parseIndexLocal(trimmed)
+        if pick > 0 && pick <= (endIdx - start):
+            result = threadInfoAtLocal(filtered, start + pick - 1).id
+            break
+        var idx: int32 = 0
+        while idx < len(infos):
+            if threadInfoAtLocal(infos, idx).id == trimmed:
+                result = trimmed
+                idx = len(infos)
+                break
+            idx = idx + 1
+        if len(result) > 0:
+            break
+        printUi("resume: invalid selection")
+    tuiExitAltScreenLocal(useAlt)
+    return result
+
+fn selectThreadIdLocal(filterCwd: str, showAll: bool): str =
+    traceExecLocal("selectThreadIdLocal.begin")
+    let infos = listThreadInfos(filterCwd, showAll)
+    traceExecLocal("selectThreadIdLocal.infos=" + intToStr(len(infos)))
+    if len(infos) == 0:
+        printUi("resume: no sessions")
+        return ""
+    if isFeatureEnabled("tui2"):
+        return selectThreadIdTui(infos, showAll)
+    printUi("Select a session:")
+    var idx: int32 = 0
+    while idx < len(infos):
+        # Build incrementally to avoid deep temporary chains.
+        var line: str = intToStr(idx + 1)
+        line = line + ") "
+        line = line + threadLabelLocal(threadInfoAtLocal(infos, idx), showAll)
+        printUi(line)
+        idx = idx + 1
+    printUi("Enter number or session id (empty to cancel):")
+    let rl = stdinReadLine()
+    if ! rl.ok:
+        return ""
+    let trimmed = trimLine(rl.line)
+    if len(trimmed) == 0:
+        return ""
+    let num = parseIndexLocal(trimmed)
+    if num > 0 && num <= len(infos):
+        return threadInfoAtLocal(infos, num - 1).id
+    var j: int32 = 0
+    while j < len(infos):
+        if threadInfoAtLocal(infos, j).id == trimmed:
+            return trimmed
+        j = j + 1
+    printUi("resume: invalid selection")
+    return ""
+
+fn promptApproval(text: str): bool =
+    if len(text) > 0:
+        printUi(text)
+    printUi("approve? [y/N]")
+    let rl = stdinReadLine()
+    if ! rl.ok:
+        return false
+    let trimmed = normalizePolicy(trimLine(rl.line))
+    return trimmed == "y" || trimmed == "yes"
+
+fn promptApprovalDecision(text: str, allowExecpolicy: bool): str =
+    if len(text) > 0:
+        printUi(text)
+    if allowExecpolicy:
+        printUi("approve? [y/N] (a=execpolicy, s=session)")
+    else:
+        printUi("approve? [y/N] (s=session)")
+    let rl = stdinReadLine()
+    if ! rl.ok:
+        return "decline"
+    let trimmed = normalizePolicy(trimLine(rl.line))
+    if trimmed == "y" || trimmed == "yes":
+        return "accept"
+    if trimmed == "s" || trimmed == "session" || trimmed == "acceptforsession":
+        return "acceptforsession"
+    if trimmed == "a" || trimmed == "always" || trimmed == "remember":
+        if allowExecpolicy:
+            return "acceptwithexecpolicyamendment"
+        return "accept"
+    if trimmed == "acceptwith" || trimmed == "acceptwithexecpolicyamendment":
+        if allowExecpolicy:
+            return "acceptwithexecpolicyamendment"
+        return "accept"
+    return "decline"
+
+fn nextExecItemId(turnId: str, itemSeq: var int32): str =
+    # JSON mode paths have been especially crash-prone when building ids via
+    # string concatenation and arithmetic. Delegate to the storage id generator.
+    turnId
+    itemSeq = itemSeq + 1
+    return newItemId()
+
+fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[str], mode: str): TurnResult =
+    traceExecLocal("runExecTurn.begin mode=" + mode)
+    var approvalPolicy = opts.approvalPolicy
+    if opts.fullAuto:
+        approvalPolicy = "on-request"
+    if opts.bypass:
+        approvalPolicy = "never"
+    # Avoid `let x = if ...: <str> else: <str>`: current compiler can mis-infer
+    # local string widths on arm64 and truncate pointers (SIGSEGV in strlen).
+    var workDir: str = currentDirSafe()
+    if len(opts.cwd) > 0:
+        workDir = opts.cwd
+    let sandboxModeRaw: str = readConfigValue("sandbox_mode")
+    var sandboxMode: str = "danger-full-access"
+    if len(sandboxModeRaw) > 0:
+        sandboxMode = normalizeSandboxModeLocal(sandboxModeRaw)
+    let disableWebSearch = mode == "review"
+    let disableViewImage = mode == "review"
+    traceExecLocal("runExecTurn.before.runTurn")
+    var result = runTurn(prompt, contextItems, workDir, mode, approvalPolicy, opts.baseInstructions, opts.developerInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
+    var pendingText: str = "0"
+    if result.pending:
+        pendingText = "1"
+    var pendingMsg: str = "runExecTurn.after.runTurn pending="
+    pendingMsg = pendingMsg + pendingText
+    traceExecLocal(pendingMsg)
+    var agentTranscript = ""
+    if result.agentOutput != nil && len(result.agentOutput) > 0:
+        agentTranscript = result.agentOutput
+    traceExecLocal("runExecTurn.agentTranscript.len=" + intToStr(len(agentTranscript)))
+    var itemSeq: int32 = 0
+    var todoItemId = ""
+    var todoItems: seq[str] = newSeq[str]()
+    var turnId = newTurnId()
+    var approvalKeys: seq[str] = newSeq[str]()
+    traceExecLocal("runExecTurn.before.turn.started")
+    if opts.jsonMode:
+        emitExecEvent(true, "turn.started", newSeq[str]())
+    traceExecLocal("runExecTurn.after.turn.started")
+    while result.pending:
+        if result.pendingToolName == "shell" || result.pendingToolName == "shell_command":
+            traceExecLocal("runExecTurn.loop.shell.begin")
+            traceExecLocal("runExecTurn.loop.shell.before.parse")
+            let shellArgs = parseShellToolArgs(result.pendingArguments)
+            traceExecLocal("runExecTurn.loop.shell.after.parse")
+            var command = shellArgs.commandText
+            if len(command) == 0 && len(shellArgs.commandTokens) > 0:
+                command = buildCommandTextFromTokens(shellArgs.commandTokens)
+            traceExecLocal("runExecTurn.loop.shell.command.ready")
+            # Avoid relying on nested-string fields from ShellToolArgs until ORC/seq semantics
+            # are stable; default to the current working directory and default sandbox perms.
+            let execCwd = workDir
+            let sandboxPerms = "use_default"
+            traceExecLocal("runExecTurn.loop.shell.meta.ready")
+            var itemId = ""
+            if opts.jsonMode:
+                itemId = nextExecItemId(turnId, itemSeq)
+                emitExecEvent(true, "item.started", seqStr1(jstrPair("item", execItemCommand(itemId, command, "", "in_progress", -1))))
+            traceExecLocal("runExecTurn.loop.shell.before.policy")
+            let policyNorm = normalizePolicy(trimLine(approvalPolicy))
+            if sandboxPermissionsRequiresEscalated(sandboxPerms) && policyNorm != "on-request" && policyNorm != "onrequest":
+                # Build incrementally to avoid deep temporary chains.
+                var reason: str = "approval policy is "
+                reason = reason + approvalPolicy
+                reason = reason + "; reject command — you should not ask for escalated permissions if the approval policy is "
+                reason = reason + approvalPolicy
+                if opts.jsonMode:
+                    emitExecEvent(true, "item.updated", seqStr1(jstrPair("item", execItemCommand(itemId, command, reason, "in_progress", -1))))
+                    emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemCommand(itemId, command, reason, "failed", -1))))
+                appendToolEvent(threadId, "shell", command, reason, -1, "", "", false)
+                result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, reason, false, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
+                if len(result.agentOutput) > 0:
+                    agentTranscript = agentTranscript + result.agentOutput
+                continue
+            var evalErr = ""
+            traceExecLocal("runExecTurn.loop.shell.before.execpolicy")
+            let requirement = evaluateExecPolicyRequirement(shellArgs.commandTokens, approvalPolicy, sandboxMode, sandboxPerms, evalErr)
+            traceExecLocal("runExecTurn.loop.shell.after.execpolicy")
+            if requirement.kind == execReqForbidden:
+                var reason: str = "execpolicy forbids this command"
+                if len(requirement.reason) > 0:
+                    reason = requirement.reason
+                if opts.jsonMode:
+                    emitExecEvent(true, "item.updated", seqStr1(jstrPair("item", execItemCommand(itemId, command, reason, "in_progress", -1))))
+                    emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemCommand(itemId, command, reason, "failed", -1))))
+                appendToolEvent(threadId, "shell", command, reason, -1, "", "", false)
+                result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, reason, false, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
+                if len(result.agentOutput) > 0:
+                    agentTranscript = agentTranscript + result.agentOutput
+                continue
+            var approved = true
+            var alreadyApproved = false
+            if requirement.kind == execReqNeedsApproval:
+                let approvalKey = approvalKeyForCommandLocal(shellArgs.commandTokens, command, execCwd, sandboxPerms)
+                if approvalCacheHasLocal(approvalKeys, approvalKey):
+                    approved = true
+                    alreadyApproved = true
+                else:
+                    var reasonText = requirement.reason
+                    if len(reasonText) == 0:
+                        reasonText = shellArgs.justification
+                    let allowExecpolicy = len(requirement.proposedExecpolicyAmendment) > 0
+                    var reasonSuffix = ""
+                    if len(reasonText) > 0:
+                        reasonSuffix = " (" + reasonText + ")"
+                    let decision = promptApprovalDecision("command: " + command + reasonSuffix, allowExecpolicy)
+                    if decision == "accept" || decision == "acceptforsession" || decision == "acceptwithexecpolicyamendment":
+                        approved = true
+                        if decision == "acceptforsession":
+                            approvalCacheAddLocal(approvalKeys, approvalKey)
+                        if decision == "acceptwithexecpolicyamendment" && len(requirement.proposedExecpolicyAmendment) > 0:
+                            var amendErr = ""
+                            appendExecPolicyAllowRule(requirement.proposedExecpolicyAmendment, amendErr)
+                    else:
+                        approved = false
+            if ! approved:
+                if opts.jsonMode:
+                    emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemCommand(itemId, command, "", "declined", -1))))
+                appendToolEvent(threadId, "shell", command, "", -1, "", "declined", false)
+                result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, "declined", false, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
+                if len(result.agentOutput) > 0:
+                    agentTranscript = agentTranscript + result.agentOutput
+                continue
+            let bypassSandbox = requirement.bypassSandbox || sandboxPermissionsRequiresEscalated(sandboxPerms)
+            let useLogin = if shellArgs.hasLogin: shellArgs.login else: true
+            traceExecLocal("runExecTurn.loop.shell.before.runShell")
+            let res = runShellCommand(command, shellArgs.commandTokens, execCwd, sandboxMode, sandboxPerms, bypassSandbox, opts.addDirs, shellArgs.timeoutMs, useLogin)
+            traceExecLocal("runExecTurn.loop.shell.after.runShell")
+            if opts.jsonMode:
+                emitExecEvent(true, "item.updated", seqStr1(jstrPair("item", execItemCommand(itemId, command, res.output, "in_progress", -1))))
+            var finalRes = res
+            let mode: str = normalizeSandboxModeLocal(sandboxMode)
+            let sandboxed = ! bypassSandbox && ! sandboxPermissionsRequiresEscalated(sandboxPerms) && len(mode) > 0 && mode != "danger-full-access" && mode != "external-sandbox"
+            if sandboxed && isLikelySandboxDenied(res.output, res.exitCode, sandboxed) && wantsNoSandboxApprovalLocal(approvalPolicy):
+                var retryApproved = alreadyApproved
+                if ! retryApproved:
+                    let allowExecpolicy = len(requirement.proposedExecpolicyAmendment) > 0
+                    let retryDecision = promptApprovalDecision(SANDBOX_DENIAL_REASON, allowExecpolicy)
+                    if retryDecision == "accept" || retryDecision == "acceptforsession" || retryDecision == "acceptwithexecpolicyamendment":
+                        retryApproved = true
+                        if retryDecision == "acceptforsession":
+                            let approvalKey = approvalKeyForCommandLocal(shellArgs.commandTokens, command, execCwd, sandboxPerms)
+                            approvalCacheAddLocal(approvalKeys, approvalKey)
+                        if retryDecision == "acceptwithexecpolicyamendment" && len(requirement.proposedExecpolicyAmendment) > 0:
+                            var amendErr = ""
+                            appendExecPolicyAllowRule(requirement.proposedExecpolicyAmendment, amendErr)
+                if retryApproved:
+                    finalRes = runShellCommand(command, shellArgs.commandTokens, execCwd, sandboxMode, sandboxPerms, true, opts.addDirs, shellArgs.timeoutMs, useLogin)
+                    if opts.jsonMode:
+                        emitExecEvent(true, "item.updated", seqStr1(jstrPair("item", execItemCommand(itemId, command, finalRes.output, "in_progress", -1))))
+            var finalStatus = "completed"
+            if ! finalRes.ok:
+                finalStatus = "failed"
+            if opts.jsonMode:
+                emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemCommand(itemId, command, finalRes.output, finalStatus, finalRes.exitCode))))
+            appendToolEvent(threadId, "shell", command, finalRes.output, finalRes.exitCode, "", "", finalRes.ok)
+            traceExecLocal("runExecTurn.loop.shell.before.resume")
+            result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, finalRes.output, finalRes.ok, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
+            traceExecLocal("runExecTurn.loop.shell.after.resume")
+            if len(result.agentOutput) > 0:
+                agentTranscript = agentTranscript + result.agentOutput
+            continue
+        if result.pendingToolName == "view_image":
+            let path = jsonExtractString(result.pendingArguments, "path")
+            let imageMessage = buildInputImageMessage(path)
+            let ok = len(imageMessage) > 0
+            var text: str = "image attach failed"
+            if ok:
+                text = "attached local image path"
+            if opts.jsonMode:
+                let itemId = nextExecItemId(turnId, itemSeq)
+                emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemAgentMessage(itemId, text))))
+            appendToolEvent(threadId, "view_image", "", "", -1, "", text, ok)
+            if ok:
+                var nextItems: seq[str] = newSeq[str]()
+                var ii: int32 = 0
+                while ii < len(result.pendingInputItems):
+                    seqAdd(nextItems, result.pendingInputItems[ii])
+                    ii = ii + 1
+                seqAdd(nextItems, imageMessage)
+                result = resumeTurnWithTool(nextItems, result.pendingResponseId, result.pendingCallId, text, ok, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
+            else:
+                result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, text, ok, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
+            if len(result.agentOutput) > 0:
+                agentTranscript = agentTranscript + result.agentOutput
+            continue
+        if result.pendingToolName == "apply_patch":
+            let patchText = jsonExtractString(result.pendingArguments, "patch")
+            var itemId = ""
+            var changes: seq[str] = newSeq[str]()
+            if opts.jsonMode:
+                itemId = nextExecItemId(turnId, itemSeq)
+                changes = parseDiffChanges(patchText)
+                emitExecEvent(true, "item.started", seqStr1(jstrPair("item", execItemFileChange(itemId, changes, "in_progress"))))
+            var approved = true
+            if approvalRequiresRequestLocal(approvalPolicy):
+                approved = promptApproval("apply patch?")
+            if ! approved:
+                if opts.jsonMode:
+                    emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemFileChange(itemId, changes, "failed"))))
+                appendToolEvent(threadId, "apply_patch", "", "", -1, patchText, "declined", false)
+                result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, "declined", false, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
+                if len(result.agentOutput) > 0:
+                    agentTranscript = agentTranscript + result.agentOutput
+                continue
+            let res = runPatchTool(patchText, workDir)
+            var patchStatus = "completed"
+            if ! res.ok:
+                patchStatus = "failed"
+            if opts.jsonMode:
+                emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemFileChange(itemId, changes, patchStatus))))
+            appendToolEvent(threadId, "apply_patch", "", "", -1, patchText, res.output, res.ok)
+            var toolText = res.output
+            if len(toolText) == 0:
+                if res.ok:
+                    toolText = "patch applied"
+                else:
+                    toolText = "patch failed"
+            result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolText, res.ok, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
+            if len(result.agentOutput) > 0:
+                agentTranscript = agentTranscript + result.agentOutput
+            continue
+        if result.pendingToolName == "update_plan":
+            let items = todoItemsFromPlanArgs(result.pendingArguments)
+            if opts.jsonMode:
+                if len(todoItemId) == 0:
+                    todoItemId = nextExecItemId(turnId, itemSeq)
+                    emitExecEvent(true, "item.started", seqStr1(jstrPair("item", execItemTodoList(todoItemId, items))))
+                else:
+                    emitExecEvent(true, "item.updated", seqStr1(jstrPair("item", execItemTodoList(todoItemId, items))))
+                todoItems = items
+            result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, "Plan updated", true, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
+            if len(result.agentOutput) > 0:
+                agentTranscript = agentTranscript + result.agentOutput
+            continue
+        if result.pendingToolName == "spawn_agent":
+            let toolRes = collabSpawnAgent(result.pendingArguments, opts.baseInstructions, opts.developerInstructions, opts.model, approvalPolicy, workDir)
+            if opts.jsonMode:
+                let itemId = nextExecItemId(turnId, itemSeq)
+                emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemAgentMessage(itemId, toolRes.output))))
+            appendToolEvent(threadId, "spawn_agent", "", "", -1, "", toolRes.output, toolRes.ok)
+            result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolRes.output, toolRes.ok, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
+            if len(result.agentOutput) > 0:
+                agentTranscript = agentTranscript + result.agentOutput
+            continue
+        if result.pendingToolName == "send_input":
+            let toolRes = collabSendInput(result.pendingArguments, opts.baseInstructions, opts.developerInstructions, opts.model, approvalPolicy, workDir)
+            if opts.jsonMode:
+                let itemId = nextExecItemId(turnId, itemSeq)
+                emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemAgentMessage(itemId, toolRes.output))))
+            appendToolEvent(threadId, "send_input", "", "", -1, "", toolRes.output, toolRes.ok)
+            result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolRes.output, toolRes.ok, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
+            if len(result.agentOutput) > 0:
+                agentTranscript = agentTranscript + result.agentOutput
+            continue
+        if result.pendingToolName == "wait":
+            let toolRes = collabWaitAgents(result.pendingArguments)
+            if opts.jsonMode:
+                let itemId = nextExecItemId(turnId, itemSeq)
+                emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemAgentMessage(itemId, toolRes.output))))
+            appendToolEvent(threadId, "wait", "", "", -1, "", toolRes.output, toolRes.ok)
+            result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolRes.output, toolRes.ok, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
+            if len(result.agentOutput) > 0:
+                agentTranscript = agentTranscript + result.agentOutput
+            continue
+        if result.pendingToolName == "close_agent":
+            let toolRes = collabCloseAgent(result.pendingArguments)
+            if opts.jsonMode:
+                let itemId = nextExecItemId(turnId, itemSeq)
+                emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemAgentMessage(itemId, toolRes.output))))
+            appendToolEvent(threadId, "close_agent", "", "", -1, "", toolRes.output, toolRes.ok)
+            result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolRes.output, toolRes.ok, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
+            if len(result.agentOutput) > 0:
+                agentTranscript = agentTranscript + result.agentOutput
+            continue
+        result.pending = false
+        result.ok = false
+        result.agentText = "unsupported tool"
+    traceExecLocal("runExecTurn.after.tool.loop")
+    traceExecLocal("runExecTurn.before.webSearch")
+    if result.webSearchQueries != nil && len(result.webSearchQueries) > 0:
+        var widx: int32 = 0
+        while widx < len(result.webSearchQueries):
+            let query = result.webSearchQueries[widx]
+            if opts.jsonMode:
+                let itemId = nextExecItemId(turnId, itemSeq)
+                emitExecEvent(true, "item.started", seqStr1(jstrPair("item", execItemWebSearch(itemId, query, "in_progress"))))
+                emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemWebSearch(itemId, query, "completed"))))
+            appendToolEvent(threadId, "web_search", "", "", -1, "", query, true)
+            widx = widx + 1
+    traceExecLocal("runExecTurn.after.webSearch")
+    if opts.jsonMode:
+        if len(todoItemId) > 0:
+            emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemTodoList(todoItemId, todoItems))))
+        if len(agentTranscript) > 0:
+            let agentItemId = nextExecItemId(turnId, itemSeq)
+            let agentItem = execItemAgentMessage(agentItemId, agentTranscript)
+            emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", agentItem)))
+    traceExecLocal("runExecTurn.before.turn.completed")
+    if opts.jsonMode:
+        var turnPairs: seq[str] = newSeq[str]()
+        seqAdd(turnPairs, jstrPair("usage", execUsageZero()))
+        if len(agentTranscript) > 0:
+            seqAdd(turnPairs, jstrPair("output", jstrString(agentTranscript)))
+        emitExecEvent(true, "turn.completed", turnPairs)
+    traceExecLocal("runExecTurn.after.turn.completed")
+    traceExecLocal("runExecTurn.before.appendTurnEvent")
+    let inputItems = seqStr1(inputTokenText(prompt))
+    appendTurnEvent(threadId, prompt, inputItems, "codex-cheng", agentTranscript, "", "", -1, "", "")
+    traceExecLocal("runExecTurn.after.appendTurnEvent")
+    result.agentOutput = agentTranscript
+    traceExecLocal("runExecTurn.return")
+    return result
+
+fn runExecFlow(opts: ExecOptions, mode: str): int32 =
+    traceExecLocal("runExecFlow.begin mode=" + mode)
+    applyExecEphemeralLocal(opts)
+    if ! enforceGitRepoCheckLocal(opts):
+        return 1
+    if opts.jsonMode:
+        setUiStreamOverride("stderr")
+    else:
+        setUiStreamOverride("")
+    var overrideErr = ""
+    if ! applyExecOverrides(opts, overrideErr):
+        if len(overrideErr) > 0:
+            printErr(overrideErr)
+        return 2
+    var prompt = opts.prompt
+    if len(prompt) == 0 || prompt == "-":
+        prompt = readPromptFromStdin()
+        if len(trimLine(prompt)) == 0:
+            printErr("No prompt provided via stdin.")
+            return 1
+    var cwd: str = currentDirSafe()
+    if len(opts.cwd) > 0:
+        cwd = opts.cwd
+    traceExecLocal("runExecFlow.thread.create")
+    var contextItems: seq[str] = newSeq[str]()
+    if ! appendImageContextItems(contextItems, opts.images):
+        return 1
+    let preview = buildPreview(prompt)
+    let threadId = createThread(preview, cwd, "exec")
+    traceExecLocal("runExecFlow.thread.created id=" + threadId)
+    if opts.jsonMode:
+        emitExecEvent(true, "thread.started", seqStr1(jstrPair("thread_id", jstrString(threadId))))
+    traceExecLocal("runExecFlow.thread.event.emitted")
+    let result = runExecTurn(opts, threadId, prompt, contextItems, mode)
+    if len(opts.lastMessagePath) > 0 && len(result.agentOutput) > 0:
+        os.writeFile(opts.lastMessagePath, result.agentOutput)
+    if ! opts.jsonMode && len(result.agentOutput) > 0:
+        printLine(result.agentOutput)
+    if result.ok:
+        return 0
+    return 1
+
+fn parseReviewArgs(args: seq[str], start: int32): ReviewOptions =
+    var opts: ReviewOptions = ReviewOptions(uncommitted: false, baseBranch: "", commitSha: "", commitTitle: "", prompt: "")
+    var promptParts: seq[str] = newSeq[str]()
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if arg == "--uncommitted":
+            opts.uncommitted = true
+        elif arg == "--model" || arg == "-m":
+            if i + 1 < len(args):
+                i = i + 1
+        elif hasPrefix(arg, "--model:"):
+            arg
+        elif arg == "--oss":
+            arg
+        elif arg == "--local-provider":
+            if i + 1 < len(args):
+                i = i + 1
+        elif hasPrefix(arg, "--local-provider:"):
+            arg
+        elif arg == "--image" || arg == "-i":
+            if i + 1 < len(args):
+                i = i + 1
+        elif hasPrefix(arg, "--image:"):
+            arg
+        elif arg == "--sandbox" || arg == "-s":
+            if i + 1 < len(args):
+                i = i + 1
+        elif hasPrefix(arg, "--sandbox:"):
+            arg
+        elif arg == "--ask-for-approval" || arg == "-a" || arg == "--approval-policy":
+            if i + 1 < len(args):
+                i = i + 1
+        elif hasPrefix(arg, "--ask-for-approval:"):
+            arg
+        elif hasPrefix(arg, "--approval-policy:"):
+            arg
+        elif arg == "--profile" || arg == "-p":
+            if i + 1 < len(args):
+                i = i + 1
+        elif hasPrefix(arg, "--profile:"):
+            arg
+        elif arg == "--full-auto":
+            arg
+        elif arg == "--dangerously-bypass-approvals-and-sandbox" || arg == "--yolo":
+            arg
+        elif arg == "--search":
+            arg
+        elif arg == "--no-alt-screen":
+            arg
+        elif arg == "--cd" || arg == "-C":
+            if i + 1 < len(args):
+                i = i + 1
+        elif hasPrefix(arg, "--cd:"):
+            arg
+        elif arg == "--add-dir":
+            if i + 1 < len(args):
+                i = i + 1
+        elif hasPrefix(arg, "--add-dir:"):
+            arg
+        elif arg == "--output-schema":
+            if i + 1 < len(args):
+                i = i + 1
+        elif hasPrefix(arg, "--output-schema:"):
+            arg
+        elif arg == "--output-last-message" || arg == "-o":
+            if i + 1 < len(args):
+                i = i + 1
+        elif hasPrefix(arg, "--output-last-message:"):
+            arg
+        elif arg == "--color":
+            if i + 1 < len(args):
+                i = i + 1
+        elif hasPrefix(arg, "--color:"):
+            arg
+        elif arg == "--json" || arg == "--experimental-json":
+            arg
+        elif arg == "--base" && i + 1 < len(args):
+            opts.baseBranch = argAt(args, i + 1)
+            i = i + 1
+        elif hasPrefix(arg, "--base:"):
+            opts.baseBranch = dropPrefix(arg, "--base:")
+        elif arg == "--commit" && i + 1 < len(args):
+            opts.commitSha = argAt(args, i + 1)
+            i = i + 1
+        elif hasPrefix(arg, "--commit:"):
+            opts.commitSha = dropPrefix(arg, "--commit:")
+        elif arg == "--title" && i + 1 < len(args):
+            opts.commitTitle = argAt(args, i + 1)
+            i = i + 1
+        elif hasPrefix(arg, "--title:"):
+            opts.commitTitle = dropPrefix(arg, "--title:")
+        elif arg == "--prompt" && i + 1 < len(args):
+            opts.prompt = argAt(args, i + 1)
+            i = i + 1
+        elif hasPrefix(arg, "--prompt:"):
+            opts.prompt = dropPrefix(arg, "--prompt:")
+        else:
+            seqAdd(promptParts, arg)
+        i = i + 1
+    if len(opts.prompt) == 0 && len(promptParts) > 0:
+        opts.prompt = joinArgs(promptParts, 0)
+    return opts
+
+fn reviewDiffUncommitted(cwd: str): str =
+    var workDir: str = currentDirSafe()
+    if len(cwd) > 0:
+        workDir = cwd
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let staged = os.execCmdEx("git diff --cached", opts, workDir).output
+    let unstaged = os.execCmdEx("git diff", opts, workDir).output
+    let status = os.execCmdEx("git status --porcelain --untracked-files=all", opts, workDir).output
+    var out = ""
+    if staged != nil && len(staged) > 0:
+        out = out + "## Staged\n"
+        out = out + staged
+        out = out + "\n"
+    if unstaged != nil && len(unstaged) > 0:
+        out = out + "## Unstaged\n"
+        out = out + unstaged
+        out = out + "\n"
+    if status != nil && len(status) > 0:
+        out = out + "## Status\n"
+        out = out + status
+        out = out + "\n"
+    return out
+
+fn reviewDiffBase(cwd: str, branch: str): str =
+    var workDir: str = currentDirSafe()
+    if len(cwd) > 0:
+        workDir = cwd
+    if len(branch) == 0:
+        return ""
+    let cmd = "git merge-base " + shellQuote(branch) + " HEAD"
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let baseRes = os.execCmdEx(cmd, opts, workDir)
+    if baseRes.exitCode != 0:
+        return ""
+    let base = trimLine(baseRes.output)
+    if len(base) == 0:
+        return ""
+    let diffCmd = "git diff " + shellQuote(base) + "...HEAD"
+    let diffRes = os.execCmdEx(diffCmd, opts, workDir)
+    return diffRes.output
+
+fn reviewDiffCommit(cwd: str, sha: str): str =
+    var workDir: str = currentDirSafe()
+    if len(cwd) > 0:
+        workDir = cwd
+    if len(sha) == 0:
+        return ""
+    let cmd = "git show " + shellQuote(sha)
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let diffRes = os.execCmdEx(cmd, opts, workDir)
+    return diffRes.output
+
+fn buildReviewPrompt(review: ReviewOptions, cwd: str): str =
+    if len(review.prompt) > 0:
+        return review.prompt
+    if review.uncommitted:
+        let diffText = reviewDiffUncommitted(cwd)
+        var out: str = "Review the following working tree changes:\n\n"
+        out = out + diffText
+        return out
+    if len(review.baseBranch) > 0:
+        let diffText = reviewDiffBase(cwd, review.baseBranch)
+        var out: str = "Review changes against base branch "
+        out = out + review.baseBranch
+        out = out + ":\n\n"
+        out = out + diffText
+        return out
+    if len(review.commitSha) > 0:
+        var title: str = ""
+        if len(review.commitTitle) > 0:
+            # Build incrementally to avoid deep temporary chains.
+            var tmp: str = " ("
+            tmp = tmp + review.commitTitle
+            tmp = tmp + ")"
+            title = tmp
+        let diffText = reviewDiffCommit(cwd, review.commitSha)
+        var out: str = "Review commit "
+        out = out + review.commitSha
+        out = out + title
+        out = out + ":\n\n"
+        out = out + diffText
+        return out
+    return ""
+
+fn runReview(args: seq[str], start: int32, baseExec: ExecOptions): int32 =
+    var execOpts = baseExec
+    let reviewOpts = parseReviewArgs(args, start)
+    let prompt = buildReviewPrompt(reviewOpts, execOpts.cwd)
+    if len(prompt) == 0:
+        printErr("missing review target")
+        return 2
+    execOpts.prompt = prompt
+    execOpts.outputSchemaJson = ""
+    return runExecFlow(execOpts, "review")
+
+fn runExecResume(args: seq[str], start: int32, baseExec: ExecOptions): int32 =
+    var execOpts = baseExec
+    traceExecLocal("runExecResume.begin")
+    let resumeCwdRaw = parseResumeCwdLocal(args, start)
+    let resumeCwd = resumeCwdRaw
+    execOpts.cwd = resumeCwd
+    var overrideErr = ""
+    if ! applyExecOverrides(execOpts, overrideErr):
+        if len(overrideErr) > 0:
+            printErr(overrideErr)
+        return 2
+    if execOpts.jsonMode:
+        setUiStreamOverride("stderr")
+    else:
+        setUiStreamOverride("")
+    traceExecLocal("runExecResume.after.applyOverrides")
+    let parsed = parseResumeArgsLocal(args, start)
+    traceExecLocal("runExecResume.after.parseResumeArgs")
+    var threadId = parsed.threadId
+    var prompt = parsed.prompt
+    if parsed.last && len(threadId) == 0:
+        let infos = listThreadInfos(resumeCwd, parsed.showAll)
+        if len(infos) > 0:
+            threadId = threadInfoAtLocal(infos, 0).id
+    if len(threadId) == 0:
+        threadId = selectThreadIdLocal(resumeCwd, parsed.showAll)
+    if len(threadId) == 0:
+        printErr("missing session id")
+        return 2
+    traceExecLocal("runExecResume.thread.selected")
+    if prompt == "-":
+        prompt = readPromptFromStdin()
+    if len(prompt) == 0:
+        prompt = readPromptFromStdin()
+    if len(prompt) == 0:
+        while true:
+            let rl = stdinReadLine()
+            if ! rl.ok:
+                return 0
+            let trimmed = trimLine(rl.line)
+            if len(trimmed) == 0:
+                continue
+            execOpts.prompt = trimmed
+            traceExecLocal("runExecResume.loop.before.context")
+            var contextItems = threadContextItems(threadId)
+            traceExecLocal("runExecResume.loop.after.context")
+            if ! appendImageContextItems(contextItems, execOpts.images):
+                return 1
+            let preview = buildPreview(trimmed)
+            let ensured = ensureThread(threadId, preview, resumeCwd, "exec")
+            traceExecLocal("runExecResume.loop.before.runExecTurn")
+            let result = runExecTurn(execOpts, ensured, trimmed, contextItems, "exec")
+            traceExecLocal("runExecResume.loop.after.runExecTurn")
+            if len(execOpts.lastMessagePath) > 0 && len(result.agentOutput) > 0:
+                os.writeFile(execOpts.lastMessagePath, result.agentOutput)
+            if ! execOpts.jsonMode && len(result.agentOutput) > 0:
+                printLine(result.agentOutput)
+        return 0
+    execOpts.prompt = prompt
+    traceExecLocal("runExecResume.single.before.context")
+    var contextItems = threadContextItems(threadId)
+    traceExecLocal("runExecResume.single.after.context")
+    if ! appendImageContextItems(contextItems, execOpts.images):
+        return 1
+    let preview = buildPreview(prompt)
+    let ensured = ensureThread(threadId, preview, resumeCwd, "exec")
+    traceExecLocal("runExecResume.single.before.runExecTurn")
+    let result = runExecTurn(execOpts, ensured, prompt, contextItems, "exec")
+    traceExecLocal("runExecResume.single.after.runExecTurn")
+    if len(execOpts.lastMessagePath) > 0 && len(result.agentOutput) > 0:
+        os.writeFile(execOpts.lastMessagePath, result.agentOutput)
+    if ! execOpts.jsonMode && len(result.agentOutput) > 0:
+        printLine(result.agentOutput)
+    if result.ok:
+        return 0
+    return 1
+
+fn isExecSubcommandTokenLocal(tok: str): bool =
+    return tok == "resume" || tok == "review" || tok == "help"
+
+fn printExecHelp(): int32 =
+    printLine("Run Codex non-interactively")
+    printLine("")
+    printLine("Usage: codex exec [OPTIONS] [PROMPT] [COMMAND]")
+    printLine("")
+    printLine("Commands:")
+    printLine("  resume  Resume a previous session by id or pick the most recent with --last")
+    printLine("  review  Run a code review against the current repository")
+    printLine("  help    Print this message or the help of the given subcommand(s)")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [PROMPT]")
+    printLine("          Initial instructions for the agent. If not provided as an argument (or if `-` is used),")
+    printLine("          instructions are read from stdin")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -i, --image <FILE>...")
+    printLine("          Optional image(s) to attach to the initial prompt")
+    printLine("")
+    printLine("  -m, --model <MODEL>")
+    printLine("          Model the agent should use")
+    printLine("")
+    printLine("      --oss")
+    printLine("          Use open-source provider")
+    printLine("")
+    printLine("      --local-provider <OSS_PROVIDER>")
+    printLine("          Specify which local provider to use (lmstudio or ollama). If not specified with --oss,")
+    printLine("          will use config default or show selection")
+    printLine("")
+    printLine("  -s, --sandbox <SANDBOX_MODE>")
+    printLine("          Select the sandbox policy to use when executing model-generated shell commands")
+    printLine("          ")
+    printLine("          [possible values: read-only, workspace-write, danger-full-access]")
+    printLine("")
+    printLine("  -p, --profile <CONFIG_PROFILE>")
+    printLine("          Configuration profile from config.toml to specify default options")
+    printLine("")
+    printLine("      --full-auto")
+    printLine("          Convenience alias for low-friction sandboxed automatic execution (-a on-request, --sandbox")
+    printLine("          workspace-write)")
+    printLine("")
+    printLine("      --dangerously-bypass-approvals-and-sandbox")
+    printLine("          Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY")
+    printLine("          DANGEROUS. Intended solely for running in environments that are externally sandboxed")
+    printLine("")
+    printLine("  -C, --cd <DIR>")
+    printLine("          Tell the agent to use the specified directory as its working root")
+    printLine("")
+    printLine("      --skip-git-repo-check")
+    printLine("          Allow running Codex outside a Git repository")
+    printLine("")
+    printLine("      --add-dir <DIR>")
+    printLine("          Additional directories that should be writable alongside the primary workspace")
+    printLine("")
+    printLine("      --ephemeral")
+    printLine("          Run without persisting session files to disk")
+    printLine("")
+    printLine("      --output-schema <FILE>")
+    printLine("          Path to a JSON Schema file describing the model's final response shape")
+    printLine("")
+    printLine("      --color <COLOR>")
+    printLine("          Specifies color settings for use in the output")
+    printLine("          ")
+    printLine("          [default: auto]")
+    printLine("          [possible values: always, never, auto]")
+    printLine("")
+    printLine("      --json")
+    printLine("          Print events to stdout as JSONL")
+    printLine("")
+    printLine("  -o, --output-last-message <FILE>")
+    printLine("          Specifies file where the last message from the agent should be written")
+    printLine("")
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    printLine("")
+    printLine("  -V, --version")
+    printLine("          Print version")
+    return 0
+
+fn printExecHelpShort(): int32 =
+    printLine("Run Codex non-interactively")
+    printLine("")
+    printLine("Usage: codex exec [OPTIONS] [PROMPT] [COMMAND]")
+    printLine("")
+    printLine("Commands:")
+    printLine("  resume  Resume a previous session by id or pick the most recent with --last")
+    printLine("  review  Run a code review against the current repository")
+    printLine("  help    Print this message or the help of the given subcommand(s)")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [PROMPT]  Initial instructions for the agent. If not provided as an argument (or if `-` is used),")
+    printLine("            instructions are read from stdin")
+    printLine("")
+    printLine("Options:")
+    printLine("  -c, --config <key=value>")
+    printLine("          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`.")
+    printLine("          Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed")
+    printLine("          as TOML. If it fails to parse as TOML, the raw string is used as a literal")
+    printLine("      --enable <FEATURE>")
+    printLine("          Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    printLine("      --disable <FEATURE>")
+    printLine("          Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    printLine("  -i, --image <FILE>...")
+    printLine("          Optional image(s) to attach to the initial prompt")
+    printLine("  -m, --model <MODEL>")
+    printLine("          Model the agent should use")
+    printLine("      --oss")
+    printLine("          Use open-source provider")
+    printLine("      --local-provider <OSS_PROVIDER>")
+    printLine("          Specify which local provider to use (lmstudio or ollama). If not specified with --oss,")
+    printLine("          will use config default or show selection")
+    printLine("  -s, --sandbox <SANDBOX_MODE>")
+    printLine("          Select the sandbox policy to use when executing model-generated shell commands [possible")
+    printLine("          values: read-only, workspace-write, danger-full-access]")
+    printLine("  -p, --profile <CONFIG_PROFILE>")
+    printLine("          Configuration profile from config.toml to specify default options")
+    printLine("      --full-auto")
+    printLine("          Convenience alias for low-friction sandboxed automatic execution (-a on-request, --sandbox")
+    printLine("          workspace-write)")
+    printLine("      --dangerously-bypass-approvals-and-sandbox")
+    printLine("          Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY")
+    printLine("          DANGEROUS. Intended solely for running in environments that are externally sandboxed")
+    printLine("  -C, --cd <DIR>")
+    printLine("          Tell the agent to use the specified directory as its working root")
+    printLine("      --skip-git-repo-check")
+    printLine("          Allow running Codex outside a Git repository")
+    printLine("      --add-dir <DIR>")
+    printLine("          Additional directories that should be writable alongside the primary workspace")
+    printLine("      --ephemeral")
+    printLine("          Run without persisting session files to disk")
+    printLine("      --output-schema <FILE>")
+    printLine("          Path to a JSON Schema file describing the model's final response shape")
+    printLine("      --color <COLOR>")
+    printLine("          Specifies color settings for use in the output [default: auto] [possible values: always,")
+    printLine("          never, auto]")
+    printLine("      --json")
+    printLine("          Print events to stdout as JSONL")
+    printLine("  -o, --output-last-message <FILE>")
+    printLine("          Specifies file where the last message from the agent should be written")
+    printLine("  -h, --help")
+    printLine("          Print help (see more with '--help')")
+    printLine("  -V, --version")
+    printLine("          Print version")
+    return 0
+
+fn printExecResumeHelp(): int32 =
+    printLine("Resume a previous session by id or pick the most recent with --last")
+    printLine("")
+    printLine("Usage: codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [SESSION_ID]")
+    printLine("          Conversation/session id (UUID) or thread name. UUIDs take precedence if it parses. If")
+    printLine("          omitted, use --last to pick the most recent recorded session")
+    printLine("")
+    printLine("  [PROMPT]")
+    printLine("          Prompt to send after resuming the session. If `-` is used, read from stdin")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printLine("      --last")
+    printLine("          Resume the most recent recorded session (newest) without specifying an id")
+    printLine("")
+    printLine("      --all")
+    printLine("          Show all sessions (disables cwd filtering)")
+    printLine("")
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -i, --image <FILE>")
+    printLine("          Optional image(s) to attach to the prompt sent after resuming")
+    printLine("")
+    printLine("  -m, --model <MODEL>")
+    printLine("          Model the agent should use")
+    printLine("")
+    printLine("      --full-auto")
+    printLine("          Convenience alias for low-friction sandboxed automatic execution (-a on-request, --sandbox")
+    printLine("          workspace-write)")
+    printLine("")
+    printLine("      --dangerously-bypass-approvals-and-sandbox")
+    printLine("          Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY")
+    printLine("          DANGEROUS. Intended solely for running in environments that are externally sandboxed")
+    printLine("")
+    printLine("      --skip-git-repo-check")
+    printLine("          Allow running Codex outside a Git repository")
+    printLine("")
+    printLine("      --ephemeral")
+    printLine("          Run without persisting session files to disk")
+    printLine("")
+    printLine("      --json")
+    printLine("          Print events to stdout as JSONL")
+    printLine("")
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn printExecReviewHelp(): int32 =
+    printLine("Run a code review against the current repository")
+    printLine("")
+    printLine("Usage: codex exec review [OPTIONS] [PROMPT]")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [PROMPT]")
+    printLine("          Custom review instructions. If `-` is used, read from stdin")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printLine("      --uncommitted")
+    printLine("          Review staged, unstaged, and untracked changes")
+    printLine("")
+    printLine("      --base <BRANCH>")
+    printLine("          Review changes against the given base branch")
+    printLine("")
+    printEnableFlagHelp()
+    printLine("      --commit <SHA>")
+    printLine("          Review the changes introduced by a commit")
+    printLine("")
+    printDisableFlagHelp()
+    printLine("  -m, --model <MODEL>")
+    printLine("          Model the agent should use")
+    printLine("")
+    printLine("      --title <TITLE>")
+    printLine("          Optional commit title to display in the review summary")
+    printLine("")
+    printLine("      --full-auto")
+    printLine("          Convenience alias for low-friction sandboxed automatic execution (-a on-request, --sandbox")
+    printLine("          workspace-write)")
+    printLine("")
+    printLine("      --dangerously-bypass-approvals-and-sandbox")
+    printLine("          Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY")
+    printLine("          DANGEROUS. Intended solely for running in environments that are externally sandboxed")
+    printLine("")
+    printLine("      --skip-git-repo-check")
+    printLine("          Allow running Codex outside a Git repository")
+    printLine("")
+    printLine("      --ephemeral")
+    printLine("          Run without persisting session files to disk")
+    printLine("")
+    printLine("      --json")
+    printLine("          Print events to stdout as JSONL")
+    printLine("")
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn execThreadFilePathLocal(threadId: str): str =
+    return os.joinPath(codexThreadsDir(), threadId + ".jsonl")
+
+fn execThreadExistsLocal(threadId: str): bool =
+    if len(threadId) == 0:
+        return false
+    let path = execThreadFilePathLocal(threadId)
+    return len(path) > 0 && os.fileExists(path)
+
+fn parseExecCli(args: seq[str], start: int32): ExecCliParse =
+    var parsed: ExecCliParse
+    parsed.opts = defaultExecOptions()
+    parsed.cmd = ""
+    parsed.cmdIndex = -1
+    parsed.showHelp = false
+    parsed.showVersion = false
+    parsed.errArg = ""
+    parsed.errTip = ""
+    var stopParsing = false
+    var sawPrompt = false
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if ! stopParsing && (arg == "--help" || arg == "-h"):
+            parsed.showHelp = true
+            return parsed
+        if ! stopParsing && (arg == "--version" || arg == "-V"):
+            parsed.showVersion = true
+            return parsed
+        if ! stopParsing && arg == "--":
+            stopParsing = true
+            i = i + 1
+            continue
+        if ! stopParsing && isOptionLikeExecLocal(arg):
+            if arg == "--json" || arg == "--experimental-json":
+                parsed.opts.jsonMode = true
+            elif arg == "--image" || arg == "-i":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                var j: int32 = i + 1
+                var consumed = false
+                while j < len(args):
+                    let v = argAt(args, j)
+                    if v == "--" || isOptionLikeExecLocal(v):
+                        break
+                    appendCommaSeparatedLocal(parsed.opts.images, v)
+                    consumed = true
+                    j = j + 1
+                if ! consumed:
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                i = j - 1
+            elif arg == "--model" || arg == "-m":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.model = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--oss":
+                parsed.opts.oss = true
+            elif arg == "--local-provider":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.ossProvider = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--sandbox" || arg == "-s":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.sandboxMode = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--profile" || arg == "-p":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.profile = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--full-auto":
+                parsed.opts.fullAuto = true
+            elif arg == "--dangerously-bypass-approvals-and-sandbox" || arg == "--yolo":
+                parsed.opts.bypass = true
+            elif arg == "--cd" || arg == "-C":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.cwd = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--skip-git-repo-check":
+                parsed.opts.skipGitRepoCheck = true
+            elif arg == "--add-dir":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                seqAdd(parsed.opts.addDirs, argAt(args, i + 1))
+                i = i + 1
+            elif arg == "--ephemeral":
+                parsed.opts.ephemeral = true
+            elif arg == "--output-schema":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.outputSchemaPath = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--color":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                let v = argAt(args, i + 1)
+                if v != "always" && v != "never" && v != "auto":
+                    parsed.errArg = v
+                    parsed.errTip = "invalid value for --color"
+                    return parsed
+                parsed.opts.color = v
+                i = i + 1
+            elif arg == "--output-last-message" || arg == "-o":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.lastMessagePath = argAt(args, i + 1)
+                i = i + 1
+            else:
+                parsed.errArg = arg
+                parsed.errTip = "to pass '" + arg + "' as a value, use '-- " + arg + "'"
+                return parsed
+            i = i + 1
+            continue
+        # Positional token (or after `--`).
+        if ! stopParsing && isExecSubcommandTokenLocal(arg):
+            parsed.cmd = arg
+            parsed.cmdIndex = i
+            return parsed
+        if ! sawPrompt:
+            parsed.opts.prompt = arg
+            sawPrompt = true
+        else:
+            # Allow optional subcommand after prompt.
+            if ! stopParsing && isExecSubcommandTokenLocal(arg):
+                parsed.cmd = arg
+                parsed.cmdIndex = i
+                return parsed
+            parsed.errArg = arg
+            return parsed
+        i = i + 1
+    return parsed
+
+fn parseExecResumeCli(args: seq[str], start: int32): ExecResumeCli =
+    var parsed: ExecResumeCli
+    parsed.opts = defaultExecOptions()
+    parsed.sessionId = ""
+    parsed.promptArg = ""
+    parsed.last = false
+    parsed.showAll = false
+    parsed.showHelp = false
+    parsed.errArg = ""
+    parsed.errTip = ""
+    var stopParsing = false
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if ! stopParsing && (arg == "--help" || arg == "-h"):
+            parsed.showHelp = true
+            return parsed
+        if ! stopParsing && arg == "--":
+            stopParsing = true
+            i = i + 1
+            continue
+        if ! stopParsing && isOptionLikeExecLocal(arg):
+            if arg == "--last":
+                parsed.last = true
+            elif arg == "--all":
+                parsed.showAll = true
+            elif arg == "--image" || arg == "-i":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                appendCommaSeparatedLocal(parsed.opts.images, argAt(args, i + 1))
+                i = i + 1
+            elif arg == "--model" || arg == "-m":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.model = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--full-auto":
+                parsed.opts.fullAuto = true
+            elif arg == "--dangerously-bypass-approvals-and-sandbox" || arg == "--yolo":
+                parsed.opts.bypass = true
+            elif arg == "--skip-git-repo-check":
+                parsed.opts.skipGitRepoCheck = true
+            elif arg == "--ephemeral":
+                parsed.opts.ephemeral = true
+            elif arg == "--json" || arg == "--experimental-json":
+                parsed.opts.jsonMode = true
+            elif arg == "-V" || arg == "--version":
+                parsed.errArg = arg
+                parsed.errTip = "unexpected argument"
+                return parsed
+            else:
+                parsed.errArg = arg
+                parsed.errTip = "to pass '" + arg + "' as a value, use '-- " + arg + "'"
+                return parsed
+            i = i + 1
+            continue
+        # Positionals: [SESSION_ID] [PROMPT]
+        if len(parsed.sessionId) == 0:
+            parsed.sessionId = arg
+        elif len(parsed.promptArg) == 0:
+            parsed.promptArg = arg
+        else:
+            parsed.errArg = arg
+            return parsed
+        i = i + 1
+    if parsed.last && len(parsed.promptArg) == 0 && len(parsed.sessionId) > 0:
+        parsed.promptArg = parsed.sessionId
+        parsed.sessionId = ""
+    return parsed
+
+fn parseExecReviewCli(args: seq[str], start: int32): ExecReviewCli =
+    var parsed: ExecReviewCli
+    parsed.opts = defaultExecOptions()
+    parsed.review = ReviewOptions(uncommitted: false, baseBranch: "", commitSha: "", commitTitle: "", prompt: "")
+    parsed.showHelp = false
+    parsed.errArg = ""
+    parsed.errTip = ""
+    var stopParsing = false
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if ! stopParsing && (arg == "--help" || arg == "-h"):
+            parsed.showHelp = true
+            return parsed
+        if ! stopParsing && arg == "--":
+            stopParsing = true
+            i = i + 1
+            continue
+        if ! stopParsing && isOptionLikeExecLocal(arg):
+            if arg == "--uncommitted":
+                parsed.review.uncommitted = true
+            elif arg == "--base":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.review.baseBranch = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--commit":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.review.commitSha = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--title":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.review.commitTitle = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--model" || arg == "-m":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.model = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--full-auto":
+                parsed.opts.fullAuto = true
+            elif arg == "--dangerously-bypass-approvals-and-sandbox" || arg == "--yolo":
+                parsed.opts.bypass = true
+            elif arg == "--skip-git-repo-check":
+                parsed.opts.skipGitRepoCheck = true
+            elif arg == "--ephemeral":
+                parsed.opts.ephemeral = true
+            elif arg == "--json" || arg == "--experimental-json":
+                parsed.opts.jsonMode = true
+            else:
+                parsed.errArg = arg
+                parsed.errTip = "to pass '" + arg + "' as a value, use '-- " + arg + "'"
+                return parsed
+            i = i + 1
+            continue
+        # Positional prompt.
+        if len(parsed.review.prompt) == 0:
+            parsed.review.prompt = arg
+        else:
+            parsed.errArg = arg
+            return parsed
+        i = i + 1
+    # Validate review conflicts.
+    var targetCount: int32 = 0
+    if parsed.review.uncommitted:
+        targetCount = targetCount + 1
+    if len(parsed.review.baseBranch) > 0:
+        targetCount = targetCount + 1
+    if len(parsed.review.commitSha) > 0:
+        targetCount = targetCount + 1
+    if len(parsed.review.prompt) > 0:
+        targetCount = targetCount + 1
+    if targetCount > 1:
+        parsed.errArg = "conflict"
+        parsed.errTip = "conflicting arguments"
+        return parsed
+    if len(parsed.review.commitTitle) > 0 && len(parsed.review.commitSha) == 0:
+        parsed.errArg = "--title"
+        parsed.errTip = "--title requires --commit"
+        return parsed
+    return parsed
+
+fn runExecResumeCommand(args: seq[str], start: int32, baseExec: ExecOptions, rootPrompt: str): int32 =
+    let cli = parseExecResumeCli(args, start)
+    if cli.showHelp:
+        return printExecResumeHelp()
+    if len(cli.errArg) > 0:
+        printErr("error: unexpected argument '" + cli.errArg + "' found")
+        return 2
+    var opts = baseExec
+    # Merge global flags provided after the subcommand.
+    if len(cli.opts.model) > 0:
+        opts.model = cli.opts.model
+    if cli.opts.fullAuto:
+        opts.fullAuto = true
+    if cli.opts.bypass:
+        opts.bypass = true
+    if cli.opts.skipGitRepoCheck:
+        opts.skipGitRepoCheck = true
+    if cli.opts.ephemeral:
+        opts.ephemeral = true
+    if cli.opts.jsonMode:
+        opts.jsonMode = true
+    # Root images + resume images.
+    var imgIdx: int32 = 0
+    while imgIdx < len(cli.opts.images):
+        seqAdd(opts.images, argAt(cli.opts.images, imgIdx))
+        imgIdx = imgIdx + 1
+    if len(opts.cwd) == 0:
+        opts.cwd = currentDirSafe()
+    if len(opts.approvalPolicy) == 0:
+        let cfgApproval = readConfigValue("approval_policy")
+        if len(cfgApproval) > 0:
+            opts.approvalPolicy = cfgApproval
+        else:
+            opts.approvalPolicy = "never"
+    opts.outputSchemaJson = loadOutputSchemaJson(opts.outputSchemaPath)
+    applyExecEphemeralLocal(opts)
+    if ! enforceGitRepoCheckLocal(opts):
+        return 1
+    var overrideErr = ""
+    if ! applyExecOverrides(opts, overrideErr):
+        if len(overrideErr) > 0:
+            printErr(overrideErr)
+        return 2
+    if opts.jsonMode:
+        setUiStreamOverride("stderr")
+    else:
+        setUiStreamOverride("")
+    var threadId = ""
+    if cli.last:
+        let infos = listThreadInfos(opts.cwd, cli.showAll)
+        if len(infos) > 0:
+            threadId = threadInfoAtLocal(infos, 0).id
+    elif len(cli.sessionId) > 0 && execThreadExistsLocal(cli.sessionId):
+        threadId = cli.sessionId
+    var promptArg = cli.promptArg
+    if len(promptArg) == 0 && len(rootPrompt) > 0:
+        promptArg = rootPrompt
+    var promptText = promptArg
+    if len(promptText) == 0 || promptText == "-":
+        promptText = readPromptFromStdin()
+        if len(trimLine(promptText)) == 0:
+            printErr("No prompt provided via stdin.")
+            return 1
+    var contextItems: seq[str] = newSeq[str]()
+    if len(threadId) > 0:
+        contextItems = threadContextItems(threadId)
+    if ! appendImageContextItems(contextItems, opts.images):
+        return 1
+    let preview = buildPreview(promptText)
+    let ensured = ensureThread(threadId, preview, opts.cwd, "exec")
+    if opts.jsonMode:
+        emitExecEvent(true, "thread.started", seqStr1(jstrPair("thread_id", jstrString(ensured))))
+    let result = runExecTurn(opts, ensured, promptText, contextItems, "exec")
+    if len(opts.lastMessagePath) > 0 && len(result.agentOutput) > 0:
+        os.writeFile(opts.lastMessagePath, result.agentOutput)
+    if ! opts.jsonMode && len(result.agentOutput) > 0:
+        printLine(result.agentOutput)
+    if result.ok:
+        return 0
+    return 1
+
+fn runExecReviewCommand(args: seq[str], start: int32, baseExec: ExecOptions): int32 =
+    let cli = parseExecReviewCli(args, start)
+    if cli.showHelp:
+        return printExecReviewHelp()
+    if len(cli.errArg) > 0:
+        printErr("error: unexpected argument '" + cli.errArg + "' found")
+        return 2
+    var opts = baseExec
+    # Exec review ignores root prompt/images in codex-rs.
+    opts.prompt = ""
+    opts.images = newSeq[str]()
+    if len(cli.opts.model) > 0:
+        opts.model = cli.opts.model
+    if cli.opts.fullAuto:
+        opts.fullAuto = true
+    if cli.opts.bypass:
+        opts.bypass = true
+    if cli.opts.skipGitRepoCheck:
+        opts.skipGitRepoCheck = true
+    if cli.opts.ephemeral:
+        opts.ephemeral = true
+    if cli.opts.jsonMode:
+        opts.jsonMode = true
+    if len(opts.cwd) == 0:
+        opts.cwd = currentDirSafe()
+    if len(opts.approvalPolicy) == 0:
+        let cfgApproval = readConfigValue("approval_policy")
+        if len(cfgApproval) > 0:
+            opts.approvalPolicy = cfgApproval
+        else:
+            opts.approvalPolicy = "never"
+    # Review ignores output schema in codex-rs.
+    opts.outputSchemaJson = ""
+    let reviewOpts = cli.review
+    var hasTarget = false
+    if reviewOpts.uncommitted || len(reviewOpts.baseBranch) > 0 || len(reviewOpts.commitSha) > 0 || len(reviewOpts.prompt) > 0:
+        hasTarget = true
+    if ! hasTarget:
+        printErr("Error: Specify --uncommitted, --base, --commit, or provide custom review instructions")
+        return 1
+    var review = reviewOpts
+    if len(review.prompt) > 0:
+        var p = review.prompt
+        if p == "-":
+            p = readPromptFromStdin()
+        p = trimLine(p)
+        if len(p) == 0:
+            printErr("Error: Review prompt cannot be empty")
+            return 1
+        review.prompt = p
+    let promptText = buildReviewPrompt(review, opts.cwd)
+    if len(promptText) == 0:
+        printErr("Error: Specify --uncommitted, --base, --commit, or provide custom review instructions")
+        return 1
+    opts.prompt = promptText
+    return runExecFlow(opts, "review")
+
+fn runExec(args: seq[str], start: int32): int32 =
+    traceExecLocal("runExec.begin")
+    let parsed = parseExecCli(args, start)
+    if parsed.showVersion:
+        printVersionNamed("codex-cli-exec")
+        return 0
+    if parsed.showHelp:
+        if wantsLongHelp(args, start):
+            return printExecHelp()
+        return printExecHelpShort()
+    if len(parsed.errArg) > 0:
+        printErr("error: unexpected argument '" + parsed.errArg + "' found")
+        return 2
+    var baseExec = parsed.opts
+    var rootPrompt = baseExec.prompt
+    if len(baseExec.cwd) == 0:
+        baseExec.cwd = currentDirSafe()
+    baseExec.outputSchemaJson = loadOutputSchemaJson(baseExec.outputSchemaPath)
+    if len(baseExec.approvalPolicy) == 0:
+        let cfgApproval = readConfigValue("approval_policy")
+        if len(cfgApproval) > 0:
+            baseExec.approvalPolicy = cfgApproval
+        else:
+            baseExec.approvalPolicy = "never"
+    if parsed.cmdIndex >= 0 && len(parsed.cmd) > 0:
+        let sub = parsed.cmd
+        if sub == "help":
+            return printExecHelp()
+        if sub == "resume":
+            # Ignore root prompt unless needed as resume prompt fallback.
+            baseExec.prompt = ""
+            return runExecResumeCommand(args, parsed.cmdIndex + 1, baseExec, rootPrompt)
+        if sub == "review":
+            baseExec.prompt = ""
+            return runExecReviewCommand(args, parsed.cmdIndex + 1, baseExec)
+        printErr("error: unrecognized subcommand '" + sub + "'")
+        return 2
+    return runExecFlow(baseExec, "exec")

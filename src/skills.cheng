@@ -1,0 +1,849 @@
+# Skills + project instructions support for codex-cheng
+
+import system
+import std/os
+import seqs
+
+import cheng/codex/common
+import cheng/codex/config
+import cheng/codex/features
+import cheng/codex/json_util
+
+type
+    SkillMetadata =
+        name: str
+        description: str
+        shortDescription: str
+        path: str
+        scope: str
+        enabled: bool
+    SkillError =
+        path: str
+        message: str
+    SkillLoadOutcome =
+        skills: seq[SkillMetadata]
+        errors: seq[SkillError]
+        disabledPaths: seq[str]
+    SkillConfigEntry =
+        path: str
+        enabled: bool
+    SkillRoot =
+        path: str
+        scope: str
+
+const
+    SKILLS_FILENAME = "SKILL.md"
+    SKILLS_DIR_NAME = "skills"
+    SKILLS_CONFIG_MARKER = "[[skills.config]]"
+    SKILLS_MAX_NAME_LEN = 64
+    SKILLS_MAX_DESCRIPTION_LEN = 1024
+    SKILLS_MAX_SCAN_DEPTH = 6
+    SKILLS_MAX_DIRS = 2000
+    PROJECT_DOC_MAX_BYTES = 32768
+    PROJECT_DOC_SEPARATOR = "\n\n--- project-doc ---\n\n"
+    PROJECT_DOC_FILENAME = "AGENTS.md"
+    PROJECT_DOC_OVERRIDE_FILENAME = "AGENTS.override.md"
+    USER_INSTRUCTIONS_PREFIX = "# AGENTS.md instructions for "
+
+var cachedUserInstructionsText: str = ""
+var cachedUserInstructionsMessage: str = ""
+
+fn traceSkillsLocal(msg: str) =
+    msg
+
+fn cloneSkillText(value: str): str =
+    if value == nil:
+        return ""
+    var out = ""
+    var i: int32 = 0
+    while i < len(value):
+        let ch = value[i]
+        out = out + $ ch
+        i = i + 1
+    return out
+
+fn joinLines(lines: seq[str]): str =
+    var out = ""
+    var i: int32 = 0
+    while i < len(lines):
+        if i == 0:
+            out = lines[i]
+        else:
+            out = out + "\n" + lines[i]
+        i = i + 1
+    return out
+
+fn normalizePathSeparators(path: str): str =
+    if len(path) == 0:
+        return ""
+    var out = ""
+    var i: int32 = 0
+    while i < len(path):
+        let ch = path[i]
+        if ch == '\\':
+            out = out + "/"
+        else:
+            out = out + $ ch
+        i = i + 1
+    return out
+
+fn trimTrailingSlash(path: str): str =
+    if len(path) == 0:
+        return ""
+    var endIdx: int32 = len(path) - 1
+    while endIdx >= 0:
+        let ch = path[endIdx]
+        if ch != '/' && ch != '\\':
+            break
+        endIdx = endIdx - 1
+    if endIdx < 0:
+        return ""
+    return __cheng_slice_string(path, 0, endIdx, false)
+
+fn pathBaseName(path: str): str =
+    if len(path) == 0:
+        return ""
+    var endIdx: int32 = len(path) - 1
+    while endIdx >= 0:
+        let ch = path[endIdx]
+        if ch != '/' && ch != '\\':
+            break
+        endIdx = endIdx - 1
+    if endIdx < 0:
+        return ""
+    var startIdx = endIdx
+    while startIdx >= 0:
+        let ch = path[startIdx]
+        if ch == '/' || ch == '\\':
+            break
+        startIdx = startIdx - 1
+    startIdx = startIdx + 1
+    return __cheng_slice_string(path, startIdx, endIdx, false)
+
+fn isHiddenPath(path: str): bool =
+    let baseName = pathBaseName(path)
+    if len(baseName) == 0:
+        return false
+    return baseName[0] == '.'
+
+fn isAbsolutePath(path: str): bool =
+    if len(path) == 0:
+        return false
+    let first = path[0]
+    if first == '/' || first == '\\':
+        return true
+    if len(path) > 1 && path[1] == ':':
+        return true
+    return false
+
+fn normalizeSkillPathForCompare(path: str, cwd: str): str =
+    if len(path) == 0:
+        return ""
+    var candidate = path
+    if !isAbsolutePath(path) && len(cwd) > 0:
+        candidate = os.joinPath(cwd, path)
+    let abs = os.absolutePath(candidate)
+    if len(abs) > 0:
+        candidate = abs
+    return normalizePathSeparators(candidate)
+
+fn parseBoolValue(text: str, defaultValue: bool): bool =
+    let norm = normalizePolicy(trimLine(text))
+    if norm == "true" || norm == "1" || norm == "yes":
+        return true
+    if norm == "false" || norm == "0" || norm == "no":
+        return false
+    return defaultValue
+
+fn parseYamlValue(text: str): str =
+    let trimmed = trimLine(text)
+    if len(trimmed) >= 2 && trimmed[0] == '"' && trimmed[len(trimmed) - 1] == '"':
+        return unescapeConfigValue(trimmed)
+    if len(trimmed) >= 2 && trimmed[0] == '\'' && trimmed[len(trimmed) - 1] == '\'':
+        if len(trimmed) == 2:
+            return ""
+        return __cheng_slice_string(trimmed, 1, len(trimmed) - 2, false)
+    return trimmed
+
+fn skillScopeRank(scope: str): int32 =
+    let normalized = normalizePolicy(scope)
+    if normalized == "repo":
+        return 0
+    if normalized == "user":
+        return 1
+    if normalized == "system":
+        return 2
+    if normalized == "admin":
+        return 3
+    return 9
+
+fn isSystemScope(scope: str): bool =
+    return normalizePolicy(scope) == "system"
+
+fn hasStringItem(items: seq[str], value: str): bool =
+    var idx: int32 = 0
+    while idx < len(items):
+        if argAt(items, idx) == value:
+            return true
+        idx = idx + 1
+    return false
+
+fn findStringIndex(items: seq[str], value: str): int32 =
+    var idx: int32 = 0
+    while idx < len(items):
+        if argAt(items, idx) == value:
+            return idx
+        idx = idx + 1
+    return -1
+
+fn clearSkillsCache() =
+    return
+
+fn skillConfigEntries(): seq[SkillConfigEntry] =
+    var entries: seq[SkillConfigEntry] = newSeq[SkillConfigEntry]()
+    let path = codexConfigPath()
+    if len(path) == 0 || !os.fileExists(path):
+        return entries
+    let content = os.readFile(path)
+    if len(content) == 0:
+        return entries
+    let lines = splitLinesSimple(content)
+    var idx: int32 = 0
+    var inEntry = false
+    var currentPath = ""
+    var currentEnabled = false
+    while idx < len(lines):
+        let raw = lines[idx]
+        let trimmed = trimLine(raw)
+        if trimmed == SKILLS_CONFIG_MARKER:
+            if inEntry && len(currentPath) > 0:
+                let normalized = normalizeSkillPathForCompare(currentPath, currentDirSafe())
+                seqAdd(entries, SkillConfigEntry(path: normalized, enabled: currentEnabled))
+            inEntry = true
+            currentPath = ""
+            currentEnabled = false
+            idx = idx + 1
+            continue
+        if inEntry:
+            if len(trimmed) > 0 && trimmed[0] == '[':
+                if len(currentPath) > 0:
+                    let normalized = normalizeSkillPathForCompare(currentPath, currentDirSafe())
+                    seqAdd(entries, SkillConfigEntry(path: normalized, enabled: currentEnabled))
+                inEntry = false
+                continue
+            if len(trimmed) == 0 || trimmed[0] == '#':
+                idx = idx + 1
+                continue
+            let eq = findChar(trimmed, '=')
+            if eq > 0:
+                let key = trimLine(__cheng_slice_string(trimmed, 0, eq - 1, false))
+                if eq + 1 <= len(trimmed) - 1:
+                    let valueText = trimLine(__cheng_slice_string(trimmed, eq + 1, len(trimmed) - 1, false))
+                    if key == "path":
+                        currentPath = parseYamlValue(valueText)
+                    elif key == "enabled":
+                        currentEnabled = parseBoolValue(valueText, false)
+        idx = idx + 1
+    if inEntry && len(currentPath) > 0:
+        let normalized = normalizeSkillPathForCompare(currentPath, currentDirSafe())
+        seqAdd(entries, SkillConfigEntry(path: normalized, enabled: currentEnabled))
+    return entries
+
+fn skillDisabledPaths(): seq[str] =
+    var out: seq[str] = newSeq[str]()
+    let entries = skillConfigEntries()
+    var idx: int32 = 0
+    while idx < len(entries):
+        let entry = entries[idx]
+        if !entry.enabled && len(entry.path) > 0:
+            if !hasStringItem(out, entry.path):
+                seqAdd(out, entry.path)
+        idx = idx + 1
+    return out
+
+fn skillConfigBlockLines(path: str): seq[str] =
+    var out: seq[str] = newSeq[str]()
+    seqAdd(out, SKILLS_CONFIG_MARKER)
+    let encoded = "\"" + escapeConfigValue(path) + "\""
+    seqAdd(out, "path = " + encoded)
+    seqAdd(out, "enabled = false")
+    return out
+
+fn writeSkillConfigEntry(path: str, enabled: bool): bool =
+    if len(path) == 0:
+        return false
+    let normalized = normalizeSkillPathForCompare(path, currentDirSafe())
+    let cfgPath = codexConfigPath()
+    if len(cfgPath) == 0:
+        return false
+    let home = codexHomeDir()
+    if len(home) > 0 && !os.dirExists(home):
+        os.createDir(home)
+    var lines: seq[str] = newSeq[str]()
+    if os.fileExists(cfgPath):
+        let content = os.readFile(cfgPath)
+        if len(content) > 0:
+            lines = splitLinesSimple(content)
+    var blocksStart: seq[int32] = newSeq[int32]()
+    var blocksEnd: seq[int32] = newSeq[int32]()
+    var blocksPath: seq[str] = newSeq[str]()
+    var i: int32 = 0
+    while i < len(lines):
+        let trimmed = trimLine(lines[i])
+        if trimmed == SKILLS_CONFIG_MARKER:
+            let startIdx = i
+            var blockPath = ""
+            var j: int32 = i + 1
+            while j < len(lines):
+                let inner = trimLine(lines[j])
+                if len(inner) > 0 && inner[0] == '[':
+                    break
+                if len(inner) == 0 || inner[0] == '#':
+                    j = j + 1
+                    continue
+                let eq = findChar(inner, '=')
+                if eq > 0:
+                    let key = trimLine(__cheng_slice_string(inner, 0, eq - 1, false))
+                    if key == "path" && eq + 1 <= len(inner) - 1:
+                        let valText = trimLine(__cheng_slice_string(inner, eq + 1, len(inner) - 1, false))
+                        blockPath = parseYamlValue(valText)
+                j = j + 1
+            let endIdx = j - 1
+            let normalizedBlock = normalizeSkillPathForCompare(blockPath, currentDirSafe())
+            seqAdd(blocksStart, startIdx)
+            seqAdd(blocksEnd, endIdx)
+            seqAdd(blocksPath, normalizedBlock)
+            i = j
+        else:
+            i = i + 1
+    var targetIdx = -1
+    var b: int32 = 0
+    while b < len(blocksPath):
+        if blocksPath[b] == normalized:
+            targetIdx = b
+            break
+        b = b + 1
+    if enabled:
+        if targetIdx >= 0:
+            var outLines: seq[str] = newSeq[str]()
+            var lineIdx: int32 = 0
+            let dropStart = blocksStart[targetIdx]
+            let dropEnd = blocksEnd[targetIdx]
+            while lineIdx < len(lines):
+                if lineIdx < dropStart || lineIdx > dropEnd:
+                    seqAdd(outLines, lines[lineIdx])
+                lineIdx = lineIdx + 1
+            lines = outLines
+    else:
+        let newBlock = skillConfigBlockLines(normalized)
+        if targetIdx >= 0:
+            var outLines: seq[str] = newSeq[str]()
+            var lineIdx: int32 = 0
+            let keepStart = blocksStart[targetIdx]
+            let keepEnd = blocksEnd[targetIdx]
+            while lineIdx < len(lines):
+                if lineIdx == keepStart:
+                    var nbIdx: int32 = 0
+                    while nbIdx < len(newBlock):
+                        seqAdd(outLines, newBlock[nbIdx])
+                        nbIdx = nbIdx + 1
+                    lineIdx = keepEnd + 1
+                    continue
+                seqAdd(outLines, lines[lineIdx])
+                lineIdx = lineIdx + 1
+            lines = outLines
+        else:
+            if len(lines) > 0 && len(trimLine(lines[len(lines) - 1])) > 0:
+                seqAdd(lines, "")
+            var nbIdx: int32 = 0
+            while nbIdx < len(newBlock):
+                seqAdd(lines, newBlock[nbIdx])
+                nbIdx = nbIdx + 1
+    let output = joinLines(lines)
+    os.writeFile(cfgPath, output + "\n")
+    return true
+
+fn findGitRoot(startDir: str): str =
+    if len(startDir) == 0:
+        return ""
+    var cursor = startDir
+    while len(cursor) > 0:
+        let gitPath = os.joinPath(cursor, ".git")
+        if os.dirExists(gitPath) || os.fileExists(gitPath):
+            return cursor
+        let parent = os.parentDir(cursor)
+        if len(parent) == 0 || parent == cursor:
+            break
+        cursor = parent
+    return ""
+
+fn skillRootsForCwd(cwd: str): seq[SkillRoot] =
+    var roots: seq[SkillRoot] = newSeq[SkillRoot]()
+    cwd
+    let rootDir = currentDirSafe()
+    let repoSkills = os.joinPath(os.joinPath(rootDir, ".codex"), SKILLS_DIR_NAME)
+    if os.dirExists(repoSkills):
+        seqAdd(roots, SkillRoot(path: repoSkills, scope: "repo"))
+    let home = codexHomeDir()
+    if len(home) > 0:
+        let userSkills = os.joinPath(home, SKILLS_DIR_NAME)
+        if os.dirExists(userSkills):
+            seqAdd(roots, SkillRoot(path: userSkills, scope: "user"))
+        let systemSkills = os.joinPath(userSkills, ".system")
+        if os.dirExists(systemSkills):
+            seqAdd(roots, SkillRoot(path: systemSkills, scope: "system"))
+    let adminSkills = "/etc/codex/skills"
+    if os.dirExists(adminSkills):
+        seqAdd(roots, SkillRoot(path: adminSkills, scope: "admin"))
+    return roots
+
+fn parseSkillFrontmatter(content: str, outName: var str, outDescription: var str, outShort: var str, outErr: var str): bool =
+    outName = ""
+    outDescription = ""
+    outShort = ""
+    outErr = ""
+    if content == nil || len(content) == 0:
+        outErr = "missing YAML frontmatter"
+        return false
+    if !hasPrefix(content, "---"):
+        outErr = "missing YAML frontmatter delimited by ---"
+        return false
+    let headerStart: int32 = 3
+    let fmEnd = indexOfSubstr(content, "\n---", headerStart)
+    if fmEnd < 0:
+        outErr = "missing YAML frontmatter delimited by ---"
+        return false
+    var header = ""
+    if fmEnd - 1 >= headerStart:
+        header = __cheng_slice_string(content, headerStart, fmEnd - 1, false)
+    let searchKeys = seqStr4("name", "description", "short-description", "short_description")
+    var keyIdx: int32 = 0
+    while keyIdx < len(searchKeys):
+        let key = argAt(searchKeys, keyIdx)
+        let pattern = "\n" + key + ":"
+        var pos = indexOfSubstr(header, pattern, 0)
+        if pos < 0 && hasPrefix(header, key + ":"):
+            pos = 0
+        if pos >= 0:
+            var valueStart: int32 = 0
+            if pos == 0:
+                valueStart = len(key) + 1
+            else:
+                valueStart = pos + len(pattern)
+            let lineEnd = indexOfSubstr(header, "\n", valueStart)
+            var rawValue = ""
+            if lineEnd < 0:
+                if valueStart <= len(header) - 1:
+                    rawValue = __cheng_slice_string(header, valueStart, len(header) - 1, false)
+            else:
+                if lineEnd - 1 >= valueStart:
+                    rawValue = __cheng_slice_string(header, valueStart, lineEnd - 1, false)
+            let value = parseYamlValue(trimLine(rawValue))
+            if key == "name":
+                outName = value
+            elif key == "description":
+                outDescription = value
+            elif key == "short-description" || key == "short_description":
+                outShort = value
+        keyIdx = keyIdx + 1
+    if len(outName) == 0:
+        outErr = "missing field `name`"
+        return false
+    if len(outDescription) == 0:
+        outErr = "missing field `description`"
+        return false
+    if len(outName) > SKILLS_MAX_NAME_LEN:
+        outErr = "invalid name: too long"
+        return false
+    if len(outDescription) > SKILLS_MAX_DESCRIPTION_LEN:
+        outErr = "invalid description: too long"
+        return false
+    if len(outShort) > SKILLS_MAX_DESCRIPTION_LEN:
+        outErr = "invalid short description: too long"
+        return false
+    return true
+
+fn addSkillError(outOutcome: var SkillLoadOutcome, path: str, message: str) =
+    if len(path) == 0 || len(message) == 0:
+        return
+    seqAdd(outOutcome.errors, SkillError(path: path, message: message))
+
+fn loadSkillMetadata(path: str, scope: str, disabledPaths: seq[str], outOutcome: var SkillLoadOutcome) =
+    traceSkillsLocal("loadSkillMetadata.begin")
+    if len(path) == 0 || !os.fileExists(path):
+        if ! isSystemScope(scope):
+            addSkillError(outOutcome, path, "failed to read file")
+        return
+    traceSkillsLocal("loadSkillMetadata.read")
+    let content = os.readFile(path)
+    if len(content) == 0:
+        if ! isSystemScope(scope):
+            addSkillError(outOutcome, path, "failed to read file")
+        return
+    traceSkillsLocal("loadSkillMetadata.parse")
+    let parentDir = os.parentDir(path)
+    var name = pathBaseName(parentDir)
+    if len(name) == 0:
+        name = pathBaseName(path)
+    if len(name) == 0:
+        name = "skill"
+    var description = "Skill instructions"
+    var shortDesc = ""
+    if len(name) > SKILLS_MAX_NAME_LEN:
+        name = __cheng_slice_string(name, 0, SKILLS_MAX_NAME_LEN - 1, false)
+    traceSkillsLocal("loadSkillMetadata.normalize")
+    let normalizedPath = normalizeSkillPathForCompare(path, currentDirSafe())
+    var enabled = true
+    if hasStringItem(disabledPaths, normalizedPath):
+        enabled = false
+    traceSkillsLocal("loadSkillMetadata.emit")
+    seqAdd(outOutcome.skills, SkillMetadata(
+        name: name,
+        description: description,
+        shortDescription: shortDesc,
+        path: normalizedPath,
+        scope: scope,
+        enabled: enabled
+    ))
+    traceSkillsLocal("loadSkillMetadata.end")
+
+fn discoverSkillsUnderPath(rootPath: str, scope: str, outOutcome: var SkillLoadOutcome) =
+    traceSkillsLocal("discoverSkillsUnderPath.begin scope=" + scope)
+    if len(rootPath) == 0 || !os.dirExists(rootPath):
+        traceSkillsLocal("discoverSkillsUnderPath.skip")
+        return
+    let files = os.walkDirRec(rootPath)
+    traceSkillsLocal("discoverSkillsUnderPath.files=" + intToStr(len(files)))
+    var loaded: int32 = 0
+    var idx: int32 = 0
+    while idx < len(files):
+        if loaded >= SKILLS_MAX_DIRS:
+            break
+        let path = argAt(files, idx)
+        if idx < 3:
+            traceSkillsLocal("discoverSkillsUnderPath.path=" + path)
+        if len(path) > 0 && !isHiddenPath(path):
+            if endsWithSuffix(path, SKILLS_FILENAME):
+                loadSkillMetadata(path, scope, outOutcome.disabledPaths, outOutcome)
+                loaded = loaded + 1
+        idx = idx + 1
+    traceSkillsLocal("discoverSkillsUnderPath.end")
+
+fn discoverSkillsUnderRoot(root: SkillRoot, outOutcome: var SkillLoadOutcome) =
+    discoverSkillsUnderPath(root.path, root.scope, outOutcome)
+
+fn dedupeSkills(outOutcome: var SkillLoadOutcome) =
+    var seen: seq[str] = newSeq[str]()
+    var filtered: seq[SkillMetadata] = newSeq[SkillMetadata]()
+    var idx: int32 = 0
+    while idx < len(outOutcome.skills):
+        let skill = outOutcome.skills[idx]
+        if !hasStringItem(seen, skill.path):
+            seqAdd(seen, skill.path)
+            seqAdd(filtered, skill)
+        idx = idx + 1
+    outOutcome.skills = filtered
+
+fn sortSkills(outOutcome: var SkillLoadOutcome) =
+    let total = len(outOutcome.skills)
+    if total <= 1:
+        return
+    var used: seq[str] = newSeq[str]()
+    var sorted: seq[SkillMetadata] = newSeq[SkillMetadata]()
+    while len(sorted) < total:
+        var found = false
+        var best = SkillMetadata(name: "", description: "", shortDescription: "", path: "", scope: "", enabled: false)
+        var idx: int32 = 0
+        while idx < total:
+            let cur = outOutcome.skills[idx]
+            if hasStringItem(used, cur.path):
+                idx = idx + 1
+                continue
+            if !found:
+                best = cur
+                found = true
+            else:
+                let rankCur = skillScopeRank(cur.scope)
+                let rankBest = skillScopeRank(best.scope)
+                var better = false
+                if rankCur < rankBest:
+                    better = true
+                elif rankCur == rankBest:
+                    if cur.name < best.name:
+                        better = true
+                    elif cur.name == best.name && cur.path < best.path:
+                        better = true
+                if better:
+                    best = cur
+            idx = idx + 1
+        if !found:
+            break
+        seqAdd(used, best.path)
+        seqAdd(sorted, best)
+    outOutcome.skills = sorted
+
+fn loadSkillsForCwd(cwd: str, forceReload: bool): SkillLoadOutcome =
+    traceSkillsLocal("loadSkillsForCwd.begin")
+    cwd
+    let baseCwd = currentDirSafe()
+    var outcome = SkillLoadOutcome(
+        skills: newSeq[SkillMetadata](),
+        errors: newSeq[SkillError](),
+        disabledPaths: newSeq[str]()
+    )
+    traceSkillsLocal("loadSkillsForCwd.after.disabled")
+    forceReload
+    var rootPaths: seq[str] = newSeq[str]()
+    var rootScopes: seq[str] = newSeq[str]()
+    let repoSkills = os.joinPath(os.joinPath(baseCwd, ".codex"), SKILLS_DIR_NAME)
+    if os.dirExists(repoSkills):
+        seqAdd(rootPaths, repoSkills)
+        seqAdd(rootScopes, "repo")
+    let home = codexHomeDir()
+    if len(home) > 0:
+        let userSkills = os.joinPath(home, SKILLS_DIR_NAME)
+        if os.dirExists(userSkills):
+            seqAdd(rootPaths, userSkills)
+            seqAdd(rootScopes, "user")
+        let systemSkills = os.joinPath(userSkills, ".system")
+        if os.dirExists(systemSkills):
+            seqAdd(rootPaths, systemSkills)
+            seqAdd(rootScopes, "system")
+    let adminSkills = "/etc/codex/skills"
+    if os.dirExists(adminSkills):
+        seqAdd(rootPaths, adminSkills)
+        seqAdd(rootScopes, "admin")
+    traceSkillsLocal("loadSkillsForCwd.after.roots count=" + intToStr(len(rootPaths)))
+    var idx: int32 = 0
+    while idx < len(rootPaths):
+        let rootPath = argAt(rootPaths, idx)
+        let rootScope = argAt(rootScopes, idx)
+        discoverSkillsUnderPath(rootPath, rootScope, outcome)
+        idx = idx + 1
+    dedupeSkills(outcome)
+    sortSkills(outcome)
+    traceSkillsLocal("loadSkillsForCwd.end")
+    return outcome
+
+fn enabledSkills(outcome: SkillLoadOutcome): seq[SkillMetadata] =
+    var out: seq[SkillMetadata] = newSeq[SkillMetadata]()
+    var idx: int32 = 0
+    while idx < len(outcome.skills):
+        let skill = outcome.skills[idx]
+        if skill.enabled:
+            seqAdd(out, skill)
+        idx = idx + 1
+    return out
+
+fn renderSkillsSection(skills: seq[SkillMetadata]): str =
+    if len(skills) == 0:
+        return ""
+    var lines: seq[str] = newSeq[str]()
+    seqAdd(lines, "## Skills")
+    seqAdd(lines, "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.")
+    seqAdd(lines, "### Available skills")
+    var idx: int32 = 0
+    while idx < len(skills):
+        let skill = skills[idx]
+        # Build incrementally to avoid deep temporary chains.
+        var line: str = "- "
+        line = line + skill.name
+        line = line + ": "
+        line = line + skill.description
+        line = line + " (file: "
+        line = line + skill.path
+        line = line + ")"
+        seqAdd(lines, line)
+        idx = idx + 1
+    seqAdd(lines, "### How to use skills")
+    seqAdd(lines, "- Discovery: The list above is the skills available in this session (name + description + file path). Skill bodies live on disk at the listed paths.")
+    seqAdd(lines, "- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.")
+    seqAdd(lines, "- Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.")
+    seqAdd(lines, "- How to use a skill (progressive disclosure):")
+    seqAdd(lines, "  1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.")
+    seqAdd(lines, "  2) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything.")
+    seqAdd(lines, "  3) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.")
+    seqAdd(lines, "  4) If `assets/` or templates exist, reuse them instead of recreating from scratch.")
+    seqAdd(lines, "- Coordination and sequencing:")
+    seqAdd(lines, "  - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.")
+    seqAdd(lines, "  - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.")
+    seqAdd(lines, "- Context hygiene:")
+    seqAdd(lines, "  - Keep context small: summarize long sections instead of pasting them; only load extra files when needed.")
+    seqAdd(lines, "  - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.")
+    seqAdd(lines, "  - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.")
+    seqAdd(lines, "- Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue.")
+    return cloneSkillText(joinLines(lines))
+
+fn readUserInstructionsFromHome(): str =
+    let home = codexHomeDir()
+    if len(home) == 0:
+        return ""
+    let overridePath = os.joinPath(home, PROJECT_DOC_OVERRIDE_FILENAME)
+    if os.fileExists(overridePath):
+        let content = os.readFile(overridePath)
+        let trimmed = trimLine(content)
+        if len(trimmed) > 0:
+            return trimmed
+    let basePath = os.joinPath(home, PROJECT_DOC_FILENAME)
+    if os.fileExists(basePath):
+        let content = os.readFile(basePath)
+        let trimmed = trimLine(content)
+        if len(trimmed) > 0:
+            return trimmed
+    return ""
+
+fn projectDocCandidates(): seq[str] =
+    var out: seq[str] = newSeq[str]()
+    seqAdd(out, PROJECT_DOC_OVERRIDE_FILENAME)
+    seqAdd(out, PROJECT_DOC_FILENAME)
+    return out
+
+fn discoverProjectDocPaths(cwd: str): seq[str] =
+    var out: seq[str] = newSeq[str]()
+    cwd
+    let rootDir = currentDirSafe()
+    let candidates = projectDocCandidates()
+    var c: int32 = 0
+    while c < len(candidates):
+        let name = argAt(candidates, c)
+        if len(name) > 0:
+            let candidate = os.joinPath(rootDir, name)
+            if os.fileExists(candidate):
+                seqAdd(out, candidate)
+        c = c + 1
+    return out
+
+fn readProjectDocs(cwd: str): str =
+    let paths = discoverProjectDocPaths(cwd)
+    if len(paths) == 0:
+        return ""
+    var remaining: int32 = PROJECT_DOC_MAX_BYTES
+    var parts: seq[str] = newSeq[str]()
+    var idx: int32 = 0
+    while idx < len(paths) && remaining > 0:
+        let path = argAt(paths, idx)
+        if os.fileExists(path):
+            let content = os.readFile(path)
+            if len(content) > 0:
+                let trimmed = trimLine(content)
+                if len(trimmed) > 0:
+                    var sliceText = trimmed
+                    if len(sliceText) > remaining:
+                        sliceText = __cheng_slice_string(sliceText, 0, remaining - 1, false)
+                    seqAdd(parts, sliceText)
+                    remaining = remaining - len(sliceText)
+        idx = idx + 1
+    return joinLines(parts)
+
+fn buildUserInstructionsText(cwd: str): str =
+    traceSkillsLocal("buildUserInstructionsText.begin")
+    cwd
+    let resolvedCwd = currentDirSafe()
+    var out = ""
+    traceSkillsLocal("buildUserInstructionsText.home.begin")
+    let homeInstructions = readUserInstructionsFromHome()
+    traceSkillsLocal("buildUserInstructionsText.home.end")
+    if len(homeInstructions) > 0:
+        out = homeInstructions
+    traceSkillsLocal("buildUserInstructionsText.project.begin")
+    let projectDocs = readProjectDocs(resolvedCwd)
+    traceSkillsLocal("buildUserInstructionsText.project.end")
+    if len(projectDocs) > 0:
+        if len(out) > 0:
+            out = out + PROJECT_DOC_SEPARATOR
+        out = out + projectDocs
+    traceSkillsLocal("buildUserInstructionsText.skills.check")
+    let enableSkillsInject = normalizePolicy(trimLine(os.getEnv("CODEX_CHENG_ENABLE_SKILL_INSTRUCTIONS")))
+    if isFeatureEnabled("skills") && (enableSkillsInject == "1" || enableSkillsInject == "true" || enableSkillsInject == "yes"):
+        let outcome = loadSkillsForCwd(resolvedCwd, false)
+        let enabled = enabledSkills(outcome)
+        let skillsText = renderSkillsSection(enabled)
+        if len(skillsText) > 0:
+            if len(out) > 0:
+                out = out + "\n\n"
+            out = out + skillsText
+    traceSkillsLocal("buildUserInstructionsText.end")
+    cachedUserInstructionsText = cloneSkillText(out)
+    return cachedUserInstructionsText
+
+fn buildUserInstructionsMessage(cwd: str): str =
+    traceSkillsLocal("buildUserInstructionsMessage.begin")
+    let text = buildUserInstructionsText(cwd)
+    traceSkillsLocal("buildUserInstructionsMessage.after.text")
+    if len(text) == 0:
+        cachedUserInstructionsMessage = ""
+        return ""
+    let dir = currentDirSafe()
+    traceSkillsLocal("buildUserInstructionsMessage.end")
+    let dirCopy = cloneSkillText(dir)
+    var out = USER_INSTRUCTIONS_PREFIX
+    out = out + dirCopy
+    out = out + "\n\n<INSTRUCTIONS>\n"
+    out = out + text
+    out = out + "\n</INSTRUCTIONS>"
+    cachedUserInstructionsMessage = cloneSkillText(out)
+    return cachedUserInstructionsMessage
+
+fn skillMetadataJson(skill: SkillMetadata): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("name", jstrString(skill.name)))
+    seqAdd(fields, jstrPair("description", jstrString(skill.description)))
+    if len(skill.shortDescription) > 0:
+        seqAdd(fields, jstrPair("shortDescription", jstrString(skill.shortDescription)))
+    seqAdd(fields, jstrPair("path", jstrString(skill.path)))
+    seqAdd(fields, jstrPair("scope", jstrString(skill.scope)))
+    seqAdd(fields, jstrPair("enabled", jstrBool(skill.enabled)))
+    return jstrObject(fields)
+
+fn skillErrorJson(err: SkillError): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("path", jstrString(err.path)))
+    seqAdd(fields, jstrPair("message", jstrString(err.message)))
+    return jstrObject(fields)
+
+fn skillsListEntryJson(cwd: str, outcome: SkillLoadOutcome): str =
+    var skillsJson: seq[str] = newSeq[str]()
+    var idx: int32 = 0
+    while idx < len(outcome.skills):
+        seqAdd(skillsJson, skillMetadataJson(outcome.skills[idx]))
+        idx = idx + 1
+    var errorsJson: seq[str] = newSeq[str]()
+    idx = 0
+    while idx < len(outcome.errors):
+        seqAdd(errorsJson, skillErrorJson(outcome.errors[idx]))
+        idx = idx + 1
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("cwd", jstrString(cwd)))
+    seqAdd(fields, jstrPair("skills", jstrArray(skillsJson)))
+    seqAdd(fields, jstrPair("errors", jstrArray(errorsJson)))
+    return jstrObject(fields)
+
+fn loadSkillInstructionMessage(cwd: str, name: str, path: str): str =
+    if len(name) == 0 || len(path) == 0:
+        return ""
+    if !isFeatureEnabled("skills"):
+        return ""
+    let normalized = normalizeSkillPathForCompare(path, cwd)
+    let outcome = loadSkillsForCwd(cwd, false)
+    var idx: int32 = 0
+    while idx < len(outcome.skills):
+        let skill = outcome.skills[idx]
+        if skill.name == name && normalizeSkillPathForCompare(skill.path, cwd) == normalized:
+            if !skill.enabled:
+                return ""
+            if os.fileExists(skill.path):
+                let contents = os.readFile(skill.path)
+                if len(contents) == 0:
+                    return ""
+                # Build incrementally to avoid deep temporary chains.
+                var body: str = "<skill>\n<name>"
+                body = body + skill.name
+                body = body + "</name>\n<path>"
+                body = body + skill.path
+                body = body + "</path>\n"
+                body = body + contents
+                body = body + "\n</skill>"
+                return buildInputMessage("user", body)
+            return ""
+        idx = idx + 1
+    return ""

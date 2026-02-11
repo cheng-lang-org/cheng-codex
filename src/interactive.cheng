@@ -1,0 +1,598 @@
+# Interactive CLI
+
+import system
+import std/os
+import seqs
+import cheng/codex/common
+
+fn ord(ch: char): int32 =
+    return int32(ch)
+
+type
+    MenuChoice =
+        action: int32
+        threadId: str
+    SlashParse =
+        ok: bool
+        cmd: str
+        args: str
+
+fn parseEnvIntInteractive(name: str, defaultValue: int32): int32 =
+    let raw = os.getEnv(name)
+    let trimmed = trimLine(raw)
+    if len(trimmed) == 0:
+        return defaultValue
+    var i: int32 = 0
+    var value: int32 = 0
+    var saw = false
+    while i < len(trimmed):
+        let ch = trimmed[i]
+        if ch < '0' || ch > '9':
+            return defaultValue
+        value = value * 10 + (ord(ch) - ord('0'))
+        saw = true
+        i = i + 1
+    if ! saw:
+        return defaultValue
+    return value
+
+fn renderChatTuiInteractive(execOpts: ExecOptions, threadId: str, cwd: str, status: str) =
+    # Basic full-screen chat view (pure ANSI). This is intentionally simple
+    # but provides a visible interactive UI rather than a "blank prompt".
+    let rows = parseEnvIntInteractive("LINES", 24)
+    var maxLines: int32 = 20
+    if rows > 12:
+        maxLines = rows - 8
+    if maxLines < 8:
+        maxLines = 8
+    printUi("\x1b[2J\x1b[H")
+    tuiHeader("Codex")
+    var model = execOpts.model
+    if len(model) == 0:
+        model = readConfigValue("model")
+    var approval = execOpts.approvalPolicy
+    if len(approval) == 0:
+        approval = readConfigValue("approval_policy")
+    var sandbox = execOpts.sandboxMode
+    if len(sandbox) == 0:
+        sandbox = readConfigValue("sandbox_mode")
+    if len(model) > 0:
+        printUi(ansiDim("Model: " + model))
+    if len(approval) > 0 || len(sandbox) > 0:
+        var line = ""
+        if len(approval) > 0:
+            line = line + "Approvals: " + approval
+        if len(sandbox) > 0:
+            if len(line) > 0:
+                line = line + "  |  "
+            line = line + "Sandbox: " + sandbox
+        if len(line) > 0:
+            printUi(ansiDim(line))
+    if len(threadId) > 0:
+        printUi(ansiDim("Session: " + threadId))
+    if len(cwd) > 0:
+        printUi(ansiDim("CWD: " + cwd))
+    if len(status) > 0:
+        printUi(ansiDim(status))
+    printUi("")
+    if len(threadId) == 0:
+        printUi(ansiDim("New session. Type your message and press Enter."))
+        printUi(ansiDim("Commands: /help, /quit, /new, /resume, /last, /fork, /archive, /rollback N"))
+        printUi("")
+        return
+    let lines: seq[str] = threadHistoryLines(threadId)
+    var start: int32 = 0
+    if len(lines) > maxLines:
+        start = len(lines) - maxLines
+    var i: int32 = start
+    while i < len(lines):
+        printUi(argAt(lines, i))
+        i = i + 1
+    printUi("")
+    printUi(ansiDim("Commands: /help, /quit, /new, /resume, /last, /fork, /archive, /rollback N"))
+    printUi("")
+
+fn threadInfoAtInteractive(infos: seq[ThreadInfo], idx: int32): ThreadInfo =
+    if idx < 0 || idx >= len(infos):
+        return ThreadInfo(id: "", preview: "", createdAt: 0, cwd: "")
+    return get[ThreadInfo](infos, idx)
+
+fn parseIntChoice(text: str): int32 =
+    let trimmed = trimLine(text)
+    if len(trimmed) == 0:
+        return -1
+    var i: int32 = 0
+    var value: int32 = 0
+    while i < len(trimmed):
+        let ch = trimmed[i]
+        if ch < '0' || ch > '9':
+            return -1
+        value = value * 10 + (ord(ch) - ord('0'))
+        i = i + 1
+    return value
+
+fn parseSlashLineInteractive(line: str): SlashParse =
+    var res = SlashParse(ok: false, cmd: "", args: "")
+    if line == nil || len(line) == 0:
+        return res
+    if line[0] != '/':
+        return res
+    var i: int32 = 1
+    while i < len(line):
+        let ch = line[i]
+        if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n':
+            break
+        i = i + 1
+    if i <= 1:
+        return res
+    res.cmd = normalizePolicy("" + __cheng_slice_string(line, 1, i - 1, false))
+    var j: int32 = i
+    while j < len(line):
+        let ch = line[j]
+        if ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n':
+            break
+        j = j + 1
+    if j <= len(line) - 1:
+        res.args = trimLine("" + __cheng_slice_string(line, j, len(line) - 1, false))
+    res.ok = true
+    return res
+
+fn tuiHelpTextInteractive(): str =
+    # Keep output concise (fits in the history pane). Expand as more commands land.
+    var out = ""
+    out = out + "Slash commands:\n"
+    out = out + "  /help               show this help\n"
+    out = out + "  /status             show current session config\n"
+    out = out + "  /model <ID>         set model for this session\n"
+    out = out + "  /approvals <MODE>   set approval policy (untrusted|on-failure|on-request|never)\n"
+    out = out + "  /review [ARGS]      review uncommitted changes (or provide custom prompt)\n"
+    out = out + "  /diff               show git diff + status\n"
+    out = out + "  /rename <TITLE>     rename current session\n"
+    out = out + "  /new                start a new session\n"
+    out = out + "  /resume | /pick     pick a session\n"
+    out = out + "  /last               resume last session\n"
+    out = out + "  /fork               fork current session\n"
+    out = out + "  /archive            archive current session\n"
+    out = out + "  /rollback N         rollback N turns\n"
+    out = out + "  /quit | /exit       exit codex\n"
+    return out
+
+fn tuiStatusTextInteractive(execOpts: ExecOptions, threadId: str, cwd: str): str =
+    var out = ""
+    var model = execOpts.model
+    if len(model) == 0:
+        model = readConfigValue("model")
+    var approval = execOpts.approvalPolicy
+    if len(approval) == 0:
+        approval = readConfigValue("approval_policy")
+    var sandbox = execOpts.sandboxMode
+    if len(sandbox) == 0:
+        sandbox = readConfigValue("sandbox_mode")
+    var profile = execOpts.profile
+    if len(profile) == 0:
+        profile = readConfigValue("config_profile")
+    out = out + "Session: "
+    if len(threadId) > 0:
+        out = out + threadId
+    else:
+        out = out + "(new)"
+    out = out + "\n"
+    if len(cwd) > 0:
+        out = out + "CWD: " + cwd + "\n"
+    if len(profile) > 0:
+        out = out + "Profile: " + profile + "\n"
+    if len(model) > 0:
+        out = out + "Model: " + model + "\n"
+    if len(approval) > 0:
+        out = out + "Approvals: " + approval + "\n"
+    if len(sandbox) > 0:
+        out = out + "Sandbox: " + sandbox + "\n"
+    if execOpts.webSearch:
+        out = out + "Web search: enabled\n"
+    return out
+
+fn selectOssProviderInteractive(): str =
+    printUi("Select OSS provider:")
+    printUi("1) LM Studio (Responses)")
+    printUi("2) Ollama (Responses)")
+    printUi("3) Ollama (Chat)")
+    printUi("Enter number or provider id (empty to cancel):")
+    let rl = stdinReadLine()
+    if ! rl.ok:
+        return ""
+    let trimmed = normalizePolicy(trimLine(rl.line))
+    if len(trimmed) == 0:
+        return ""
+    if trimmed == "1":
+        return "lmstudio"
+    if trimmed == "2":
+        return "ollama"
+    if trimmed == "3":
+        return "ollama-chat"
+    let normalized = normalizeOssProviderLocal(trimmed)
+    if normalized == "lmstudio" || normalized == "ollama" || normalized == "ollama-chat":
+        return normalized
+    return ""
+
+fn interactiveMenuChoice(hasThreads: bool): int32 =
+    tuiHeader("Codex")
+    printUi(ansiBold("Interactive"))
+    printUi(ansiCyan("1)") + " New session")
+    if hasThreads:
+        printUi(ansiCyan("2)") + " Resume last")
+        printUi(ansiCyan("3)") + " Pick session")
+    printUi(ansiDim("Select [1-3] (default 1):"))
+    let rl = stdinReadLine()
+    if ! rl.ok:
+        return 1
+    let trimmed = normalizePolicy(trimLine(rl.line))
+    if hasThreads:
+        if trimmed == "2":
+            return 2
+        if trimmed == "3":
+            return 3
+    return 1
+
+fn interactiveMenuChoiceTui(infos: seq[ThreadInfo]): MenuChoice =
+    let useAlt = tuiAltScreenEnabledLocal()
+    tuiEnterAltScreenLocal(useAlt)
+    let maxCount: int32 = 5
+    let displayCount = if len(infos) > maxCount: maxCount else: len(infos)
+    renderThreadListTuiRange("Interactive", infos, false, 0, displayCount, len(infos), "")
+    if len(infos) > displayCount:
+        # Build incrementally to avoid deep temporary chains.
+        var msg: str = "Showing "
+        msg = msg + intToStr(displayCount)
+        msg = msg + " of "
+        msg = msg + intToStr(len(infos))
+        msg = msg + ". Use [P]ick for all."
+        printUi(ansiDim(msg))
+    if len(infos) > 0:
+        printUi(ansiDim("Options: [N]ew, [L]ast, [P]ick, [Q]uit, or select a number"))
+    else:
+        printUi(ansiDim("Options: [N]ew or [Q]uit"))
+    printUi(ansiDim("Select (default N):"))
+    var result = MenuChoice(action: 1, threadId: "")
+    let rl = stdinReadLine()
+    if rl.ok:
+        let trimmed = normalizePolicy(trimLine(rl.line))
+        if len(trimmed) == 0 || trimmed == "n" || trimmed == "new":
+            result.action = 1
+        elif trimmed == "q" || trimmed == "quit":
+            result.action = -1
+        elif trimmed == "l" || trimmed == "last":
+            if len(infos) > 0:
+                result.action = 2
+            else:
+                result.action = 1
+        elif trimmed == "p" || trimmed == "pick":
+            result.action = 3
+        else:
+            let pick = parseIntChoice(trimmed)
+            if pick > 0 && pick <= displayCount:
+                result.action = 0
+                result.threadId = threadInfoAtInteractive(infos, pick - 1).id
+            else:
+                var idx: int32 = 0
+                while idx < len(infos):
+                    if threadInfoAtInteractive(infos, idx).id == trimmed:
+                        result.action = 0
+                        result.threadId = threadInfoAtInteractive(infos, idx).id
+                        break
+                    idx = idx + 1
+    tuiExitAltScreenLocal(useAlt)
+    return result
+
+fn maybeRunUpdateAction() =
+    let cmd = os.getEnv("CODEX_UPDATE_CMD")
+    if len(cmd) == 0:
+        return
+    var msg: str = "Updating Codex via `"
+    msg = msg + cmd
+    msg = msg + "`..."
+    printUi(msg)
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let res = os.execCmdEx(cmd, opts, os.getCurrentDir())
+    if res.exitCode != 0:
+        if len(res.output) > 0:
+            printUi(res.output)
+        printUi("Update failed")
+        return
+    printUi("Update ran successfully. Please restart Codex.")
+
+fn runInteractive(args: seq[str], start: int32): int32 =
+    var opts = parseExecArgs(args, start)
+    let requestedCwd = parseResumeCwdLocal(args, start)
+    if len(requestedCwd) > 0:
+        opts.cwd = requestedCwd
+    else:
+        opts.cwd = currentDirSafe()
+    return runInteractiveWithOpts(opts, "")
+
+fn runInteractiveWithOpts(opts: ExecOptions, presetThreadId: str): int32 =
+    var execOpts = opts
+    execOpts.jsonMode = false
+    execOpts.outputSchemaJson = loadOutputSchemaJson(execOpts.outputSchemaPath)
+    if len(execOpts.approvalPolicy) == 0:
+        let cfgApproval = readConfigValue("approval_policy")
+        if len(cfgApproval) > 0:
+            execOpts.approvalPolicy = cfgApproval
+        else:
+            execOpts.approvalPolicy = "never"
+    if execOpts.oss && len(execOpts.ossProvider) == 0:
+        let cfgProvider = normalizeOssProviderLocal(readConfigValue("oss_provider"))
+        let cfgModelProvider = normalizeOssProviderLocal(readConfigValue("model_provider"))
+        if len(cfgProvider) == 0 && (len(cfgModelProvider) == 0 || cfgModelProvider == "oss"):
+            let selected = selectOssProviderInteractive()
+            if len(selected) == 0:
+                printUi("missing OSS provider")
+                return 2
+            execOpts.ossProvider = selected
+            if ! writeConfigValueWithProfile("oss_provider", selected):
+                printUi("failed to save oss_provider in config")
+    var overrideErr = ""
+    if ! applyExecOverrides(execOpts, overrideErr):
+        if len(overrideErr) > 0:
+            printUi(overrideErr)
+        return 2
+    let cwd = execOpts.cwd
+    var threadId = presetThreadId
+    var pendingPrompt = execOpts.prompt
+    let useTui = isFeatureEnabled("tui2")
+    if len(pendingPrompt) == 0 && len(threadId) == 0:
+        let infos = listThreadInfos(cwd, false)
+        if useTui:
+            let choice = interactiveMenuChoiceTui(infos)
+            if choice.action == -1:
+                maybeRunUpdateAction()
+                return 0
+            if len(choice.threadId) > 0:
+                threadId = choice.threadId
+            elif choice.action == 2 && len(infos) > 0:
+                threadId = threadInfoAtInteractive(infos, 0).id
+            elif choice.action == 3:
+                threadId = selectThreadIdLocal(cwd, false)
+        elif len(infos) > 0:
+            let choice = interactiveMenuChoice(true)
+            if choice == 2:
+                threadId = threadInfoAtInteractive(infos, 0).id
+            elif choice == 3:
+                threadId = selectThreadIdLocal(cwd, false)
+    if useTui:
+        let useAlt = tuiAltScreenEnabledLocal()
+        tuiEnterAltScreenLocal(useAlt)
+        var statusMsg: str = ""
+        while true:
+            renderChatTuiInteractive(execOpts, threadId, cwd, statusMsg)
+            statusMsg = ""
+            if len(pendingPrompt) == 0:
+                printUi(ansiDim("Input:"))
+                let rl = stdinReadLine()
+                if ! rl.ok:
+                    break
+                pendingPrompt = trimLine(rl.line)
+            let trimmed = trimLine(pendingPrompt)
+            let lowered = normalizePolicy(trimmed)
+            if len(trimmed) == 0:
+                pendingPrompt = ""
+                continue
+            let slash = parseSlashLineInteractive(trimmed)
+            if slash.ok:
+                let slashCmd: str = slash.cmd
+                let slashArgs: str = slash.args
+                if slashCmd == "quit" || slashCmd == "exit":
+                    pendingPrompt = ""
+                    break
+                if slashCmd == "help":
+                    if len(threadId) == 0:
+                        threadId = createThread("help", cwd, "cli")
+                    appendToolEvent(threadId, "help", "", "", -1, "", tuiHelpTextInteractive(), true)
+                    pendingPrompt = ""
+                    continue
+                if slashCmd == "status":
+                    if len(threadId) == 0:
+                        threadId = createThread("status", cwd, "cli")
+                    appendToolEvent(threadId, "status", "", "", -1, "", tuiStatusTextInteractive(execOpts, threadId, cwd), true)
+                    pendingPrompt = ""
+                    continue
+                if slashCmd == "model":
+                    if len(slashArgs) == 0:
+                        statusMsg = "Usage: /model <ID>"
+                        pendingPrompt = ""
+                        continue
+                    execOpts.model = slashArgs
+                    addConfigOverride("model", slashArgs)
+                    if len(threadId) == 0:
+                        threadId = createThread("model", cwd, "cli")
+                    appendToolEvent(threadId, "model", "", "", -1, "", "Model set to: " + slashArgs, true)
+                    pendingPrompt = ""
+                    continue
+                if slashCmd == "approvals" || slashCmd == "approval" || slashCmd == "ask-for-approval":
+                    if len(slashArgs) == 0:
+                        statusMsg = "Usage: /approvals <untrusted|on-failure|on-request|never>"
+                        pendingPrompt = ""
+                        continue
+                    execOpts.approvalPolicy = slashArgs
+                    addConfigOverride("approval_policy", normalizePolicy(trimLine(slashArgs)))
+                    if len(threadId) == 0:
+                        threadId = createThread("approvals", cwd, "cli")
+                    appendToolEvent(threadId, "approvals", "", "", -1, "", "Approvals set to: " + slashArgs, true)
+                    pendingPrompt = ""
+                    continue
+                if slashCmd == "new":
+                    threadId = ""
+                    pendingPrompt = ""
+                    continue
+                if slashCmd == "resume" || slashCmd == "pick" || slashCmd == "sessions":
+                    tuiExitAltScreenLocal(useAlt)
+                    threadId = selectThreadIdLocal(cwd, false)
+                    tuiEnterAltScreenLocal(useAlt)
+                    pendingPrompt = ""
+                    continue
+                if slashCmd == "last":
+                    let infos = listThreadInfos(cwd, false)
+                    if len(infos) > 0:
+                        threadId = threadInfoAtInteractive(infos, 0).id
+                    pendingPrompt = ""
+                    continue
+                if slashCmd == "fork":
+                    if len(threadId) == 0:
+                        statusMsg = "No active session to fork."
+                        pendingPrompt = ""
+                        continue
+                    let newId = forkThread(threadId, "", cwd, "cli")
+                    if len(newId) > 0:
+                        threadId = newId
+                        statusMsg = "Forked session."
+                    else:
+                        statusMsg = "Fork failed."
+                    pendingPrompt = ""
+                    continue
+                if slashCmd == "archive":
+                    if len(threadId) == 0:
+                        statusMsg = "No active session to archive."
+                        pendingPrompt = ""
+                        continue
+                    if archiveThread(threadId):
+                        threadId = ""
+                        statusMsg = "Archived session."
+                    else:
+                        statusMsg = "Archive failed."
+                    pendingPrompt = ""
+                    continue
+                if slashCmd == "rollback":
+                    if len(threadId) == 0:
+                        statusMsg = "No active session to rollback."
+                        pendingPrompt = ""
+                        continue
+                    let n = parseIntChoice(slashArgs)
+                    if n <= 0:
+                        statusMsg = "Usage: /rollback N"
+                        pendingPrompt = ""
+                        continue
+                    if rollbackThreadTurns(threadId, n):
+                        var msg: str = "Rolled back "
+                        msg = msg + intToStr(n)
+                        msg = msg + " turn(s)."
+                        statusMsg = msg
+                    else:
+                        statusMsg = "Rollback failed."
+                    pendingPrompt = ""
+                    continue
+                if slashCmd == "rename":
+                    if len(threadId) == 0:
+                        statusMsg = "No active session to rename."
+                        pendingPrompt = ""
+                        continue
+                    if len(slashArgs) == 0:
+                        statusMsg = "Usage: /rename <TITLE>"
+                        pendingPrompt = ""
+                        continue
+                    if updateThreadPreview(threadId, slashArgs):
+                        statusMsg = "Renamed session."
+                    else:
+                        statusMsg = "Rename failed."
+                    pendingPrompt = ""
+                    continue
+                if slashCmd == "diff":
+                    if len(threadId) == 0:
+                        threadId = createThread("diff", cwd, "cli")
+                    let diffText = reviewDiffUncommitted(cwd)
+                    if len(diffText) == 0:
+                        appendToolEvent(threadId, "diff", "", "", -1, "", "No changes.", true)
+                    else:
+                        appendToolEvent(threadId, "diff", "", "", -1, diffText, "", true)
+                    pendingPrompt = ""
+                    continue
+                if slashCmd == "review":
+                    var reviewPrompt = slashArgs
+                    if len(reviewPrompt) == 0:
+                        reviewPrompt = buildReviewPrompt(ReviewOptions(uncommitted: true, baseBranch: "", commitSha: "", commitTitle: "", prompt: ""), cwd)
+                    if len(reviewPrompt) == 0:
+                        statusMsg = "No changes to review."
+                        pendingPrompt = ""
+                        continue
+                    if len(threadId) == 0:
+                        threadId = createThread("review", cwd, "cli")
+                    statusMsg = "Running review..."
+                    renderChatTuiInteractive(execOpts, threadId, cwd, statusMsg)
+                    let ctxItems = threadContextItems(threadId)
+                    var combinedCtx: seq[str] = newSeq[str]()
+                    var cidx: int32 = 0
+                    while cidx < len(ctxItems):
+                        seqAdd(combinedCtx, argAt(ctxItems, cidx))
+                        cidx = cidx + 1
+                    statusMsg = ""
+                    let result = runExecTurn(execOpts, threadId, reviewPrompt, combinedCtx, "review")
+                    if ! result.ok && len(result.agentText) > 0:
+                        statusMsg = "Error: " + result.agentText
+                    pendingPrompt = ""
+                    continue
+                if slashCmd == "logout":
+                    clearConfigValue("auth.token")
+                    clearAuthJson()
+                    if len(threadId) == 0:
+                        threadId = createThread("logout", cwd, "cli")
+                    appendToolEvent(threadId, "logout", "", "", -1, "", "ok", true)
+                    pendingPrompt = ""
+                    continue
+                statusMsg = "Unknown command: /" + slashCmd
+                pendingPrompt = ""
+                continue
+            if len(threadId) == 0:
+                let preview = buildPreview(trimmed)
+                threadId = createThread(preview, cwd, "cli")
+            let contextItems = threadContextItems(threadId)
+            var combinedContext: seq[str] = newSeq[str]()
+            var idx: int32 = 0
+            while idx < len(contextItems):
+                seqAdd(combinedContext, argAt(contextItems, idx))
+                idx = idx + 1
+            var imgIdx: int32 = 0
+            while imgIdx < len(execOpts.images):
+                let msg = buildInputImageMessage(execOpts.images[imgIdx])
+                if len(msg) == 0:
+                    printUi("failed to attach image: " + execOpts.images[imgIdx])
+                    tuiExitAltScreenLocal(useAlt)
+                    return 1
+                seqAdd(combinedContext, msg)
+                imgIdx = imgIdx + 1
+            statusMsg = "Running..."
+            renderChatTuiInteractive(execOpts, threadId, cwd, statusMsg)
+            let result = runExecTurn(execOpts, threadId, trimmed, combinedContext, "exec")
+            if ! result.ok && len(result.agentText) > 0:
+                statusMsg = "Error: " + result.agentText
+            pendingPrompt = ""
+        tuiExitAltScreenLocal(useAlt)
+    else:
+        while true:
+            if len(pendingPrompt) == 0:
+                let rl = stdinReadLine()
+                if ! rl.ok:
+                    break
+                pendingPrompt = trimLine(rl.line)
+            if len(pendingPrompt) == 0:
+                continue
+            if len(threadId) == 0:
+                let preview = buildPreview(pendingPrompt)
+                threadId = createThread(preview, cwd, "cli")
+            let contextItems = threadContextItems(threadId)
+            var combinedContext: seq[str] = newSeq[str]()
+            var idx: int32 = 0
+            while idx < len(contextItems):
+                seqAdd(combinedContext, argAt(contextItems, idx))
+                idx = idx + 1
+            var imgIdx: int32 = 0
+            while imgIdx < len(execOpts.images):
+                let msg = buildInputImageMessage(execOpts.images[imgIdx])
+                if len(msg) == 0:
+                    printUi("failed to attach image: " + execOpts.images[imgIdx])
+                    return 1
+                seqAdd(combinedContext, msg)
+                imgIdx = imgIdx + 1
+            let result = runExecTurn(execOpts, threadId, pendingPrompt, combinedContext, "exec")
+            if len(result.agentOutput) > 0:
+                printLine(result.agentOutput)
+            pendingPrompt = ""
+    maybeRunUpdateAction()
+    return 0

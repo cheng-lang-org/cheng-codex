@@ -1,0 +1,393 @@
+# Common helpers for codex-cheng
+
+import system
+import std/os
+import seqs
+type
+    ToolResult =
+        ok: bool
+        output: str
+        exitCode: int32
+    StdinLineRead =
+        ok: bool
+        line: str
+
+const CODEX_VERSION = "0.98.0"
+
+fn makeToolResult(ok: bool, output: str, exitCode: int32): ToolResult =
+    ToolResult(ok: ok, output: output, exitCode: exitCode)
+
+var stdinPushback: int32 = -1
+
+fn stdinNextCharLocal(): int32 =
+    if stdinPushback >= 0:
+        let out = stdinPushback
+        stdinPushback = -1
+        return out
+    return c_fgetc(os.get_stdin())
+
+fn stdinReadLine(): StdinLineRead =
+    var buf = ""
+    var saw = false
+    var c: int32 = -1
+    while true:
+        c = stdinNextCharLocal()
+        if c < 0:
+            break
+        if c == ord('\n'):
+            break
+        if c == ord('\r'):
+            let next = stdinNextCharLocal()
+            if next >= 0 && next != ord('\n'):
+                stdinPushback = next
+            break
+        buf = buf + $ char(c)
+        saw = true
+    if ! saw && c < 0:
+        return StdinLineRead(ok: false, line: "")
+    return StdinLineRead(ok: true, line: buf)
+
+fn seqStr1(a: str): seq[str] =
+    var out: seq[str] = newSeq[str]()
+    seqAdd(out, a)
+    return out
+
+fn seqStr2(a: str, b: str): seq[str] =
+    var out: seq[str] = newSeq[str]()
+    seqAdd(out, a)
+    seqAdd(out, b)
+    return out
+
+fn seqStr3(a: str, b: str, c: str): seq[str] =
+    var out: seq[str] = newSeq[str]()
+    seqAdd(out, a)
+    seqAdd(out, b)
+    seqAdd(out, c)
+    return out
+
+fn seqStr4(a: str, b: str, c: str, d: str): seq[str] =
+    var out: seq[str] = newSeq[str]()
+    seqAdd(out, a)
+    seqAdd(out, b)
+    seqAdd(out, c)
+    seqAdd(out, d)
+    return out
+
+fn printLine(text: str) =
+    os.writeLine(os.get_stdout(), text)
+
+fn printErr(text: str) =
+    os.writeLine(os.get_stderr(), text)
+
+fn printConfigFlagHelp() =
+    printLine("  -c, --config <key=value>")
+    printLine("          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`.")
+    printLine("          Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed")
+    printLine("          as TOML. If it fails to parse as TOML, the raw string is used as a literal.")
+    printLine("          ")
+    printLine("          Examples: - `-c model=\"o3\"` - `-c 'sandbox_permissions=[\"disk-full-read-access\"]'` - `-c")
+    printLine("          shell_environment_policy.inherit=all`")
+    printLine("")
+
+fn printEnableFlagHelp() =
+    printLine("      --enable <FEATURE>")
+    printLine("          Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    printLine("")
+
+fn printDisableFlagHelp() =
+    printLine("      --disable <FEATURE>")
+    printLine("          Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    printLine("")
+
+fn ansiEnabled(): bool =
+    let noColor = os.getEnv("NO_COLOR")
+    if len(noColor) > 0:
+        return false
+    let term = os.getEnv("TERM")
+    if term == "dumb":
+        return false
+    return true
+
+fn ansiWrap(text: str, code: str): str =
+    if ! ansiEnabled() || len(code) == 0:
+        return text
+    return code + text + "\x1b[0m"
+
+fn ansiBold(text: str): str =
+    return ansiWrap(text, "\x1b[1m")
+
+fn ansiDim(text: str): str =
+    return ansiWrap(text, "\x1b[2m")
+
+fn ansiCyan(text: str): str =
+    return ansiWrap(text, "\x1b[36m")
+
+fn ansiMagenta(text: str): str =
+    return ansiWrap(text, "\x1b[35m")
+
+fn ansiGreen(text: str): str =
+    return ansiWrap(text, "\x1b[32m")
+
+fn ansiRed(text: str): str =
+    return ansiWrap(text, "\x1b[31m")
+
+fn hasPrefix(s: str, prefix: str): bool =
+    if s == nil || prefix == nil:
+        return false
+    if len(prefix) > len(s):
+        return false
+    var i: int32 = 0
+    while i < len(prefix):
+        if ord(s[i]) != ord(prefix[i]):
+            return false
+        i = i + 1
+    return true
+
+fn dropPrefix(s: str, prefix: str): str =
+    if ! hasPrefix(s, prefix):
+        return s
+    let start = len(prefix)
+    if start >= len(s):
+        return ""
+    return __cheng_slice_string(s, start, len(s) - 1, false)
+
+fn endsWithSuffix(s: str, suffix: str): bool =
+    if s == nil || suffix == nil:
+        return false
+    if len(suffix) > len(s):
+        return false
+    let start: int32 = len(s) - len(suffix)
+    var i: int32 = 0
+    while i < len(suffix):
+        if ord(s[start + i]) != ord(suffix[i]):
+            return false
+        i = i + 1
+    return true
+
+fn joinPartsBalanced(parts: seq[str]): str =
+    # Balanced join avoids O(n^2) growth when concatenating many pieces.
+    if len(parts) == 0:
+        return ""
+    if len(parts) == 1:
+        let only: str = get[str](parts, 0)
+        if only == nil:
+            return ""
+        return "" + only
+    var work: seq[str] = newSeq[str]()
+    var i: int32 = 0
+    while i < len(parts):
+        let part: str = get[str](parts, i)
+        if part == nil:
+            seqAdd(work, "")
+        else:
+            seqAdd(work, part)
+        i = i + 1
+    while len(work) > 1:
+        var next: seq[str] = newSeq[str]()
+        var j: int32 = 0
+        while j < len(work):
+            if j + 1 < len(work):
+                var merged: str = get[str](work, j)
+                merged = merged + get[str](work, j + 1)
+                seqAdd(next, merged)
+                j = j + 2
+            else:
+                seqAdd(next, get[str](work, j))
+                j = j + 1
+        work = next
+    let out: str = get[str](work, 0)
+    if out == nil:
+        return ""
+    return "" + out
+
+fn joinArgs(args: seq[str], start: int32): str =
+    var out = ""
+    var i: int32 = start
+    while i < len(args):
+        if len(out) == 0:
+            out = args[i]
+        else:
+            out = out + " " + args[i]
+        i = i + 1
+    return out
+
+fn argAt(args: seq[str], idx: int32): str =
+    if idx < 0 || idx >= len(args):
+        return ""
+    let value = get[str](args, idx)
+    if value == nil:
+        return ""
+    return "" + value
+
+fn argListContains(args: seq[str], start: int32, needle: str): bool =
+    if len(needle) == 0:
+        return false
+    var i: int32 = start
+    while i < len(args):
+        if argAt(args, i) == needle:
+            return true
+        i = i + 1
+    return false
+
+fn wantsLongHelp(args: seq[str], start: int32): bool =
+    # Clap: `-h` prints short help, `--help` prints long help.
+    return argListContains(args, start, "--help")
+
+fn currentDirSafe(): str =
+    let pwd = os.getEnv("PWD")
+    if len(pwd) > 0:
+        return "" + pwd
+    return "."
+
+fn shellQuote(value: str): str =
+    if value == nil || len(value) == 0:
+        return "''"
+    # Use slices + parts join to avoid O(n^2) growth for long strings.
+    var parts: seq[str] = newSeq[str]()
+    seqAdd(parts, "'")
+    var last: int32 = 0
+    var i: int32 = 0
+    while i < len(value):
+        let ch = value[i]
+        if ch == '\'':
+            if i > last:
+                let chunk: str = __cheng_slice_string(value, last, i - 1, false)
+                seqAdd(parts, chunk)
+            seqAdd(parts, "'\\''")
+            last = i + 1
+        i = i + 1
+    if last <= len(value) - 1:
+        let tail: str = __cheng_slice_string(value, last, len(value) - 1, false)
+        seqAdd(parts, tail)
+    seqAdd(parts, "'")
+    return joinPartsBalanced(parts)
+
+fn firstLine(text: str): str =
+    if text == nil:
+        return ""
+    let idx = indexOfSubstr(text, "\n", 0)
+    if idx < 0:
+        return trimLine(text)
+    if idx == 0:
+        return ""
+    return trimLine(__cheng_slice_string(text, 0, idx - 1, false))
+
+fn normalizePolicy(policy: str): str =
+    if policy == nil || len(policy) == 0:
+        return ""
+    var out = ""
+    var i: int32 = 0
+    while i < len(policy):
+        let ch = policy[i]
+        if ch >= 'A' && ch <= 'Z':
+            out = out + $ char(ord(ch) + 32)
+        else:
+            out = out + $ ch
+        i = i + 1
+    return out
+
+var uiStreamOverride: str = ""
+
+fn setUiStreamOverride(stream: str) =
+    # Used to keep machine-readable stdout (e.g. JSONL) clean.
+    let norm = normalizePolicy(trimLine(stream))
+    if norm == "stdout" || norm == "stderr":
+        uiStreamOverride = norm
+    else:
+        uiStreamOverride = ""
+
+fn uiToStdoutEnabled(): bool =
+    # UI is primarily meant for humans; default to stdout so UIs still show up
+    # when stderr isn't captured by a wrapper/driver.
+    if len(uiStreamOverride) > 0:
+        let ov = normalizePolicy(trimLine(uiStreamOverride))
+        if ov == "stderr":
+            return false
+        if ov == "stdout":
+            return true
+    let streamRaw = os.getEnv("CODEX_UI_STREAM")
+    let stream = normalizePolicy(trimLine(streamRaw))
+    if stream == "stderr":
+        return false
+    if stream == "stdout":
+        return true
+    let stdoutRaw = os.getEnv("CODEX_UI_STDOUT")
+    let stdoutFlag = normalizePolicy(trimLine(stdoutRaw))
+    if stdoutFlag == "1" || stdoutFlag == "true" || stdoutFlag == "yes":
+        return true
+    return true
+
+fn printUi(text: str) =
+    if uiToStdoutEnabled():
+        os.writeLine(os.get_stdout(), text)
+    else:
+        os.writeLine(os.get_stderr(), text)
+
+fn ord(ch: char): int32 =
+    return int32(ch)
+
+fn trimSpacesTokenLocal(text: str): str =
+    if text == nil:
+        return ""
+    var start: int32 = 0
+    var stop: int32 = len(text) - 1
+    while start <= stop:
+        let ch = text[start]
+        if ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n':
+            break
+        start = start + 1
+    while stop >= start:
+        let ch = text[stop]
+        if ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n':
+            break
+        stop = stop - 1
+    if start > stop:
+        return ""
+    return __cheng_slice_string(text, start, stop, false)
+
+fn isChatgptPlaceholderToken(token: str): bool =
+    let normalized = normalizePolicy(trimSpacesTokenLocal(token))
+    return normalized == "chatgpt" || normalized == "browser"
+
+fn repeatChar(ch: char, limit: int32): str =
+    if limit <= 0:
+        return ""
+    var out = ""
+    var i: int32 = 0
+    while i < limit:
+        # Avoid charToStr (unstable in some compiler/runtime combos); use `$` conversion.
+        out = out + $ ch
+        i = i + 1
+    return out
+
+fn tuiHeader(title: str) =
+    title
+    printUi("=== Codex ===")
+
+fn shorten(text: str, maxLen: int32): str =
+    if text == nil:
+        return ""
+    if maxLen <= 0:
+        return ""
+    if len(text) <= maxLen:
+        return text
+    return __cheng_slice_string(text, 0, maxLen - 1, false)
+
+fn int64ToStr(i: int64): str =
+    if i == 0:
+        return "0"
+    # Avoid raw-pointer string construction; use pure string ops for stability.
+    var n: int64 = i
+    var neg: bool = false
+    if n < 0:
+        neg = true
+        n = 0 - n
+    var out = ""
+    while n > 0:
+        let digit: int32 = int32(n % 10)
+        # Avoid charToStr (unstable in some compiler/runtime combos); use `$` conversion.
+        out = $ char(ord('0') + digit) + out
+        n = n / 10
+    if neg:
+        out = "-" + out
+    return out

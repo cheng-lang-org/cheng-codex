@@ -1,0 +1,105 @@
+# Shell tool (raw + sandboxed runners)
+
+import system
+import std/os
+import seqs
+import cheng/codex/command_safety
+import cheng/codex/config
+import cheng/codex/common
+import cheng/codex/sandbox_runner
+import cheng/codex/shell_snapshot
+fn trimSpacesShell(text: str): str =
+    if text == nil || len(text) == 0:
+        return ""
+    var start: int32 = 0
+    var stop: int32 = len(text) - 1
+    while start <= stop:
+        let ch = text[start]
+        if ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n':
+            break
+        start = start + 1
+    while stop >= start:
+        let ch = text[stop]
+        if ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n':
+            break
+        stop = stop - 1
+    if start > stop:
+        return ""
+    return __cheng_slice_string(text, start, stop, false)
+
+fn normalizeSandboxModeLocal(value: str): str =
+    # Type annotation is important: current compiler can mis-infer local string
+    # widths and truncate pointers on arm64, leading to SIGSEGV in strlen.
+    let normalized: str = normalizePolicy(trimSpacesShell(value))
+    if len(normalized) == 0:
+        return ""
+    if normalized == "read-only" || normalized == "readonly":
+        return "read-only"
+    if normalized == "workspace-write" || normalized == "workspacewrite":
+        return "workspace-write"
+    if normalized == "danger-full-access" || normalized == "dangerfullaccess":
+        return "danger-full-access"
+    return normalized
+
+fn resolveUserShellPath(): str =
+    let envShell: str = os.getEnv("SHELL")
+    if len(envShell) > 0 && os.fileExists(envShell):
+        return envShell
+    if os.fileExists("/bin/zsh"):
+        return "/bin/zsh"
+    if os.fileExists("/bin/bash"):
+        return "/bin/bash"
+    if os.fileExists("/bin/sh"):
+        return "/bin/sh"
+    return "/bin/sh"
+
+fn wrapCommandForShell(commandText: str, useLogin: bool): str =
+    if len(commandText) == 0:
+        return ""
+    # Type annotations are important: current compiler can mis-infer local string
+    # widths and truncate pointers on arm64, leading to SIGSEGV in strlen.
+    let osKind: str = detectOsKind()
+    if osKind == "windows":
+        return commandText
+    let shellPath: str = resolveUserShellPath()
+    if useLogin:
+        let snapshotPath: str = ensureShellSnapshot(shellPath)
+        if len(snapshotPath) > 0:
+            # Build incrementally to avoid deep temporary chains (can SIGSEGV).
+            var script: str = ". "
+            script = script + shellQuote(snapshotPath)
+            script = script + " && "
+            script = script + commandText
+            var out: str = shellQuote(shellPath)
+            out = out + " -c "
+            out = out + shellQuote(script)
+            return out
+    # Build incrementally to avoid deep temporary chains (can SIGSEGV).
+    var out: str = shellQuote(shellPath)
+    # Avoid `let flag = if ...: "<lit>" else: "<lit>"` here: current compiler
+    # can mis-infer width and truncate the pointer on arm64, leading to SIGSEGV.
+    if useLogin:
+        out = out + " -lc "
+    else:
+        out = out + " -c "
+    out = out + shellQuote(commandText)
+    return out
+
+fn runShellTool(command: str, workingDir: str): ToolResult =
+    return runRawCommand(command, workingDir, -1)
+
+fn runShellCommand(commandText: str, commandTokens: seq[str], workingDir: str, sandboxMode: str, sandboxPermissions: str, bypassSandbox: bool, extraWritableRoots: seq[str], timeoutMs: int32, useLogin: bool): ToolResult =
+    var cmdText: str = commandText
+    if len(cmdText) == 0 && len(commandTokens) > 0:
+        cmdText = buildCommandTextFromTokens(commandTokens)
+    if len(cmdText) == 0:
+        return makeToolResult(false, "empty command", -1)
+    cmdText = wrapCommandForShell(cmdText, useLogin)
+    # Type annotations here are important: current compiler can mis-infer local
+    # string widths and truncate pointers on arm64, leading to SIGSEGV in strlen.
+    let mode: str = normalizeSandboxModeLocal(sandboxMode)
+    let requireEscalated: bool = sandboxPermissionsRequiresEscalated(sandboxPermissions)
+    let shouldSandbox: bool = ! bypassSandbox && ! requireEscalated && len(mode) > 0 && mode != "danger-full-access" && mode != "external-sandbox"
+    if shouldSandbox:
+        return runSandboxedCommand(cmdText, commandTokens, workingDir, mode, extraWritableRoots, timeoutMs)
+    return runRawCommand(cmdText, workingDir, timeoutMs)

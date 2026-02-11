@@ -1,0 +1,101 @@
+# macOS desktop app command support.
+
+import system
+import std/os
+import cheng/codex/common
+
+const CODEX_APP_DEFAULT_DMG_URL = "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg"
+
+fn appStrEq(a: str, b: str): bool =
+    if a == nil || b == nil:
+        return false
+    if len(a) != len(b):
+        return false
+    var i: int32 = 0
+    while i < len(a):
+        if ord(a[i]) != ord(b[i]):
+            return false
+        i = i + 1
+    return true
+
+fn appIsMacHost(): bool =
+    let osEnv = normalizePolicy(os.getEnv("OS"))
+    if appStrEq(osEnv, "darwin") || appStrEq(osEnv, "macos"):
+        return true
+    let ostype = normalizePolicy(os.getEnv("OSTYPE"))
+    if indexOfSubstr(ostype, "darwin", 0) >= 0:
+        return true
+    if os.fileExists("/usr/bin/sandbox-exec"):
+        return true
+    if os.dirExists("/System") && os.dirExists("/Applications"):
+        return true
+    if os.fileExists("/System/Library/CoreServices/SystemVersion.plist"):
+        return true
+    let unameRes = os.execCmdEx("uname", uint64(os.poUsePath), os.getCurrentDir())
+    if unameRes.exitCode == 0:
+        let unameOut = normalizePolicy(trimLine(unameRes.output))
+        if appStrEq(unameOut, "darwin"):
+            return true
+    return false
+
+fn runAppCommand(args: seq[str], start: int32): int32 =
+    var workspace = "."
+    var downloadUrl = CODEX_APP_DEFAULT_DMG_URL
+    var seenPath = false
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if appStrEq(arg, "--help") || appStrEq(arg, "-h"):
+            printLine("Launch the Codex desktop app (downloads the macOS installer if missing)")
+            printLine("")
+            printLine("Usage: codex app [OPTIONS] [PATH]")
+            printLine("")
+            printLine("Arguments:")
+            printLine("  [PATH]")
+            printLine("          Workspace path to open in Codex Desktop")
+            printLine("          ")
+            printLine("          [default: .]")
+            printLine("")
+            printLine("Options:")
+            printConfigFlagHelp()
+            printLine("      --download-url <DOWNLOAD_URL>")
+            printLine("          Override the macOS DMG download URL (advanced)")
+            printLine("          ")
+            printLine("          [default: https://persistent.oaistatic.com/codex-app-prod/Codex.dmg]")
+            printLine("")
+            printEnableFlagHelp()
+            printDisableFlagHelp()
+            printLine("  -h, --help")
+            printLine("          Print help (see a summary with '-h')")
+            return 0
+        if appStrEq(arg, "--download-url") && i + 1 < len(args):
+            downloadUrl = argAt(args, i + 1)
+            i = i + 1
+        elif hasPrefix(arg, "--download-url:"):
+            downloadUrl = dropPrefix(arg, "--download-url:")
+        elif ! seenPath && ! hasPrefix(arg, "-"):
+            workspace = arg
+            seenPath = true
+        else:
+            printErr("unknown option: " + arg)
+            return 2
+        i = i + 1
+
+    if ! appIsMacHost():
+        printErr("`codex app` is only available on macOS")
+        return 2
+
+    let absWorkspace = os.absolutePath(workspace)
+    let openAppCmd = "open -a Codex " + shellQuote(absWorkspace)
+    let openAppRes = os.execCmdEx(openAppCmd, uint64(os.poUsePath | os.poEvalCommand), os.getCurrentDir())
+    if openAppRes.exitCode == 0:
+        return 0
+
+    printErr("Failed to open Codex desktop app. It may not be installed.")
+    if len(downloadUrl) > 0:
+        printErr("Download URL: " + downloadUrl)
+        let openUrlCmd = "open " + shellQuote(downloadUrl)
+        let openUrlRes = os.execCmdEx(openUrlCmd, uint64(os.poUsePath | os.poEvalCommand), os.getCurrentDir())
+        if openUrlRes.exitCode == 0:
+            return 1
+    return 1

@@ -1,0 +1,511 @@
+# Native MCP server command (stdio JSON-RPC)
+
+import system
+import std/os
+import seqs
+import cheng/decentralized/json_parse
+import cheng/runtime/json_ast as json
+import cheng/codex/json_util
+import cheng/codex/common
+
+type
+    McpServerToolOutcome =
+        threadId: str
+        text: str
+        ok: bool
+
+fn mcpServerUsage(): int32 =
+    printLine("[experimental] Run the Codex MCP server (stdio transport)")
+    printLine("")
+    printLine("Usage: codex mcp-server [OPTIONS]")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn mcpServerJsonRpcResponse(idJson: str, resultJson: str): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
+    seqAdd(fields, jstrPair("id", idJson))
+    seqAdd(fields, jstrPair("result", resultJson))
+    return jstrObject(fields)
+
+fn mcpServerJsonRpcError(idJson: str, code: int32, message: str): str =
+    let errObj = jstrObject(seqStr2(
+        jstrPair("code", intToStr(code)),
+        jstrPair("message", jstrString(message))
+    ))
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
+    seqAdd(fields, jstrPair("id", idJson))
+    seqAdd(fields, jstrPair("error", errObj))
+    return jstrObject(fields)
+
+fn mcpServerSendResponse(idJson: str, resultJson: str) =
+    printLine(mcpServerJsonRpcResponse(idJson, resultJson))
+
+fn mcpServerSendError(idJson: str, code: int32, message: str) =
+    printLine(mcpServerJsonRpcError(idJson, code, message))
+
+fn mcpServerIsSpace(ch: char): bool =
+    ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'
+
+fn mcpServerRequestIdJson(root: json.JsonNode): str =
+    if root == nil || root.kind != json.JObject || ! root.hasKey("id"):
+        return ""
+    let idNode = json.jsonGetField(root, "id")
+    if idNode == nil:
+        return ""
+    if idNode.kind == json.JInt:
+        return int64ToStr(idNode.getInt())
+    if idNode.kind == json.JFloat:
+        return $ idNode.getFloat()
+    if idNode.kind == json.JString:
+        return jstrString(idNode.getStr())
+    return ""
+
+fn mcpServerGetObject(node: json.JsonNode, key: str): json.JsonNode =
+    if node == nil || node.kind != json.JObject || ! node.hasKey(key):
+        return json.newJNull()
+    let value = json.jsonGetField(node, key)
+    if value != nil && value.kind == json.JObject:
+        return value
+    return json.newJNull()
+
+fn mcpServerPreview(text: str): str =
+    let line = firstLine(text)
+    if len(line) > 0:
+        return line
+    return "mcp-session"
+
+fn mcpServerNormalizeApproval(policy: str): str =
+    let normalized = normalizePolicy(trimLine(policy))
+    if normalized == "untrusted" || normalized == "unlesstrusted":
+        return "untrusted"
+    if normalized == "onfailure" || normalized == "on-failure":
+        return "on-failure"
+    if normalized == "onrequest" || normalized == "on-request":
+        return "on-request"
+    if normalized == "never":
+        return "never"
+    return ""
+
+fn mcpServerNormalizeSandbox(mode: str): str =
+    let normalized = normalizePolicy(trimLine(mode))
+    if normalized == "readonly" || normalized == "read-only":
+        return "read-only"
+    if normalized == "workspacewrite" || normalized == "workspace-write":
+        return "workspace-write"
+    if normalized == "dangerfullaccess" || normalized == "danger-full-access":
+        return "danger-full-access"
+    return ""
+
+fn mcpServerRunCodexPrompt(prompt: str, threadHint: str, model: str, profile: str, cwd: str, approvalPolicy: str, sandboxMode: str): McpServerToolOutcome =
+    var out: McpServerToolOutcome
+    out.threadId = threadHint
+    out.text = ""
+    out.ok = false
+    let promptText = trimLine(prompt)
+    if len(promptText) == 0:
+        out.text = "Missing arguments for codex tool-call; the `prompt` field is required."
+        return out
+    var opts = defaultExecOptions()
+    opts.prompt = promptText
+    if len(model) > 0:
+        opts.model = model
+    if len(profile) > 0:
+        opts.profile = profile
+    if len(cwd) > 0:
+        opts.cwd = cwd
+    let ap = mcpServerNormalizeApproval(approvalPolicy)
+    if len(ap) > 0:
+        opts.approvalPolicy = ap
+    if len(opts.approvalPolicy) == 0:
+        let cfgAp = mcpServerNormalizeApproval(readConfigValue("approval_policy"))
+        if len(cfgAp) > 0:
+            opts.approvalPolicy = cfgAp
+        else:
+            opts.approvalPolicy = "never"
+    let sb = mcpServerNormalizeSandbox(sandboxMode)
+    if len(sb) > 0:
+        opts.sandboxMode = sb
+    var applyErr = ""
+    if ! applyExecOverrides(opts, applyErr):
+        out.text = "Failed to apply exec overrides."
+        if len(applyErr) > 0:
+            out.text = applyErr
+        return out
+    var runCwd: str = os.getCurrentDir()
+    if len(opts.cwd) > 0:
+        runCwd = opts.cwd
+    if len(out.threadId) == 0:
+        out.threadId = createThread(mcpServerPreview(promptText), runCwd, "mcp")
+    var contextItems: seq[str] = newSeq[str]()
+    let result = runExecTurn(opts, out.threadId, promptText, contextItems, "exec")
+    out.ok = result.ok
+    out.text = result.agentText
+    if len(result.agentOutput) > 0:
+        out.text = result.agentOutput
+    if out.ok && len(out.text) == 0:
+        out.text = "done"
+    return out
+
+fn mcpServerToolOutputSchemaJson(): str =
+    return jstrObject(seqStr3(
+        jstrPair("type", jstrString("object")),
+        jstrPair("properties", jstrObject(seqStr2(
+            jstrPair("threadId", jstrObject(seqStr1(jstrPair("type", jstrString("string"))))),
+            jstrPair("content", jstrObject(seqStr1(jstrPair("type", jstrString("string")))))
+        ))),
+        jstrPair("required", jstrArray(seqStr2(jstrString("threadId"), jstrString("content"))))
+    ))
+
+fn mcpServerCodexToolJson(): str =
+    var props: seq[str] = newSeq[str]()
+    seqAdd(props, jstrPair("prompt", jstrObject(seqStr1(jstrPair("type", jstrString("string"))))))
+    seqAdd(props, jstrPair("model", jstrObject(seqStr1(jstrPair("type", jstrString("string"))))))
+    seqAdd(props, jstrPair("profile", jstrObject(seqStr1(jstrPair("type", jstrString("string"))))))
+    seqAdd(props, jstrPair("cwd", jstrObject(seqStr1(jstrPair("type", jstrString("string"))))))
+    seqAdd(props, jstrPair("approval-policy", jstrObject(seqStr1(jstrPair("type", jstrString("string"))))))
+    seqAdd(props, jstrPair("approvalPolicy", jstrObject(seqStr1(jstrPair("type", jstrString("string"))))))
+    seqAdd(props, jstrPair("sandbox", jstrObject(seqStr1(jstrPair("type", jstrString("string"))))))
+    let inputSchema = jstrObject(seqStr3(
+        jstrPair("type", jstrString("object")),
+        jstrPair("properties", jstrObject(props)),
+        jstrPair("required", jstrArray(seqStr1(jstrString("prompt"))))
+    ))
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("name", jstrString("codex")))
+    seqAdd(fields, jstrPair("title", jstrString("Codex")))
+    seqAdd(fields, jstrPair("description", jstrString("Run a Codex session.")))
+    seqAdd(fields, jstrPair("inputSchema", inputSchema))
+    seqAdd(fields, jstrPair("outputSchema", mcpServerToolOutputSchemaJson()))
+    return jstrObject(fields)
+
+fn mcpServerCodexReplyToolJson(): str =
+    let inputSchema = jstrObject(seqStr3(
+        jstrPair("type", jstrString("object")),
+        jstrPair("properties", jstrObject(seqStr3(
+            jstrPair("threadId", jstrObject(seqStr1(jstrPair("type", jstrString("string"))))),
+            jstrPair("conversationId", jstrObject(seqStr1(jstrPair("type", jstrString("string"))))),
+            jstrPair("prompt", jstrObject(seqStr1(jstrPair("type", jstrString("string")))))
+        ))),
+        jstrPair("required", jstrArray(seqStr1(jstrString("prompt"))))
+    ))
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("name", jstrString("codex-reply")))
+    seqAdd(fields, jstrPair("title", jstrString("Codex Reply")))
+    seqAdd(fields, jstrPair("description", jstrString("Continue a Codex conversation by providing a prompt and optional thread id.")))
+    seqAdd(fields, jstrPair("inputSchema", inputSchema))
+    seqAdd(fields, jstrPair("outputSchema", mcpServerToolOutputSchemaJson()))
+    return jstrObject(fields)
+
+fn mcpServerToolResultJson(threadId: str, text: str, isError: bool): str =
+    let content = jstrArray(seqStr1(jstrObject(seqStr2(
+        jstrPair("type", jstrString("text")),
+        jstrPair("text", jstrString(text))
+    ))))
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("content", content))
+    if len(threadId) > 0:
+        let structured = jstrObject(seqStr2(
+            jstrPair("threadId", jstrString(threadId)),
+            jstrPair("content", jstrString(text))
+        ))
+        seqAdd(fields, jstrPair("structuredContent", structured))
+    if isError:
+        seqAdd(fields, jstrPair("isError", jstrBool(true)))
+    return jstrObject(fields)
+
+fn mcpServerSlice(text: str, start: int32, stop: int32): str =
+    if text == nil || len(text) == 0:
+        return ""
+    if start < 0 || stop < start || start >= len(text):
+        return ""
+    var out = ""
+    var idx = start
+    var last = stop
+    if last >= len(text):
+        last = len(text) - 1
+    while idx <= last:
+        let ch = text[idx]
+        out = out + $ ch
+        idx = idx + 1
+    return out
+
+fn mcpServerExtractIdJsonPayload(payload: str): str =
+    let strId = jsonExtractString(payload, "id")
+    if len(strId) > 0:
+        return jstrString(strId)
+    let keyIdx = jsonFindKeyAfter(payload, "id", 0)
+    if keyIdx < 0:
+        return ""
+    var idx = keyIdx + len("id") + 2
+    while idx < len(payload) && mcpServerIsSpace(payload[idx]):
+        idx = idx + 1
+    if idx >= len(payload) || payload[idx] != ':':
+        return ""
+    idx = idx + 1
+    while idx < len(payload) && mcpServerIsSpace(payload[idx]):
+        idx = idx + 1
+    if idx >= len(payload):
+        return ""
+    if payload[idx] == '"':
+        var out = ""
+        idx = idx + 1
+        while idx < len(payload):
+            let ch = payload[idx]
+            if ch == '\\' && idx + 1 < len(payload):
+                let nextCh = payload[idx + 1]
+                out = out + $ nextCh
+                idx = idx + 2
+                continue
+            if ch == '"':
+                break
+            out = out + $ ch
+            idx = idx + 1
+        return jstrString(out)
+    let start = idx
+    while idx < len(payload):
+        let ch = payload[idx]
+        if (ch >= '0' && ch <= '9') || ch == '-' || ch == '+' || ch == '.' || ch == 'e' || ch == 'E':
+            idx = idx + 1
+        else:
+            break
+    if idx <= start:
+        return ""
+    return mcpServerSlice(payload, start, idx - 1)
+
+fn mcpServerExtractArgPayload(payload: str, keyA: str, keyB: str, keyC: str): str =
+    let a = jsonExtractString(payload, keyA)
+    if len(a) > 0:
+        return a
+    if len(keyB) > 0:
+        let b = jsonExtractString(payload, keyB)
+        if len(b) > 0:
+            return b
+    if len(keyC) > 0:
+        let c = jsonExtractString(payload, keyC)
+        if len(c) > 0:
+            return c
+    return ""
+
+fn mcpServerInitializeProtocol(root: json.JsonNode): str =
+    let params = mcpServerGetObject(root, "params")
+    let reqProtocol = getStringField(params, "protocolVersion", "")
+    if len(reqProtocol) > 0:
+        return reqProtocol
+    return "2024-11-05"
+
+fn mcpServerInitializeProtocolPayload(payload: str): str =
+    let paramsIdx = jsonFindKeyAfter(payload, "params", 0)
+    if paramsIdx >= 0:
+        let nested = jsonExtractStringAfter(payload, "protocolVersion", paramsIdx)
+        if len(nested) > 0:
+            return nested
+    let direct = jsonExtractString(payload, "protocolVersion")
+    if len(direct) > 0:
+        return direct
+    return "2024-11-05"
+
+fn mcpServerHandleInitialize(idJson: str, root: json.JsonNode) =
+    let protocol = mcpServerInitializeProtocol(root)
+    var serverInfoFields: seq[str] = newSeq[str]()
+    seqAdd(serverInfoFields, jstrPair("name", jstrString("codex-mcp-server")))
+    seqAdd(serverInfoFields, jstrPair("title", jstrString("Codex")))
+    seqAdd(serverInfoFields, jstrPair("version", jstrString(CODEX_VERSION)))
+    seqAdd(serverInfoFields, jstrPair("user_agent", jstrString("codex-cheng")))
+    let serverInfo = jstrObject(serverInfoFields)
+    let toolsCaps = jstrObject(seqStr1(jstrPair("listChanged", jstrBool(true))))
+    let caps = jstrObject(seqStr1(jstrPair("tools", toolsCaps)))
+    var resultFields: seq[str] = newSeq[str]()
+    seqAdd(resultFields, jstrPair("capabilities", caps))
+    seqAdd(resultFields, jstrPair("instructions", jstrNull()))
+    seqAdd(resultFields, jstrPair("protocolVersion", jstrString(protocol)))
+    seqAdd(resultFields, jstrPair("serverInfo", serverInfo))
+    let result = jstrObject(resultFields)
+    mcpServerSendResponse(idJson, result)
+
+fn mcpServerHandleInitializePayload(idJson: str, payload: str) =
+    let protocol = mcpServerInitializeProtocolPayload(payload)
+    var serverInfoFields: seq[str] = newSeq[str]()
+    seqAdd(serverInfoFields, jstrPair("name", jstrString("codex-mcp-server")))
+    seqAdd(serverInfoFields, jstrPair("title", jstrString("Codex")))
+    seqAdd(serverInfoFields, jstrPair("version", jstrString(CODEX_VERSION)))
+    seqAdd(serverInfoFields, jstrPair("user_agent", jstrString("codex-cheng")))
+    let serverInfo = jstrObject(serverInfoFields)
+    let toolsCaps = jstrObject(seqStr1(jstrPair("listChanged", jstrBool(true))))
+    let caps = jstrObject(seqStr1(jstrPair("tools", toolsCaps)))
+    var resultFields: seq[str] = newSeq[str]()
+    seqAdd(resultFields, jstrPair("capabilities", caps))
+    seqAdd(resultFields, jstrPair("instructions", jstrNull()))
+    seqAdd(resultFields, jstrPair("protocolVersion", jstrString(protocol)))
+    seqAdd(resultFields, jstrPair("serverInfo", serverInfo))
+    let result = jstrObject(resultFields)
+    mcpServerSendResponse(idJson, result)
+
+fn mcpServerHandleToolsList(idJson: str) =
+    let result = jstrObject(seqStr2(
+        jstrPair("tools", jstrArray(seqStr2(
+            mcpServerCodexToolJson(),
+            mcpServerCodexReplyToolJson()
+        ))),
+        jstrPair("nextCursor", jstrNull())
+    ))
+    mcpServerSendResponse(idJson, result)
+
+fn mcpServerExtractArg(arguments: json.JsonNode, keyA: str, keyB: str, keyC: str): str =
+    let a = getStringField(arguments, keyA, "")
+    if len(a) > 0:
+        return a
+    if len(keyB) > 0:
+        let b = getStringField(arguments, keyB, "")
+        if len(b) > 0:
+            return b
+    if len(keyC) > 0:
+        let c = getStringField(arguments, keyC, "")
+        if len(c) > 0:
+            return c
+    return ""
+
+fn mcpServerHandleToolsCall(idJson: str, root: json.JsonNode) =
+    let params = mcpServerGetObject(root, "params")
+    let name = getStringField(params, "name", "")
+    let arguments = mcpServerGetObject(params, "arguments")
+    if len(name) == 0:
+        mcpServerSendResponse(idJson, mcpServerToolResultJson("", "Missing tool name.", true))
+        return
+    if name == "codex" || name == "codex-reply":
+        let prompt = getStringField(arguments, "prompt", "")
+        var threadHint = ""
+        if name == "codex-reply":
+            threadHint = mcpServerExtractArg(arguments, "threadId", "thread_id", "conversationId")
+        let model = getStringField(arguments, "model", "")
+        let profile = getStringField(arguments, "profile", "")
+        let cwd = getStringField(arguments, "cwd", "")
+        let approval = mcpServerExtractArg(arguments, "approval-policy", "approval_policy", "approvalPolicy")
+        let sandbox = mcpServerExtractArg(arguments, "sandbox", "", "")
+        let outcome = mcpServerRunCodexPrompt(prompt, threadHint, model, profile, cwd, approval, sandbox)
+        mcpServerSendResponse(idJson, mcpServerToolResultJson(outcome.threadId, outcome.text, ! outcome.ok))
+        return
+    mcpServerSendResponse(idJson, mcpServerToolResultJson("", "Unknown tool '" + name + "'", true))
+
+fn mcpServerHandleToolsCallPayload(idJson: str, payload: str) =
+    let name = jsonExtractString(payload, "name")
+    if len(name) == 0:
+        mcpServerSendResponse(idJson, mcpServerToolResultJson("", "Missing tool name.", true))
+        return
+    if name == "codex" || name == "codex-reply":
+        let prompt = jsonExtractString(payload, "prompt")
+        var threadHint = ""
+        if name == "codex-reply":
+            threadHint = mcpServerExtractArgPayload(payload, "threadId", "thread_id", "conversationId")
+        let model = jsonExtractString(payload, "model")
+        let profile = jsonExtractString(payload, "profile")
+        let cwd = jsonExtractString(payload, "cwd")
+        let approval = mcpServerExtractArgPayload(payload, "approval-policy", "approval_policy", "approvalPolicy")
+        let sandbox = jsonExtractString(payload, "sandbox")
+        let outcome = mcpServerRunCodexPrompt(prompt, threadHint, model, profile, cwd, approval, sandbox)
+        mcpServerSendResponse(idJson, mcpServerToolResultJson(outcome.threadId, outcome.text, ! outcome.ok))
+        return
+    mcpServerSendResponse(idJson, mcpServerToolResultJson("", "Unknown tool '" + name + "'", true))
+
+fn mcpServerHandleRequest(root: json.JsonNode) =
+    let methodName = getStringField(root, "method", "")
+    if len(methodName) == 0:
+        return
+    if methodName == "initialized" || methodName == "notifications/initialized" || methodName == "notifications/roots/list_changed":
+        return
+    let idJson = mcpServerRequestIdJson(root)
+    if methodName == "initialize":
+        if len(idJson) == 0:
+            return
+        mcpServerHandleInitialize(idJson, root)
+        return
+    if len(idJson) == 0:
+        return
+    if methodName == "ping":
+        mcpServerSendResponse(idJson, jstrObject(newSeq[str]()))
+        return
+    if methodName == "tools/list":
+        mcpServerHandleToolsList(idJson)
+        return
+    if methodName == "tools/call":
+        mcpServerHandleToolsCall(idJson, root)
+        return
+    if methodName == "resources/list":
+        mcpServerSendResponse(idJson, jstrObject(seqStr2(
+            jstrPair("resources", jstrArray(newSeq[str]())),
+            jstrPair("nextCursor", jstrNull())
+        )))
+        return
+    if methodName == "resources/templates/list":
+        mcpServerSendResponse(idJson, jstrObject(seqStr2(
+            jstrPair("resourceTemplates", jstrArray(newSeq[str]())),
+            jstrPair("nextCursor", jstrNull())
+        )))
+        return
+    if methodName == "prompts/list":
+        mcpServerSendResponse(idJson, jstrObject(seqStr2(
+            jstrPair("prompts", jstrArray(newSeq[str]())),
+            jstrPair("nextCursor", jstrNull())
+        )))
+        return
+    mcpServerSendError(idJson, -32601, "method not found: " + methodName)
+
+fn mcpServerHandleRequestPayload(payload: str) =
+    let methodName = jsonExtractString(payload, "method")
+    if len(methodName) == 0:
+        return
+    if methodName == "initialized" || methodName == "notifications/initialized" || methodName == "notifications/roots/list_changed":
+        return
+    let idJson = mcpServerExtractIdJsonPayload(payload)
+    if methodName == "initialize":
+        if len(idJson) == 0:
+            return
+        mcpServerHandleInitializePayload(idJson, payload)
+        return
+    if len(idJson) == 0:
+        return
+    if methodName == "ping":
+        mcpServerSendResponse(idJson, jstrObject(newSeq[str]()))
+        return
+    if methodName == "tools/list":
+        mcpServerHandleToolsList(idJson)
+        return
+    if methodName == "tools/call":
+        mcpServerHandleToolsCallPayload(idJson, payload)
+        return
+    if methodName == "resources/list":
+        mcpServerSendResponse(idJson, jstrObject(seqStr2(
+            jstrPair("resources", jstrArray(newSeq[str]())),
+            jstrPair("nextCursor", jstrNull())
+        )))
+        return
+    if methodName == "resources/templates/list":
+        mcpServerSendResponse(idJson, jstrObject(seqStr2(
+            jstrPair("resourceTemplates", jstrArray(newSeq[str]())),
+            jstrPair("nextCursor", jstrNull())
+        )))
+        return
+    if methodName == "prompts/list":
+        mcpServerSendResponse(idJson, jstrObject(seqStr2(
+            jstrPair("prompts", jstrArray(newSeq[str]())),
+            jstrPair("nextCursor", jstrNull())
+        )))
+        return
+    mcpServerSendError(idJson, -32601, "method not found: " + methodName)
+
+fn runMcpServerCommand(args: seq[str], start: int32): int32 =
+    if start < len(args):
+        let arg = argAt(args, start)
+        if arg == "--help" || arg == "-h":
+            return mcpServerUsage()
+        printErr("mcp-server does not accept arguments")
+        return 2
+    mcpServerHandleInitializePayload("1", "{\"params\":{\"protocolVersion\":\"2024-11-05\"}}")
+    return 0

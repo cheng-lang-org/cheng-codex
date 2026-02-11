@@ -1,0 +1,414 @@
+# Collaboration agent helpers for codex-cheng
+
+import system
+import std/os
+import std/times
+import seqs
+
+type
+    CollabToolResult =
+        ok: bool
+        output: str
+
+    CollabAgentState =
+        id: str
+        threadId: str
+        pid: int32
+        statusKind: str
+        statusMessage: str
+        startedAt: int64
+        updatedAt: int64
+        outputPath: str
+
+    CollabAgentProfile =
+        instructions: str
+        model: str
+
+const
+    COLLAB_DEFAULT_TIMEOUT_MS = 30000
+    COLLAB_MAX_TIMEOUT_MS = 300000
+
+var collabAgentSeq: int32 = 1
+var collabSubmissionSeq: int32 = 1
+
+fn collabNowSeconds(): int64 =
+    return times.toUnix(times.now())
+
+fn collabAgentsDir(): str =
+    let home = codexHomeDir()
+    if len(home) == 0:
+        return ""
+    let dir = os.joinPath(home, "agents")
+    if ! os.dirExists(dir):
+        os.createDir(dir)
+    return dir
+
+fn collabStatePath(agentId: str): str =
+    let dir = collabAgentsDir()
+    if len(dir) == 0:
+        return ""
+    return os.joinPath(dir, agentId + ".json")
+
+fn collabOutputPath(agentId: str): str =
+    let dir = collabAgentsDir()
+    if len(dir) == 0:
+        return ""
+    return os.joinPath(dir, agentId + ".out")
+
+fn collabNextAgentId(): str =
+    let idx = collabAgentSeq
+    collabAgentSeq = collabAgentSeq + 1
+    let epoch = collabNowSeconds()
+    # Build incrementally to avoid deep temporary chains.
+    var out: str = "agent-"
+    out = out + int64ToStr(epoch)
+    out = out + "-"
+    out = out + intToStr(idx)
+    return out
+
+fn collabNextSubmissionId(): str =
+    let idx = collabSubmissionSeq
+    collabSubmissionSeq = collabSubmissionSeq + 1
+    let epoch = collabNowSeconds()
+    # Build incrementally to avoid deep temporary chains.
+    var out: str = "submission-"
+    out = out + int64ToStr(epoch)
+    out = out + "-"
+    out = out + intToStr(idx)
+    return out
+
+fn collabPreview(text: str): str =
+    let trimmed = trimLine(text)
+    if len(trimmed) == 0:
+        return ""
+    return shorten(trimmed, 80)
+
+fn collabWriteState(state: CollabAgentState) =
+    let path = collabStatePath(state.id)
+    if len(path) == 0:
+        return
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("id", jstrString(state.id)))
+    seqAdd(fields, jstrPair("thread_id", jstrString(state.threadId)))
+    seqAdd(fields, jstrPair("pid", intToStr(state.pid)))
+    seqAdd(fields, jstrPair("status", jstrString(state.statusKind)))
+    if len(state.statusMessage) > 0:
+        seqAdd(fields, jstrPair("status_message", jstrString(state.statusMessage)))
+    seqAdd(fields, jstrPair("started_at", int64ToStr(state.startedAt)))
+    seqAdd(fields, jstrPair("updated_at", int64ToStr(state.updatedAt)))
+    if len(state.outputPath) > 0:
+        seqAdd(fields, jstrPair("output_path", jstrString(state.outputPath)))
+    os.writeFile(path, jstrObject(fields))
+
+fn collabReadState(agentId: str, outState: var CollabAgentState): bool =
+    let path = collabStatePath(agentId)
+    if len(path) == 0 || ! os.fileExists(path):
+        return false
+    let content = os.readFile(path)
+    if len(content) == 0:
+        return false
+    outState.id = jsonExtractString(content, "id")
+    outState.threadId = jsonExtractString(content, "thread_id")
+    outState.pid = jsonExtractInt(content, "pid", 0)
+    outState.statusKind = jsonExtractString(content, "status")
+    outState.statusMessage = jsonExtractString(content, "status_message")
+    outState.startedAt = int64(jsonExtractInt(content, "started_at", 0))
+    outState.updatedAt = int64(jsonExtractInt(content, "updated_at", 0))
+    outState.outputPath = jsonExtractString(content, "output_path")
+    if len(outState.id) == 0:
+        outState.id = agentId
+    return true
+
+fn collabUpdateStatus(agentId: str, kind: str, message: str) =
+    var state = CollabAgentState(
+        id: agentId,
+        threadId: "",
+        pid: 0,
+        statusKind: "",
+        statusMessage: "",
+        startedAt: 0,
+        updatedAt: 0,
+        outputPath: ""
+    )
+    if ! collabReadState(agentId, state):
+        return
+    state.statusKind = kind
+    state.statusMessage = message
+    state.updatedAt = collabNowSeconds()
+    collabWriteState(state)
+
+fn collabIsFinalStatus(kind: str): bool =
+    let normalized = normalizePolicy(trimLine(kind))
+    if normalized == "pending_init" || normalized == "running":
+        return false
+    return true
+
+fn collabStatusJson(kind: str, message: str): str =
+    let normalized = normalizePolicy(trimLine(kind))
+    if normalized == "pending_init":
+        return jstrString("pending_init")
+    if normalized == "running":
+        return jstrString("running")
+    if normalized == "shutdown":
+        return jstrString("shutdown")
+    if normalized == "not_found":
+        return jstrString("not_found")
+    if normalized == "errored":
+        return jstrObject(seqStr1(jstrPair("errored", jstrString(message))))
+    if normalized == "completed":
+        if len(message) > 0:
+            return jstrObject(seqStr1(jstrPair("completed", jstrString(message))))
+        return jstrObject(seqStr1(jstrPair("completed", jstrNull())))
+    return jstrString("not_found")
+
+fn collabNormalizeAgentType(agentType: str): str =
+    let normalized = normalizePolicy(trimLine(agentType))
+    if normalized == "orchestrator":
+        return "orchestrator"
+    if normalized == "worker":
+        return "worker"
+    if normalized == "default":
+        return "default"
+    return "default"
+
+fn collabLoadPrompt(fileName: str): str =
+    let path = findPromptFile(fileName)
+    return loadPromptFile(path)
+
+fn collabOrchestratorInstructions(): str =
+    let text = collabLoadPrompt("orchestrator_prompt.md")
+    if len(text) > 0:
+        return text
+    return loadBaseInstructions()
+
+fn collabWorkerInstructions(): str =
+    let text = collabLoadPrompt("worker_prompt.md")
+    if len(text) > 0:
+        return text
+    return loadBaseInstructions()
+
+fn collabAgentProfile(agentType: str, defaultInstructions: str, defaultModel: str): CollabAgentProfile =
+    let normalized = collabNormalizeAgentType(agentType)
+    if normalized == "orchestrator":
+        return CollabAgentProfile(instructions: collabOrchestratorInstructions(), model: defaultModel)
+    if normalized == "worker":
+        let workerModel = "gpt-5.2-codex"
+        return CollabAgentProfile(instructions: collabWorkerInstructions(), model: workerModel)
+    return CollabAgentProfile(instructions: defaultInstructions, model: defaultModel)
+
+fn collabSleepMs(ms: int32) =
+    if ms <= 0:
+        return
+    let osKind = detectOsKind()
+    if osKind == "windows":
+        let cmd = "powershell -Command Start-Sleep -Milliseconds " + intToStr(ms)
+        let opts = {os.poEvalCommand}
+        os.execCmdEx(cmd, opts, os.getCurrentDir())
+        return
+    var seconds = ms / 1000
+    var remainder = ms - seconds * 1000
+    var arg = intToStr(seconds)
+    if remainder > 0:
+        arg = arg + "." + intToStr(remainder)
+    let cmd = "sleep " + arg
+    let opts = {os.poEvalCommand}
+    os.execCmdEx(cmd, opts, os.getCurrentDir())
+
+fn collabRunTurn(state: CollabAgentState, prompt: str, baseInstructions: str, developerInstructions: str, model: str, approvalPolicy: str, workDir: str, outputSchemaJson: str) =
+    let contextItems = threadContextItems(state.threadId)
+    let result = runTurn(prompt, contextItems, workDir, "exec", approvalPolicy, baseInstructions, developerInstructions, outputSchemaJson, false, false, false)
+    let inputItems = seqStr1(inputTokenText(prompt))
+    appendTurnEvent(state.threadId, prompt, inputItems, "codex-cheng", result.agentOutput, "", "", -1, "", "")
+    if len(state.outputPath) > 0 && len(result.agentOutput) > 0:
+        os.writeFile(state.outputPath, result.agentOutput)
+    if result.ok:
+        collabUpdateStatus(state.id, "completed", result.agentOutput)
+    else:
+        var errText: str = result.agentOutput
+        if len(result.agentText) > 0:
+            errText = result.agentText
+        collabUpdateStatus(state.id, "errored", errText)
+
+fn collabSpawnProcess(state: CollabAgentState, prompt: str, baseInstructions: str, developerInstructions: str, model: str, approvalPolicy: str, workDir: str, outputSchemaJson: str): int32 =
+    let osKind = detectOsKind()
+    if osKind == "macos" || osKind == "linux":
+        let pid = forkProcess()
+        if pid == 0:
+            collabRunTurn(state, prompt, baseInstructions, developerInstructions, model, approvalPolicy, workDir, outputSchemaJson)
+            exitProcess(0)
+        return pid
+    collabRunTurn(state, prompt, baseInstructions, developerInstructions, model, approvalPolicy, workDir, outputSchemaJson)
+    return 0
+
+fn collabSpawnAgent(argsJson: str, baseInstructions: str, developerInstructions: str, model: str, approvalPolicy: str, workDir: str): CollabToolResult =
+    var prompt = jsonExtractString(argsJson, "message")
+    if len(prompt) == 0:
+        prompt = jsonExtractString(argsJson, "prompt")
+    if len(trimLine(prompt)) == 0:
+        return CollabToolResult(ok: false, output: "missing agent message")
+    var agentType = jsonExtractString(argsJson, "agent_type")
+    if len(agentType) == 0:
+        agentType = jsonExtractString(argsJson, "agentType")
+    var fallbackInstructions: str = ""
+    if len(baseInstructions) > 0:
+        fallbackInstructions = baseInstructions
+    else:
+        fallbackInstructions = loadBaseInstructions()
+    var fallbackModel: str = ""
+    if len(model) > 0:
+        fallbackModel = model
+    else:
+        fallbackModel = loadModel()
+    let profile = collabAgentProfile(agentType, fallbackInstructions, fallbackModel)
+    let agentId = collabNextAgentId()
+    let outputPath = collabOutputPath(agentId)
+    let preview = collabPreview(prompt)
+    let threadId = createThread(preview, workDir, "collab")
+    var state = CollabAgentState(
+        id: agentId,
+        threadId: threadId,
+        pid: 0,
+        statusKind: "running",
+        statusMessage: "",
+        startedAt: collabNowSeconds(),
+        updatedAt: collabNowSeconds(),
+        outputPath: outputPath
+    )
+    collabWriteState(state)
+    let pid = collabSpawnProcess(state, prompt, profile.instructions, developerInstructions, profile.model, approvalPolicy, workDir, "")
+    if pid > 0:
+        state.pid = pid
+        collabWriteState(state)
+    let resultJson = jstrObject(seqStr1(jstrPair("agent_id", jstrString(agentId))))
+    return CollabToolResult(ok: true, output: resultJson)
+
+fn collabSendInput(argsJson: str, baseInstructions: str, developerInstructions: str, model: str, approvalPolicy: str, workDir: str): CollabToolResult =
+    var agentId = jsonExtractString(argsJson, "id")
+    if len(agentId) == 0:
+        agentId = jsonExtractString(argsJson, "agent_id")
+    let prompt = jsonExtractString(argsJson, "message")
+    if len(agentId) == 0:
+        return CollabToolResult(ok: false, output: "missing agent id")
+    if len(trimLine(prompt)) == 0:
+        return CollabToolResult(ok: false, output: "missing agent message")
+    var interrupt = false
+    if indexOfSubstr(argsJson, "\"interrupt\":true", 0) >= 0:
+        interrupt = true
+    var state = CollabAgentState(
+        id: agentId,
+        threadId: "",
+        pid: 0,
+        statusKind: "",
+        statusMessage: "",
+        startedAt: 0,
+        updatedAt: 0,
+        outputPath: ""
+    )
+    if ! collabReadState(agentId, state):
+        return CollabToolResult(ok: false, output: "agent not found")
+    let statusNorm = normalizePolicy(trimLine(state.statusKind))
+    let isRunning = statusNorm == "running" || statusNorm == "pending_init"
+    if isRunning && ! interrupt:
+        return CollabToolResult(ok: false, output: "agent is running")
+    if isRunning && interrupt && state.pid > 0:
+        killProcess(state.pid)
+        collabUpdateStatus(agentId, "errored", "Interrupted")
+    var fallbackInstructions: str = ""
+    if len(baseInstructions) > 0:
+        fallbackInstructions = baseInstructions
+    else:
+        fallbackInstructions = loadBaseInstructions()
+    var fallbackModel: str = ""
+    if len(model) > 0:
+        fallbackModel = model
+    else:
+        fallbackModel = loadModel()
+    let profile = collabAgentProfile("default", fallbackInstructions, fallbackModel)
+    state.statusKind = "running"
+    state.statusMessage = ""
+    state.updatedAt = collabNowSeconds()
+    collabWriteState(state)
+    let pid = collabSpawnProcess(state, prompt, profile.instructions, developerInstructions, profile.model, approvalPolicy, workDir, "")
+    if pid > 0:
+        state.pid = pid
+        collabWriteState(state)
+    let submissionId = collabNextSubmissionId()
+    let resultJson = jstrObject(seqStr1(jstrPair("submission_id", jstrString(submissionId))))
+    return CollabToolResult(ok: true, output: resultJson)
+
+fn collabWaitAgents(argsJson: str): CollabToolResult =
+    let ids = jsonExtractStringArray(argsJson, "ids")
+    if len(ids) == 0:
+        return CollabToolResult(ok: false, output: "ids must be non-empty")
+    var timeoutMs = jsonExtractInt(argsJson, "timeout_ms", COLLAB_DEFAULT_TIMEOUT_MS)
+    if timeoutMs <= 0:
+        timeoutMs = COLLAB_DEFAULT_TIMEOUT_MS
+    if timeoutMs > COLLAB_MAX_TIMEOUT_MS:
+        timeoutMs = COLLAB_MAX_TIMEOUT_MS
+    let startSec = collabNowSeconds()
+    let deadline = startSec + int64((timeoutMs + 999) / 1000)
+    while true:
+        var statusPairs: seq[str] = newSeq[str]()
+        var idx: int32 = 0
+        while idx < len(ids):
+            let agentId = ids[idx]
+            var state = CollabAgentState(
+                id: agentId,
+                threadId: "",
+                pid: 0,
+                statusKind: "",
+                statusMessage: "",
+                startedAt: 0,
+                updatedAt: 0,
+                outputPath: ""
+            )
+            if collabReadState(agentId, state):
+                if collabIsFinalStatus(state.statusKind):
+                    let statusJson = collabStatusJson(state.statusKind, state.statusMessage)
+                    seqAdd(statusPairs, jstrPair(agentId, statusJson))
+            else:
+                let statusJson = collabStatusJson("not_found", "")
+                seqAdd(statusPairs, jstrPair(agentId, statusJson))
+            idx = idx + 1
+        if len(statusPairs) > 0:
+            let resultJson = jstrObject(seqStr2(
+                jstrPair("status", jstrObject(statusPairs)),
+                jstrPair("timed_out", jstrBool(false))
+            ))
+            return CollabToolResult(ok: true, output: resultJson)
+        if collabNowSeconds() >= deadline:
+            let resultJson = jstrObject(seqStr2(
+                jstrPair("status", jstrObject(newSeq[str]())),
+                jstrPair("timed_out", jstrBool(true))
+            ))
+            return CollabToolResult(ok: true, output: resultJson)
+        collabSleepMs(250)
+
+fn collabCloseAgent(argsJson: str): CollabToolResult =
+    var agentId = jsonExtractString(argsJson, "id")
+    if len(agentId) == 0:
+        agentId = jsonExtractString(argsJson, "agent_id")
+    if len(agentId) == 0:
+        return CollabToolResult(ok: false, output: "missing agent id")
+    var state = CollabAgentState(
+        id: agentId,
+        threadId: "",
+        pid: 0,
+        statusKind: "",
+        statusMessage: "",
+        startedAt: 0,
+        updatedAt: 0,
+        outputPath: ""
+    )
+    if ! collabReadState(agentId, state):
+        let resultJson = jstrObject(seqStr1(jstrPair("status", collabStatusJson("not_found", ""))))
+        return CollabToolResult(ok: true, output: resultJson)
+    let statusNorm = normalizePolicy(trimLine(state.statusKind))
+    if statusNorm == "running" || statusNorm == "pending_init":
+        if state.pid > 0:
+            killProcess(state.pid)
+        collabUpdateStatus(agentId, "shutdown", "")
+        state.statusKind = "shutdown"
+    let statusJson = collabStatusJson(state.statusKind, state.statusMessage)
+    let resultJson = jstrObject(seqStr1(jstrPair("status", statusJson)))
+    return CollabToolResult(ok: true, output: resultJson)

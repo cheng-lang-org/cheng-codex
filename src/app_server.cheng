@@ -1,0 +1,2658 @@
+# App-server command
+
+import system
+import std/os
+import seqs
+import cheng/runtime/json_ast as json
+import cheng/codex/common
+
+fn ord(ch: char): int32 =
+    return int32(ch)
+
+type
+    ServerState =
+        initialized: bool
+        threadId: str
+        turnId: str
+        loadedThreadIds: seq[str]
+        itemSeq: int32
+        requestSeq: int32
+        cwd: str
+        model: str
+        reviewModel: str
+        approvalPolicy: str
+        sandboxMode: str
+        baseInstructions: str
+        developerInstructions: str
+        reasoningEffort: str
+        loginIds: seq[str]
+        loginPids: seq[int32]
+        loginPorts: seq[int32]
+        approvalKeys: seq[str]
+
+type
+    FuzzyResult =
+        root: str
+        path: str
+        fileName: str
+        score: int32
+        indices: seq[int32]
+        hasIndices: bool
+    ApprovalDecision =
+        decision: str
+        forSession: bool
+        execpolicyAmendment: seq[str]
+    TurnInfo =
+        threadId: str
+        turnId: str
+
+const FUZZY_LIMIT_PER_ROOT = 50
+const FUZZY_MAX_SCAN = 20000
+
+fn stdoutWriteLine(line: str) =
+    os.writeLine(os.get_stdout(), line)
+    c_fflush(os.get_stdout())
+
+fn jsonRpcEvent(methodName: str, paramsJson: str): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
+    seqAdd(fields, jstrPair("method", jstrString(methodName)))
+    if len(paramsJson) > 0:
+        seqAdd(fields, jstrPair("params", paramsJson))
+    return jstrObject(fields)
+
+fn jsonRpcResponse(id: int32, resultJson: str): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
+    seqAdd(fields, jstrPair("id", intToStr(id)))
+    if len(resultJson) > 0:
+        seqAdd(fields, jstrPair("result", resultJson))
+    else:
+        seqAdd(fields, jstrPair("result", jstrObject(newSeq[str]())))
+    return jstrObject(fields)
+
+fn jsonRpcRequest(id: int32, methodName: str, paramsJson: str): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
+    seqAdd(fields, jstrPair("id", intToStr(id)))
+    seqAdd(fields, jstrPair("method", jstrString(methodName)))
+    if len(paramsJson) > 0:
+        seqAdd(fields, jstrPair("params", paramsJson))
+    return jstrObject(fields)
+
+fn jsonRpcError(id: int32, code: int32, message: str): str =
+    var errFields: seq[str] = newSeq[str]()
+    seqAdd(errFields, jstrPair("code", intToStr(code)))
+    seqAdd(errFields, jstrPair("message", jstrString(message)))
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
+    seqAdd(fields, jstrPair("id", intToStr(id)))
+    seqAdd(fields, jstrPair("error", jstrObject(errFields)))
+    return jstrObject(fields)
+
+fn sendEvent(methodName: str, paramsJson: str) =
+    stdoutWriteLine(jsonRpcEvent(methodName, paramsJson))
+
+fn sendResponse(id: int32, resultJson: str) =
+    if id <= 0:
+        return
+    stdoutWriteLine(jsonRpcResponse(id, resultJson))
+
+fn sendRequest(id: int32, methodName: str, paramsJson: str) =
+    if id <= 0:
+        return
+    stdoutWriteLine(jsonRpcRequest(id, methodName, paramsJson))
+
+fn sendError(id: int32, message: str) =
+    if id <= 0:
+        return
+    stdoutWriteLine(jsonRpcError(id, -32602, message))
+
+fn extractInputText(payload: str): str =
+    let direct = jsonExtractString(payload, "text")
+    if len(direct) > 0:
+        return direct
+    let inputIdx = jsonFindKeyAfter(payload, "input", 0)
+    if inputIdx >= 0:
+        return jsonExtractStringAfter(payload, "text", inputIdx)
+    return ""
+
+fn jsonFindObjectEnd(payload: str, startIdx: int32): int32 =
+    if startIdx < 0:
+        return -1
+    var idx = startIdx
+    var depth = 0
+    var inString = false
+    while idx < len(payload):
+        let ch = payload[idx]
+        if inString:
+            if ch == '\\' && idx + 1 < len(payload):
+                idx = idx + 2
+                continue
+            if ch == '"':
+                inString = false
+            idx = idx + 1
+            continue
+        if ch == '"':
+            inString = true
+        elif ch == '{':
+            depth = depth + 1
+        elif ch == '}':
+            depth = depth - 1
+            if depth == 0:
+                return idx
+        idx = idx + 1
+    return -1
+
+fn extractInputTokens(payload: str): seq[str] =
+    var outVal: seq[str] = newSeq[str]()
+    let inputIdx = jsonFindKeyAfter(payload, "input", 0)
+    if inputIdx < 0:
+        return outVal
+    var idx: int32 = indexOfSubstr(payload, ":", inputIdx + len("input") + 2)
+    if idx < 0:
+        return outVal
+    idx = jsonSkipSpaces(payload, idx + 1)
+    if idx >= len(payload):
+        return outVal
+    let ch = payload[idx]
+    if ch == '[':
+        idx = idx + 1
+        while idx < len(payload):
+            idx = jsonSkipSpaces(payload, idx)
+            if idx >= len(payload):
+                break
+            let c = payload[idx]
+            if c == ']':
+                break
+            if c != '{':
+                idx = idx + 1
+                continue
+            let endIdx = jsonFindObjectEnd(payload, idx)
+            if endIdx < 0:
+                break
+            let obj = __cheng_slice_string(payload, idx, endIdx, false)
+            let kind = normalizePolicy(jsonExtractString(obj, "type"))
+            if kind == "text":
+                let text = jsonExtractString(obj, "text")
+                if len(text) > 0:
+                    seqAdd(outVal, inputTokenText(text))
+            elif kind == "localimage" || kind == "local_image":
+                let path = jsonExtractString(obj, "path")
+                if len(path) > 0:
+                    seqAdd(outVal, inputTokenLocalImage(path))
+            elif kind == "image":
+                var url = jsonExtractString(obj, "url")
+                if len(url) == 0:
+                    url = jsonExtractString(obj, "image_url")
+                if len(url) > 0:
+                    seqAdd(outVal, inputTokenImageUrl(url))
+            elif kind == "skill":
+                let name = jsonExtractString(obj, "name")
+                let path = jsonExtractString(obj, "path")
+                if len(name) > 0 && len(path) > 0:
+                    seqAdd(outVal, inputTokenSkill(name, path))
+            idx = endIdx + 1
+        return outVal
+    if ch == '{':
+        let endIdx = jsonFindObjectEnd(payload, idx)
+        if endIdx < 0:
+            return outVal
+        let obj = __cheng_slice_string(payload, idx, endIdx, false)
+        let kind = normalizePolicy(jsonExtractString(obj, "type"))
+        if kind == "skill":
+            let name = jsonExtractString(obj, "name")
+            let path = jsonExtractString(obj, "path")
+            if len(name) > 0 && len(path) > 0:
+                seqAdd(outVal, inputTokenSkill(name, path))
+            return outVal
+        let text = jsonExtractString(obj, "text")
+        if len(text) > 0:
+            seqAdd(outVal, inputTokenText(text))
+        let path = jsonExtractString(obj, "path")
+        if len(path) > 0:
+            seqAdd(outVal, inputTokenLocalImage(path))
+        var url = jsonExtractString(obj, "url")
+        if len(url) == 0:
+            url = jsonExtractString(obj, "image_url")
+        if len(url) > 0:
+            seqAdd(outVal, inputTokenImageUrl(url))
+    return outVal
+
+fn extractPreview(payload: str): str =
+    let direct = jsonExtractString(payload, "preview")
+    if len(direct) > 0:
+        return direct
+    return ""
+
+fn extractPlanItems(payload: str): seq[str] =
+    var items: seq[str] = newSeq[str]()
+    var idx: int32 = 0
+    while idx < len(payload):
+        let stepIdx = jsonFindKeyAfter(payload, "step", idx)
+        if stepIdx < 0:
+            break
+        let stepText = jsonExtractStringAfter(payload, "step", stepIdx)
+        let statusText = jsonExtractStringAfter(payload, "status", stepIdx)
+        if len(stepText) > 0:
+            var fields: seq[str] = newSeq[str]()
+            seqAdd(fields, jstrPair("step", jstrString(stepText)))
+            if len(statusText) > 0:
+                seqAdd(fields, jstrPair("status", jstrString(statusText)))
+            seqAdd(items, jstrObject(fields))
+        idx = stepIdx + 4
+    return items
+
+fn fileNameStartIndex(path: str): int32 =
+    if len(path) == 0:
+        return 0
+    var idx: int32 = len(path) - 1
+    while idx >= 0:
+        let ch = path[idx]
+        if ch == '/' || ch == '\\':
+            return idx + 1
+        idx = idx - 1
+    return 0
+
+fn fileNameFromPath(path: str): str =
+    if len(path) == 0:
+        return ""
+    let start = fileNameStartIndex(path)
+    if start <= 0:
+        return path
+    if start >= len(path):
+        return ""
+    return __cheng_slice_string(path, start, len(path) - 1, false)
+
+fn fuzzyMatchIndicesLower(textLower: str, queryLower: str, outIndices: var seq[int32]): bool =
+    outIndices = newSeq[int32]()
+    if len(textLower) == 0 || len(queryLower) == 0:
+        return false
+    var t: int32 = 0
+    var q: int32 = 0
+    while t < len(textLower) && q < len(queryLower):
+        if ord(textLower[t]) == ord(queryLower[q]):
+            seqAdd(outIndices, t)
+            q = q + 1
+        t = t + 1
+    return q == len(queryLower)
+
+fn fuzzyScoreFromIndices(indices: seq[int32], textLen: int32, queryLen: int32): int32 =
+    if len(indices) == 0:
+        return -1
+    var gaps: int32 = 0
+    var prev: int32 = -1
+    var idx: int32 = 0
+    while idx < len(indices):
+        let pos = indices[idx]
+        if prev >= 0:
+            gaps = gaps + (pos - prev - 1)
+        prev = pos
+        idx = idx + 1
+    let start = indices[0]
+    let lengthPenalty = textLen - queryLen
+    let score = 1000 - gaps - start * 2 - lengthPenalty
+    if score < 0:
+        return 0
+    return score
+
+fn offsetIndices(indices: seq[int32], offset: int32): seq[int32] =
+    var outVal: seq[int32] = newSeq[int32]()
+    var idx: int32 = 0
+    while idx < len(indices):
+        seqAdd(outVal, indices[idx] + offset)
+        idx = idx + 1
+    return outVal
+
+fn fuzzyBestMatch(path: str, queryLower: str, outScore: var int32, outIndices: var seq[int32], outHasIndices: var bool): bool =
+    outScore = -1
+    outIndices = newSeq[int32]()
+    outHasIndices = false
+    if len(path) == 0 || len(queryLower) == 0:
+        return false
+    let fileName = fileNameFromPath(path)
+    let fileNameLower = normalizePolicy(fileName)
+    var nameIndices: seq[int32] = newSeq[int32]()
+    if fuzzyMatchIndicesLower(fileNameLower, queryLower, nameIndices):
+        let score = fuzzyScoreFromIndices(nameIndices, len(fileName), len(queryLower))
+        let start = fileNameStartIndex(path)
+        outScore = score + 1000
+        outIndices = offsetIndices(nameIndices, start)
+        outHasIndices = true
+        return true
+    let pathLower = normalizePolicy(path)
+    var pathIndices: seq[int32] = newSeq[int32]()
+    if fuzzyMatchIndicesLower(pathLower, queryLower, pathIndices):
+        let score = fuzzyScoreFromIndices(pathIndices, len(path), len(queryLower))
+        outScore = score
+        outIndices = pathIndices
+        outHasIndices = true
+        return true
+    return false
+
+fn fuzzyResultBetter(left: FuzzyResult, right: FuzzyResult): bool =
+    if left.score > right.score:
+        return true
+    if left.score < right.score:
+        return false
+    return left.path < right.path
+
+fn hasInt32Item(items: seq[int32], value: int32): bool =
+    var idx: int32 = 0
+    while idx < len(items):
+        if items[idx] == value:
+            return true
+        idx = idx + 1
+    return false
+
+fn sortFuzzyResults(items: var seq[FuzzyResult]) =
+    let total = len(items)
+    if total <= 1:
+        return
+    var used: seq[int32] = newSeq[int32]()
+    var sorted: seq[FuzzyResult] = newSeq[FuzzyResult]()
+    while len(sorted) < total:
+        var found = false
+        var bestIdx: int32 = 0
+        var idx: int32 = 0
+        while idx < total:
+            if hasInt32Item(used, idx):
+                idx = idx + 1
+                continue
+            if !found:
+                bestIdx = idx
+                found = true
+            elif fuzzyResultBetter(items[idx], items[bestIdx]):
+                bestIdx = idx
+            idx = idx + 1
+        if !found:
+            break
+        seqAdd(used, bestIdx)
+        seqAdd(sorted, items[bestIdx])
+    items = sorted
+
+fn shrinkFuzzyResults(items: var seq[FuzzyResult], newLen: int32) =
+    if newLen <= 0:
+        items = newSeq[FuzzyResult]()
+        return
+    if newLen >= len(items):
+        return
+    var outVal: seq[FuzzyResult] = newSeq[FuzzyResult]()
+    var idx: int32 = 0
+    while idx < newLen:
+        seqAdd(outVal, items[idx])
+        idx = idx + 1
+    items = outVal
+
+fn fuzzyIgnoredPath(path: str): bool =
+    if len(path) == 0:
+        return true
+    let lowered = normalizePolicy(path)
+    if indexOfSubstr(lowered, "/.git/", 0) >= 0 || indexOfSubstr(lowered, "\\.git\\", 0) >= 0:
+        return true
+    if indexOfSubstr(lowered, "/node_modules/", 0) >= 0 || indexOfSubstr(lowered, "\\node_modules\\", 0) >= 0:
+        return true
+    if indexOfSubstr(lowered, "/target/", 0) >= 0 || indexOfSubstr(lowered, "\\target\\", 0) >= 0:
+        return true
+    if indexOfSubstr(lowered, "/.codex", 0) >= 0 || indexOfSubstr(lowered, "\\.codex", 0) >= 0:
+        return true
+    return false
+
+fn runFuzzyFileSearch(query: str, roots: seq[str]): seq[FuzzyResult] =
+    var results: seq[FuzzyResult] = newSeq[FuzzyResult]()
+    let trimmedQuery = trimLine(query)
+    if len(trimmedQuery) == 0:
+        return results
+    let queryLower = normalizePolicy(trimmedQuery)
+    var r: int32 = 0
+    while r < len(roots):
+        let root = roots[r]
+        if len(root) == 0 || ! os.dirExists(root):
+            r = r + 1
+            continue
+        let files = os.walkDirRec(root)
+        var rootResults: seq[FuzzyResult] = newSeq[FuzzyResult]()
+        var scanned: int32 = 0
+        var idx: int32 = 0
+        while idx < len(files):
+            let path = files[idx]
+            if fuzzyIgnoredPath(path):
+                idx = idx + 1
+                continue
+            if os.dirExists(path):
+                idx = idx + 1
+                continue
+            scanned = scanned + 1
+            if scanned > FUZZY_MAX_SCAN:
+                break
+            var score: int32 = -1
+            var indices: seq[int32] = newSeq[int32]()
+            var hasIndices = false
+            if fuzzyBestMatch(path, queryLower, score, indices, hasIndices):
+                let name = fileNameFromPath(path)
+                let item = FuzzyResult(
+                    root: root,
+                    path: path,
+                    fileName: name,
+                    score: score,
+                    indices: indices,
+                    hasIndices: hasIndices
+                )
+                seqAdd(rootResults, item)
+            idx = idx + 1
+        sortFuzzyResults(rootResults)
+        if len(rootResults) > FUZZY_LIMIT_PER_ROOT:
+            shrinkFuzzyResults(rootResults, FUZZY_LIMIT_PER_ROOT)
+        var ri: int32 = 0
+        while ri < len(rootResults):
+            seqAdd(results, rootResults[ri])
+            ri = ri + 1
+        r = r + 1
+    sortFuzzyResults(results)
+    return results
+
+fn fuzzyResultJson(item: FuzzyResult): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("root", jstrString(item.root)))
+    seqAdd(fields, jstrPair("path", jstrString(item.path)))
+    seqAdd(fields, jstrPair("fileName", jstrString(item.fileName)))
+    var score = item.score
+    if score < 0:
+        score = 0
+    seqAdd(fields, jstrPair("score", intToStr(score)))
+    if item.hasIndices && len(item.indices) > 0:
+        var indicesJson: seq[str] = newSeq[str]()
+        var idx: int32 = 0
+        while idx < len(item.indices):
+            seqAdd(indicesJson, intToStr(item.indices[idx]))
+            idx = idx + 1
+        seqAdd(fields, jstrPair("indices", jstrArray(indicesJson)))
+    else:
+        seqAdd(fields, jstrPair("indices", jstrNull()))
+    return jstrObject(fields)
+
+fn resolveModelProvider(): str =
+    let rawProvider = readConfigValue "model_provider"
+    let provider = trimLine rawProvider
+    if len(provider) > 0:
+        return provider
+    return "openai"
+
+fn extractClientInfo(payload: str, name: var str, version: var str) =
+    name = ""
+    version = ""
+    var key = "clientInfo"
+    var keyIdx = jsonFindKeyAfter(payload, key, 0)
+    if keyIdx < 0:
+        key = "client_info"
+        keyIdx = jsonFindKeyAfter(payload, key, 0)
+    if keyIdx < 0:
+        return
+    var idx: int32 = indexOfSubstr(payload, ":", keyIdx + len(key) + 2)
+    if idx < 0:
+        return
+    idx = jsonSkipSpaces(payload, idx + 1)
+    if idx >= len(payload) || payload[idx] != '{':
+        return
+    let endIdx = jsonFindObjectEnd(payload, idx)
+    if endIdx < 0:
+        return
+    let obj = __cheng_slice_string(payload, idx, endIdx, false)
+    name = jsonExtractString(obj, "name")
+    version = jsonExtractString(obj, "version")
+
+fn buildUserAgent(payload: str): str =
+    var name = ""
+    var version = ""
+    extractClientInfo(payload, name, version)
+    let rawOriginator = os.getEnv "CODEX_INTERNAL_ORIGINATOR_OVERRIDE"
+    var originator = trimLine rawOriginator
+    if len(originator) == 0:
+        if len(name) > 0:
+            originator = name
+        else:
+            originator = "codex-cheng"
+    # Build incrementally to avoid deep temporary chains.
+    var agent: str = originator
+    agent = agent + "/"
+    agent = agent + CODEX_VERSION
+    if len(name) > 0 || len(version) > 0:
+        var label: str = originator
+        if len(name) > 0:
+            label = name
+        if len(version) > 0:
+            agent = agent + " ("
+            agent = agent + label
+            agent = agent + "; "
+            agent = agent + version
+            agent = agent + ")"
+        else:
+            agent = agent + " ("
+            agent = agent + label
+            agent = agent + ")"
+    return agent
+
+fn sandboxNetworkDisabled(): bool =
+    let rawEnv = os.getEnv "CODEX_SANDBOX_NETWORK_DISABLED"
+    let trimmedEnv = trimLine rawEnv
+    let env = normalizePolicy trimmedEnv
+    return env == "1" || env == "true" || env == "yes"
+
+fn sandboxPolicyJson(mode: str, cwd: str): str =
+    var norm = normalizeSandboxMode mode
+    if len(norm) == 0:
+        norm = "danger-full-access"
+    if norm == "read-only":
+        return jstrObject seqStr1(jstrPair("type", jstrString "readOnly"))
+    if norm == "workspace-write":
+        var roots: seq[str] = newSeq[str]()
+        if len(cwd) > 0:
+            seqAdd(roots, jstrString cwd)
+        let networkEnabled = !sandboxNetworkDisabled()
+        var fields: seq[str] = newSeq[str]()
+        seqAdd(fields, jstrPair("type", jstrString "workspaceWrite"))
+        seqAdd(fields, jstrPair("writableRoots", jstrArray roots))
+        seqAdd(fields, jstrPair("networkAccess", jstrBool networkEnabled))
+        seqAdd(fields, jstrPair("excludeTmpdirEnvVar", jstrBool false))
+        seqAdd(fields, jstrPair("excludeSlashTmp", jstrBool false))
+        return jstrObject fields
+    if norm == "external-sandbox" || norm == "externalsandbox":
+        var access: str = "enabled"
+        if sandboxNetworkDisabled():
+            access = "restricted"
+        return jstrObject seqStr2(
+            jstrPair("type", jstrString "externalSandbox"),
+            jstrPair("networkAccess", jstrString access)
+        )
+    return jstrObject seqStr1(jstrPair("type", jstrString "dangerFullAccess"))
+
+fn defaultReasoningEffortOptionsJson(): str =
+    var options: seq[str] = newSeq[str]()
+    seqAdd(options, jstrObject seqStr2(
+        jstrPair("reasoningEffort", jstrString "low"),
+        jstrPair("description", jstrString "Fast responses with lighter reasoning")
+    ))
+    seqAdd(options, jstrObject seqStr2(
+        jstrPair("reasoningEffort", jstrString "medium"),
+        jstrPair("description", jstrString "Balances speed and reasoning depth for everyday tasks")
+    ))
+    seqAdd(options, jstrObject seqStr2(
+        jstrPair("reasoningEffort", jstrString "high"),
+        jstrPair("description", jstrString "Greater reasoning depth for complex problems")
+    ))
+    seqAdd(options, jstrObject seqStr2(
+        jstrPair("reasoningEffort", jstrString "xhigh"),
+        jstrPair("description", jstrString "Extra high reasoning depth for complex problems")
+    ))
+    return jstrArray options
+
+fn buildThreadFields(threadId: str): seq[str] =
+    var header = readThreadHeader(threadId)
+    var preview = ""
+    var createdAt = 0
+    var updatedAt = 0
+    var cwd = ""
+    var source = "unknown"
+    if len(header) > 0:
+        preview = jsonExtractString(header, "preview")
+        createdAt = jsonExtractInt(header, "createdAt", 0)
+        updatedAt = createdAt
+        let headerCwd = jsonExtractString(header, "cwd")
+        if len(headerCwd) > 0:
+            cwd = headerCwd
+        let headerSource = jsonExtractString(header, "source")
+        if len(headerSource) > 0:
+            source = headerSource
+    let provider = resolveModelProvider()
+    let threadPath = threadFilePath threadId
+    var threadFields: seq[str] = newSeq[str]()
+    seqAdd(threadFields, jstrPair("id", jstrString threadId))
+    seqAdd(threadFields, jstrPair("preview", jstrString preview))
+    seqAdd(threadFields, jstrPair("modelProvider", jstrString provider))
+    seqAdd(threadFields, jstrPair("createdAt", intToStr createdAt))
+    seqAdd(threadFields, jstrPair("updatedAt", intToStr updatedAt))
+    seqAdd(threadFields, jstrPair("path", jstrString threadPath))
+    seqAdd(threadFields, jstrPair("cwd", jstrString cwd))
+    seqAdd(threadFields, jstrPair("cliVersion", jstrString CODEX_VERSION))
+    seqAdd(threadFields, jstrPair("source", jstrString source))
+    seqAdd(threadFields, jstrPair("gitInfo", jstrNull()))
+    return threadFields
+
+fn buildThreadObject(threadId: str): str =
+    var threadFields = buildThreadFields(threadId)
+    seqAdd(threadFields, jstrPair("turns", jstrArray newSeq[str]()))
+    return jstrObject threadFields
+
+fn buildThreadObjectWithTurns(threadId: str, turns: seq[str]): str =
+    var threadFields = buildThreadFields(threadId)
+    seqAdd(threadFields, jstrPair("turns", jstrArray turns))
+    return jstrObject threadFields
+
+fn buildTurnObject(turnId: str, status: str): str =
+    var turnFields: seq[str] = newSeq[str]()
+    seqAdd(turnFields, jstrPair("id", jstrString turnId))
+    seqAdd(turnFields, jstrPair("items", jstrArray newSeq[str]()))
+    if len(status) > 0:
+        seqAdd(turnFields, jstrPair("status", jstrString status))
+    seqAdd(turnFields, jstrPair("error", jstrNull()))
+    return jstrObject turnFields
+
+fn loadSandboxMode(): str =
+    let env = os.getEnv("CODEX_SANDBOX_MODE")
+    if len(env) > 0:
+        return env
+    let cfg = readConfigValue("sandbox_mode")
+    if len(cfg) > 0:
+        return cfg
+    return "danger-full-access"
+
+fn normalizeSandboxMode(mode: str): str =
+    let normalized = normalizePolicy(trimLine(mode))
+    if len(normalized) == 0:
+        return ""
+    if normalized == "read-only" || normalized == "readonly":
+        return "read-only"
+    if normalized == "workspace-write" || normalized == "workspacewrite":
+        return "workspace-write"
+    if normalized == "danger-full-access" || normalized == "dangerfullaccess":
+        return "danger-full-access"
+    return normalized
+
+fn extractSandboxMode(payload: str): str =
+    let direct = jsonExtractString(payload, "sandbox")
+    if len(direct) > 0:
+        return direct
+    let policyIdx = jsonFindKeyAfter(payload, "sandboxPolicy", 0)
+    if policyIdx >= 0:
+        let policyType = jsonExtractStringAfter(payload, "type", policyIdx)
+        if len(policyType) > 0:
+            return policyType
+    return ""
+
+fn providerRequiresOpenaiAuth(): bool =
+    let provider = normalizePolicy(trimLine(readConfigValue("model_provider")))
+    if len(provider) == 0 || provider == "openai":
+        return true
+    return false
+
+fn startChatgptLogin(state: var ServerState, issuer: str, clientId: str, workspaceId: str, loginId: var str, authUrl: var str, err: var str): bool =
+    loginId = ""
+    authUrl = ""
+    var bindErr = ""
+    var port: int32 = 0
+    let listenerFd = bindLoginListener(1455, port, bindErr)
+    if listenerFd < 0:
+        err = bindErr
+        return false
+    let sess = createLoginSession(issuer, clientId, workspaceId, port)
+    loginId = sess.state
+    authUrl = sess.authUrl
+    let pid = forkProcess()
+    if pid == 0:
+        var childErr = ""
+        let ok = runLoginServerLoop(listenerFd, sess, false, childErr)
+        if ok:
+            let done = jstrObject(seqStr2(
+                jstrPair("loginId", jstrString(sess.state)),
+                jstrPair("success", jstrBool(true))
+            ))
+            stdoutWriteLine(jsonRpcEvent("account/login/completed", done))
+            stdoutWriteLine(jsonRpcEvent("account/updated", jstrObject(seqStr1(jstrPair("authMode", jstrString("chatgpt"))))))
+        else:
+            let done = jstrObject(seqStr3(
+                jstrPair("loginId", jstrString(sess.state)),
+                jstrPair("success", jstrBool(false)),
+                jstrPair("error", jstrString(childErr))
+            ))
+            stdoutWriteLine(jsonRpcEvent("account/login/completed", done))
+        closeFd(listenerFd)
+        exitProcess(0)
+    closeFd(listenerFd)
+    addLoginSession(state, loginId, pid, port)
+    err = ""
+    return true
+
+fn startDeviceCodeLogin(state: var ServerState, issuer: str, clientId: str, workspaceId: str, loginId: var str, authUrl: var str, userCode: var str, err: var str): bool =
+    loginId = ""
+    authUrl = ""
+    userCode = ""
+    var deviceId = ""
+    var intervalSeconds: int32 = 5
+    if ! requestDeviceUserCode(issuer, clientId, deviceId, userCode, intervalSeconds, err):
+        return false
+    loginId = deviceId
+    let baseIssuer = loginTrimTrailingSlash(issuer)
+    authUrl = baseIssuer + "/codex/device"
+    let pid = forkProcess()
+    if pid == 0:
+        var childErr = ""
+        var authCode = ""
+        var codeVerifier = ""
+        var ok = pollDeviceCodeToken(issuer, deviceId, userCode, intervalSeconds, authCode, codeVerifier, childErr)
+        var tokens: AuthTokens
+        if ok:
+            let redirectUri = baseIssuer + "/deviceauth/callback"
+            if ! exchangeCodeForTokens(issuer, clientId, redirectUri, codeVerifier, authCode, tokens, childErr):
+                ok = false
+        if ok:
+            var wsErr = ""
+            if ! ensureWorkspaceAllowed(workspaceId, tokens.idToken, wsErr):
+                childErr = wsErr
+                ok = false
+        if ok:
+            var apiKey = ""
+            obtainApiKeyFromIdToken(issuer, clientId, tokens.idToken, apiKey)
+            if ! writeAuthJsonTokens(apiKey, tokens):
+                childErr = "persist failed"
+                ok = false
+        if ok:
+            let done = jstrObject(seqStr2(
+                jstrPair("loginId", jstrString(deviceId)),
+                jstrPair("success", jstrBool(true))
+            ))
+            stdoutWriteLine(jsonRpcEvent("account/login/completed", done))
+            stdoutWriteLine(jsonRpcEvent("account/updated", jstrObject(seqStr1(jstrPair("authMode", jstrString("chatgpt"))))))
+        else:
+            let done = jstrObject(seqStr3(
+                jstrPair("loginId", jstrString(deviceId)),
+                jstrPair("success", jstrBool(false)),
+                jstrPair("error", jstrString(childErr))
+            ))
+            stdoutWriteLine(jsonRpcEvent("account/login/completed", done))
+        exitProcess(0)
+    addLoginSession(state, loginId, pid, 0)
+    err = ""
+    return true
+
+fn buildRateLimitWindow(node: json.JsonNode): str =
+    if node == nil || node.kind != json.JObject:
+        return ""
+    let usedVal = getFloatField(node, "used_percent", -1.0)
+    if usedVal < 0:
+        return ""
+    let used = int32(usedVal + 0.5)
+    let limitSec = getIntField(node, "limit_window_seconds", -1)
+    let resetsAt = getIntField(node, "reset_at", -1)
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("usedPercent", intToStr(used)))
+    if limitSec > 0:
+        seqAdd(fields, jstrPair("windowDurationMins", intToStr(int32(limitSec / 60))))
+    else:
+        seqAdd(fields, jstrPair("windowDurationMins", jstrNull()))
+    if resetsAt > 0:
+        seqAdd(fields, jstrPair("resetsAt", int64ToStr(resetsAt)))
+    else:
+        seqAdd(fields, jstrPair("resetsAt", jstrNull()))
+    return jstrObject(fields)
+
+fn buildCreditsSnapshot(node: json.JsonNode): str =
+    if node == nil || node.kind != json.JObject:
+        return ""
+    let hasCredits = getBoolField(node, "has_credits", false)
+    let unlimited = getBoolField(node, "unlimited", false)
+    let balance = getStringField(node, "balance", "")
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("hasCredits", jstrBool(hasCredits)))
+    seqAdd(fields, jstrPair("unlimited", jstrBool(unlimited)))
+    var balanceJson = jstrNull()
+    if len(balance) > 0:
+        balanceJson = jstrString(balance)
+    seqAdd(fields, jstrPair("balance", balanceJson))
+    return jstrObject(fields)
+
+fn collabModePrompt(fileName: str): str =
+    let path = findPromptFile(fileName)
+    return loadPromptFile(path)
+
+fn collaborationModePresetJson(mode: str, model: str, effort: str, instructions: str): str =
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("mode", jstrString(mode)))
+    seqAdd(fields, jstrPair("model", jstrString(model)))
+    if len(effort) > 0:
+        seqAdd(fields, jstrPair("reasoning_effort", jstrString(effort)))
+    if len(instructions) > 0:
+        seqAdd(fields, jstrPair("developer_instructions", jstrString(instructions)))
+    return jstrObject(fields)
+
+fn collaborationModeListJson(): str =
+    let planInst = collabModePrompt("collaboration_plan.md")
+    let pairInst = collabModePrompt("collaboration_pair_programming.md")
+    let execInst = collabModePrompt("collaboration_execute.md")
+    var items: seq[str] = newSeq[str]()
+    seqAdd(items, collaborationModePresetJson("plan", "gpt-5.2-codex", "medium", planInst))
+    seqAdd(items, collaborationModePresetJson("pair_programming", "gpt-5.2-codex", "medium", pairInst))
+    seqAdd(items, collaborationModePresetJson("execute", "gpt-5.2-codex", "xhigh", execInst))
+    return jstrArray(items)
+
+fn extractCollaborationMode(payload: str): str =
+    var key = "collaborationMode"
+    var keyIdx = jsonFindKeyAfter(payload, key, 0)
+    if keyIdx < 0:
+        key = "collaboration_mode"
+        keyIdx = jsonFindKeyAfter(payload, key, 0)
+    if keyIdx < 0:
+        return ""
+    var idx: int32 = indexOfSubstr(payload, ":", keyIdx + len(key) + 2)
+    if idx < 0:
+        return ""
+    idx = jsonSkipSpaces(payload, idx + 1)
+    if idx >= len(payload):
+        return ""
+    if payload[idx] == '{':
+        let endIdx = jsonFindObjectEnd(payload, idx)
+        if endIdx < 0:
+            return ""
+        return __cheng_slice_string(payload, idx, endIdx, false)
+    return ""
+
+fn applyCollaborationMode(state: var ServerState, modeJson: str): bool =
+    if len(modeJson) == 0:
+        return false
+    let mode = normalizePolicy(jsonExtractString(modeJson, "mode"))
+    var model = jsonExtractString(modeJson, "model")
+    var effort = jsonExtractString(modeJson, "reasoning_effort")
+    if len(effort) == 0:
+        effort = jsonExtractString(modeJson, "reasoningEffort")
+    var devInst = jsonExtractString(modeJson, "developer_instructions")
+    if len(devInst) == 0:
+        devInst = jsonExtractString(modeJson, "developerInstructions")
+    if len(mode) > 0:
+        if len(model) == 0:
+            model = "gpt-5.2-codex"
+        if len(effort) == 0:
+            if mode == "execute":
+                effort = "xhigh"
+            else:
+                effort = "medium"
+        if len(devInst) == 0:
+            if mode == "plan":
+                devInst = collabModePrompt("collaboration_plan.md")
+            elif mode == "pair_programming":
+                devInst = collabModePrompt("collaboration_pair_programming.md")
+            elif mode == "execute":
+                devInst = collabModePrompt("collaboration_execute.md")
+    if len(model) > 0:
+        state.model = model
+    if len(effort) > 0:
+        state.reasoningEffort = effort
+    if len(devInst) > 0:
+        state.developerInstructions = devInst
+    return true
+
+fn updateStateFromParams(state: var ServerState, payload: str, workDir: str) =
+    let cwd = jsonExtractString(payload, "cwd")
+    if len(cwd) > 0:
+        state.cwd = cwd
+    elif len(state.cwd) == 0:
+        state.cwd = workDir
+    let model = jsonExtractString(payload, "model")
+    if len(model) > 0:
+        state.model = model
+    elif len(state.model) == 0:
+        state.model = loadModel()
+    if len(state.reviewModel) == 0:
+        state.reviewModel = loadReviewModel()
+    var approval = jsonExtractString(payload, "approvalPolicy")
+    if len(approval) == 0:
+        approval = jsonExtractString(payload, "approval_policy")
+    if len(approval) > 0:
+        state.approvalPolicy = approval
+    elif len(state.approvalPolicy) == 0:
+        let cfg = readConfigValue("approval_policy")
+        if len(cfg) > 0:
+            state.approvalPolicy = cfg
+        else:
+            state.approvalPolicy = "never"
+    let sandbox = extractSandboxMode(payload)
+    if len(sandbox) > 0:
+        state.sandboxMode = normalizeSandboxMode(sandbox)
+    elif len(state.sandboxMode) == 0:
+        state.sandboxMode = normalizeSandboxMode(loadSandboxMode())
+    var baseInst = jsonExtractString(payload, "baseInstructions")
+    if len(baseInst) == 0:
+        baseInst = jsonExtractString(payload, "base_instructions")
+    if len(baseInst) > 0:
+        state.baseInstructions = baseInst
+    var devInst = jsonExtractString(payload, "developerInstructions")
+    if len(devInst) == 0:
+        devInst = jsonExtractString(payload, "developer_instructions")
+    if len(devInst) > 0:
+        state.developerInstructions = devInst
+    var usedCollab = false
+    if isFeatureEnabled("collaboration_modes"):
+        let collabJson = extractCollaborationMode(payload)
+        if len(collabJson) > 0:
+            usedCollab = applyCollaborationMode(state, collabJson)
+    if !usedCollab:
+        var effort = jsonExtractString(payload, "effort")
+        if len(effort) == 0:
+            effort = jsonExtractString(payload, "reasoningEffort")
+        if len(effort) == 0:
+            effort = jsonExtractString(payload, "reasoning_effort")
+        if len(effort) > 0:
+            state.reasoningEffort = effort
+
+fn parseInt32Simple(text: str, defaultValue: int32): int32 =
+    if len(text) == 0:
+        return defaultValue
+    var i: int32 = 0
+    var sign = 1
+    if text[0] == '-':
+        sign = -1
+        i = i + 1
+    var value: int32 = 0
+    var saw = false
+    while i < len(text):
+        let ch = text[i]
+        if ch < '0' || ch > '9':
+            break
+        value = value * 10 + (ord(ch) - ord('0'))
+        saw = true
+        i = i + 1
+    if ! saw:
+        return defaultValue
+    return value * sign
+
+fn extractValueAsString(payload: str): str =
+    let textVal = jsonExtractString(payload, "value")
+    if len(textVal) > 0:
+        return textVal
+    if indexOfSubstr(payload, "\"value\":true", 0) >= 0:
+        return "true"
+    if indexOfSubstr(payload, "\"value\":false", 0) >= 0:
+        return "false"
+    let numVal = jsonExtractInt(payload, "value", -2147483647)
+    if numVal != -2147483647:
+        return intToStr(numVal)
+    return ""
+
+fn extractCommandFromPayload(payload: str): str =
+    let direct = jsonExtractString(payload, "command")
+    if len(direct) > 0:
+        return direct
+    let parts = jsonExtractStringArray(payload, "command")
+    if len(parts) == 0:
+        return ""
+    var out = ""
+    var i: int32 = 0
+    while i < len(parts):
+        let item = shellQuote(parts[i])
+        if len(out) == 0:
+            out = item
+        else:
+            out = out + " " + item
+        i = i + 1
+    return out
+
+fn approvalRequiresRequest(policy: str): bool =
+    let normalized = normalizePolicy(trimLine(policy))
+    if normalized == "untrusted" || normalized == "unlesstrusted":
+        return true
+    if normalized == "on-request" || normalized == "onrequest":
+        return true
+    return false
+
+fn wantsNoSandboxApproval(policy: str): bool =
+    let normalized = normalizePolicy(trimLine(policy))
+    if normalized == "never":
+        return false
+    if normalized == "on-request" || normalized == "onrequest":
+        return false
+    return true
+
+fn approvalKeyForCommand(commandTokens: seq[str], commandText: str, cwd: str, sandboxPermissions: str): str =
+    var cmdItems: seq[str] = newSeq[str]()
+    if len(commandTokens) > 0:
+        var i: int32 = 0
+        while i < len(commandTokens):
+            seqAdd(cmdItems, jstrString(commandTokens[i]))
+            i = i + 1
+    else:
+        seqAdd(cmdItems, jstrString(commandText))
+    var fields: seq[str] = newSeq[str]()
+    seqAdd(fields, jstrPair("command", jstrArray(cmdItems)))
+    seqAdd(fields, jstrPair("cwd", jstrString(cwd)))
+    seqAdd(fields, jstrPair("sandboxPermissions", jstrString(sandboxPermissions)))
+    return jstrObject(fields)
+
+fn approvalCacheHas(state: var ServerState, key: str): bool =
+    var i: int32 = 0
+    while i < len(state.approvalKeys):
+        if state.approvalKeys[i] == key:
+            return true
+        i = i + 1
+    return false
+
+fn approvalCacheAdd(state: var ServerState, key: str) =
+    if len(key) == 0:
+        return
+    if approvalCacheHas(state, key):
+        return
+    seqAdd(state.approvalKeys, key)
+
+fn loadedThreadHas(state: var ServerState, threadId: str): bool =
+    var i: int32 = 0
+    while i < len(state.loadedThreadIds):
+        if state.loadedThreadIds[i] == threadId:
+            return true
+        i = i + 1
+    return false
+
+fn ensureLoadedThread(state: var ServerState, threadId: str) =
+    if len(threadId) == 0:
+        return
+    if loadedThreadHas(state, threadId):
+        return
+    seqAdd(state.loadedThreadIds, threadId)
+
+fn removeLoadedThread(state: var ServerState, threadId: str) =
+    if len(threadId) == 0:
+        return
+    var out: seq[str] = newSeq[str]()
+    var removed = false
+    var idx: int32 = 0
+    while idx < len(state.loadedThreadIds):
+        let item = state.loadedThreadIds[idx]
+        if !removed && item == threadId:
+            removed = true
+        else:
+            seqAdd(out, item)
+        idx = idx + 1
+    state.loadedThreadIds = out
+
+fn parseDecision(payload: str): str =
+    var decision = normalizePolicy(jsonExtractString(payload, "decision"))
+    if len(decision) > 0:
+        return decision
+    if indexOfSubstr(payload, "acceptWithExecpolicyAmendment", 0) >= 0 || indexOfSubstr(payload, "accept_with_execpolicy_amendment", 0) >= 0:
+        return "acceptwithexecpolicyamendment"
+    if indexOfSubstr(payload, "acceptForSession", 0) >= 0 || indexOfSubstr(payload, "accept_for_session", 0) >= 0:
+        return "acceptforsession"
+    if indexOfSubstr(payload, "\"accept\"", 0) >= 0:
+        return "accept"
+    if indexOfSubstr(payload, "\"decline\"", 0) >= 0 || indexOfSubstr(payload, "\"deny\"", 0) >= 0:
+        return "decline"
+    if indexOfSubstr(payload, "\"cancel\"", 0) >= 0:
+        return "cancel"
+    return ""
+
+fn parseForSession(payload: str): bool =
+    if indexOfSubstr(payload, "\"forSession\":true", 0) >= 0:
+        return true
+    if indexOfSubstr(payload, "acceptForSession", 0) >= 0 || indexOfSubstr(payload, "accept_for_session", 0) >= 0:
+        return true
+    return false
+
+fn parseExecpolicyAmendment(payload: str): seq[str] =
+    var empty: seq[str] = newSeq[str]()
+    let direct = jsonExtractStringArrayAfter(payload, "execpolicyAmendment", 0)
+    if len(direct) > 0:
+        return direct
+    let directSnake = jsonExtractStringArrayAfter(payload, "execpolicy_amendment", 0)
+    if len(directSnake) > 0:
+        return directSnake
+    let directProposed = jsonExtractStringArrayAfter(payload, "proposedExecpolicyAmendment", 0)
+    if len(directProposed) > 0:
+        return directProposed
+    let directProposedSnake = jsonExtractStringArrayAfter(payload, "proposed_execpolicy_amendment", 0)
+    if len(directProposedSnake) > 0:
+        return directProposedSnake
+    var idx = jsonFindKeyAfter(payload, "execpolicyAmendment", 0)
+    if idx < 0:
+        idx = jsonFindKeyAfter(payload, "execpolicy_amendment", 0)
+    if idx < 0:
+        idx = jsonFindKeyAfter(payload, "proposedExecpolicyAmendment", 0)
+    if idx < 0:
+        idx = jsonFindKeyAfter(payload, "proposed_execpolicy_amendment", 0)
+    if idx < 0:
+        return empty
+    return jsonExtractStringArrayAfter(payload, "command", idx)
+
+fn waitForApproval(state: var ServerState, requestId: int32): ApprovalDecision =
+    while true:
+        let rl = stdinReadLine()
+        if ! rl.ok:
+            break
+        let trimmed = trimLine(rl.line)
+        if len(trimmed) == 0:
+            continue
+        let respId = jsonExtractInt(trimmed, "id", -1)
+        if respId == requestId:
+            let decision = parseDecision(trimmed)
+            let forSession = parseForSession(trimmed)
+            let amendment = parseExecpolicyAmendment(trimmed)
+            return ApprovalDecision(decision: decision, forSession: forSession, execpolicyAmendment: amendment)
+        let methodName = jsonExtractString(trimmed, "method")
+        if methodName == "turn/interrupt":
+            let reqId = jsonExtractInt(trimmed, "id", -1)
+            if reqId > 0:
+                sendResponse(reqId, jstrObject(newSeq[str]()))
+            return ApprovalDecision(decision: "cancel", forSession: false, execpolicyAmendment: newSeq[str]())
+    return ApprovalDecision(decision: "cancel", forSession: false, execpolicyAmendment: newSeq[str]())
+
+fn addLoginSession(state: var ServerState, loginId: str, pid: int32, port: int32) =
+    if len(loginId) == 0:
+        return
+    seqAdd(state.loginIds, loginId)
+    seqAdd(state.loginPids, pid)
+    seqAdd(state.loginPorts, port)
+
+fn shrinkSeqString(items: var seq[str], newLen: int32) =
+    if newLen <= 0:
+        items = newSeq[str]()
+        return
+    if newLen >= len(items):
+        return
+    var out: seq[str] = newSeq[str]()
+    var i: int32 = 0
+    while i < newLen:
+        seqAdd(out, items[i])
+        i = i + 1
+    items = out
+
+fn shrinkSeqInt32(items: var seq[int32], newLen: int32) =
+    if newLen <= 0:
+        items = newSeq[int32]()
+        return
+    if newLen >= len(items):
+        return
+    var out: seq[int32] = newSeq[int32]()
+    var i: int32 = 0
+    while i < newLen:
+        seqAdd(out, items[i])
+        i = i + 1
+    items = out
+
+fn findLoginIndex(state: var ServerState, loginId: str): int32 =
+    var i: int32 = 0
+    while i < len(state.loginIds):
+        if state.loginIds[i] == loginId:
+            return i
+        i = i + 1
+    return -1
+
+fn removeLoginAt(state: var ServerState, idx: int32) =
+    let last = len(state.loginIds) - 1
+    if idx < 0 || idx > last:
+        return
+    var outIds: seq[str] = newSeq[str]()
+    var outPids: seq[int32] = newSeq[int32]()
+    var outPorts: seq[int32] = newSeq[int32]()
+    var i: int32 = 0
+    while i < len(state.loginIds):
+        if i != idx:
+            seqAdd(outIds, state.loginIds[i])
+            seqAdd(outPids, state.loginPids[i])
+            seqAdd(outPorts, state.loginPorts[i])
+        i = i + 1
+    state.loginIds = outIds
+    state.loginPids = outPids
+    state.loginPorts = outPorts
+
+fn stopLoginSession(state: var ServerState, idx: int32) =
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let port = state.loginPorts[idx]
+    if port > 0:
+        let cmd = "curl -sS --connect-timeout 1 --max-time 2 http://127.0.0.1:" + intToStr(port) + "/cancel"
+        os.execCmdEx(cmd, opts, os.getCurrentDir())
+    let pid = state.loginPids[idx]
+    if pid > 0:
+        os.execCmdEx("kill -TERM " + intToStr(pid), opts, os.getCurrentDir())
+    removeLoginAt(state, idx)
+
+fn cleanupLoginSessions(state: var ServerState) =
+    var idx: int32 = len(state.loginIds) - 1
+    while idx >= 0:
+        stopLoginSession(state, idx)
+        idx = idx - 1
+
+fn normalizeConfigKey(keyPath: str): str =
+    let trimmed = trimLine(keyPath)
+    if trimmed == "reviewModel":
+        return "review_model"
+    if trimmed == "approvalPolicy":
+        return "approval_policy"
+    if trimmed == "sandbox":
+        return "sandbox_mode"
+    if trimmed == "baseUrl":
+        return "api.base_url"
+    return trimmed
+
+fn nextItemId(state: var ServerState, turnId: str): str =
+    state.itemSeq = state.itemSeq + 1
+    var base: str = "item"
+    if len(turnId) > 0:
+        base = turnId
+    # Build incrementally to avoid deep temporary chains.
+    var out: str = base
+    out = out + "-item-"
+    out = out + intToStr(state.itemSeq)
+    return out
+
+fn nextRequestId(state: var ServerState): int32 =
+    state.requestSeq = state.requestSeq + 1
+    return state.requestSeq
+
+fn emitThreadStarted(threadId: str) =
+    var params: seq[str] = newSeq[str]()
+    seqAdd(params, jstrPair("thread", buildThreadObject(threadId)))
+    sendEvent("thread/started", jstrObject(params))
+
+fn emitTurnStarted(threadId: str, turnId: str) =
+    var params: seq[str] = newSeq[str]()
+    seqAdd(params, jstrPair("threadId", jstrString(threadId)))
+    seqAdd(params, jstrPair("turn", buildTurnObject(turnId, "inProgress")))
+    sendEvent("turn/started", jstrObject(params))
+
+fn emitTurnCompleted(threadId: str, turnId: str, ok: bool) =
+    var params: seq[str] = newSeq[str]()
+    seqAdd(params, jstrPair("threadId", jstrString(threadId)))
+    var statusText = "completed"
+    if ! ok:
+        statusText = "failed"
+    seqAdd(params, jstrPair("turn", buildTurnObject(turnId, statusText)))
+    sendEvent("turn/completed", jstrObject(params))
+
+fn emitItemStarted(threadId: str, turnId: str, itemId: str, itemType: str, command: str, tool: str) =
+    var itemJson = ""
+    if itemType == "commandExecution":
+        let cwd = threadCwd threadId
+        var itemFields: seq[str] = newSeq[str]()
+        seqAdd(itemFields, jstrPair("type", jstrString "commandExecution"))
+        seqAdd(itemFields, jstrPair("id", jstrString itemId))
+        seqAdd(itemFields, jstrPair("command", jstrString command))
+        seqAdd(itemFields, jstrPair("cwd", jstrString cwd))
+        seqAdd(itemFields, jstrPair("processId", jstrNull()))
+        seqAdd(itemFields, jstrPair("status", jstrString "inProgress"))
+        seqAdd(itemFields, jstrPair("commandActions", jstrArray newSeq[str]()))
+        seqAdd(itemFields, jstrPair("aggregatedOutput", jstrNull()))
+        seqAdd(itemFields, jstrPair("exitCode", jstrNull()))
+        seqAdd(itemFields, jstrPair("durationMs", jstrNull()))
+        itemJson = jstrObject itemFields
+    elif itemType == "fileChange":
+        var itemFields: seq[str] = newSeq[str]()
+        seqAdd(itemFields, jstrPair("type", jstrString "fileChange"))
+        seqAdd(itemFields, jstrPair("id", jstrString itemId))
+        seqAdd(itemFields, jstrPair("changes", jstrArray newSeq[str]()))
+        seqAdd(itemFields, jstrPair("status", jstrString "inProgress"))
+        itemJson = jstrObject itemFields
+    else:
+        var itemFields: seq[str] = newSeq[str]()
+        seqAdd(itemFields, jstrPair("id", jstrString itemId))
+        seqAdd(itemFields, jstrPair("type", jstrString itemType))
+        seqAdd(itemFields, jstrPair("status", jstrString "running"))
+        if len(command) > 0:
+            seqAdd(itemFields, jstrPair("command", jstrString command))
+        if len(tool) > 0:
+            seqAdd(itemFields, jstrPair("tool", jstrString tool))
+        itemJson = jstrObject itemFields
+    var params: seq[str] = newSeq[str]()
+    if len(threadId) > 0:
+        seqAdd(params, jstrPair("threadId", jstrString threadId))
+    if len(turnId) > 0:
+        seqAdd(params, jstrPair("turnId", jstrString turnId))
+    seqAdd(params, jstrPair("item", itemJson))
+    sendEvent("item/started", jstrObject params)
+
+fn emitItemCompleted(threadId: str, turnId: str, itemId: str, itemType: str, status: str, exitCode: int32, tool: str, command: str) =
+    var itemJson = ""
+    if itemType == "commandExecution":
+        let cwd = threadCwd threadId
+        var itemFields: seq[str] = newSeq[str]()
+        seqAdd(itemFields, jstrPair("type", jstrString "commandExecution"))
+        seqAdd(itemFields, jstrPair("id", jstrString itemId))
+        seqAdd(itemFields, jstrPair("command", jstrString command))
+        seqAdd(itemFields, jstrPair("cwd", jstrString cwd))
+        seqAdd(itemFields, jstrPair("processId", jstrNull()))
+        seqAdd(itemFields, jstrPair("status", jstrString status))
+        seqAdd(itemFields, jstrPair("commandActions", jstrArray newSeq[str]()))
+        seqAdd(itemFields, jstrPair("aggregatedOutput", jstrNull()))
+        if exitCode >= 0:
+            seqAdd(itemFields, jstrPair("exitCode", intToStr exitCode))
+        else:
+            seqAdd(itemFields, jstrPair("exitCode", jstrNull()))
+        seqAdd(itemFields, jstrPair("durationMs", jstrNull()))
+        itemJson = jstrObject itemFields
+    elif itemType == "fileChange":
+        var itemFields: seq[str] = newSeq[str]()
+        seqAdd(itemFields, jstrPair("type", jstrString "fileChange"))
+        seqAdd(itemFields, jstrPair("id", jstrString itemId))
+        seqAdd(itemFields, jstrPair("changes", jstrArray newSeq[str]()))
+        seqAdd(itemFields, jstrPair("status", jstrString status))
+        itemJson = jstrObject itemFields
+    else:
+        var itemFields: seq[str] = newSeq[str]()
+        seqAdd(itemFields, jstrPair("id", jstrString itemId))
+        seqAdd(itemFields, jstrPair("type", jstrString itemType))
+        seqAdd(itemFields, jstrPair("status", jstrString status))
+        if exitCode >= 0:
+            seqAdd(itemFields, jstrPair("exitCode", intToStr exitCode))
+        if len(tool) > 0:
+            seqAdd(itemFields, jstrPair("tool", jstrString tool))
+        itemJson = jstrObject itemFields
+    var params: seq[str] = newSeq[str]()
+    if len(threadId) > 0:
+        seqAdd(params, jstrPair("threadId", jstrString threadId))
+    if len(turnId) > 0:
+        seqAdd(params, jstrPair("turnId", jstrString turnId))
+    seqAdd(params, jstrPair("item", itemJson))
+    sendEvent("item/completed", jstrObject params)
+
+fn emitCommandOutputDelta(threadId: str, turnId: str, itemId: str, delta: str) =
+    if len(delta) == 0:
+        return
+    var params: seq[str] = newSeq[str]()
+    if len(threadId) > 0:
+        seqAdd(params, jstrPair("threadId", jstrString(threadId)))
+    if len(turnId) > 0:
+        seqAdd(params, jstrPair("turnId", jstrString(turnId)))
+    if len(itemId) > 0:
+        seqAdd(params, jstrPair("itemId", jstrString(itemId)))
+    seqAdd(params, jstrPair("delta", jstrString(delta)))
+    sendEvent("item/commandExecution/outputDelta", jstrObject(params))
+
+fn emitFileChangeDelta(threadId: str, turnId: str, itemId: str, delta: str) =
+    if len(delta) == 0:
+        return
+    var params: seq[str] = newSeq[str]()
+    if len(threadId) > 0:
+        seqAdd(params, jstrPair("threadId", jstrString(threadId)))
+    if len(turnId) > 0:
+        seqAdd(params, jstrPair("turnId", jstrString(turnId)))
+    if len(itemId) > 0:
+        seqAdd(params, jstrPair("itemId", jstrString(itemId)))
+    seqAdd(params, jstrPair("delta", jstrString(delta)))
+    sendEvent("item/fileChange/outputDelta", jstrObject(params))
+
+fn emitAgentDelta(threadId: str, turnId: str, itemId: str, text: str) =
+    if len(text) == 0:
+        return
+    var finalItemId = itemId
+    if len(finalItemId) == 0 && len(turnId) > 0:
+        finalItemId = turnId + "-agent"
+    var params: seq[str] = newSeq[str]()
+    if len(threadId) > 0:
+        seqAdd(params, jstrPair("threadId", jstrString threadId))
+    if len(turnId) > 0:
+        seqAdd(params, jstrPair("turnId", jstrString turnId))
+    if len(finalItemId) > 0:
+        seqAdd(params, jstrPair("itemId", jstrString finalItemId))
+    seqAdd(params, jstrPair("delta", jstrString text))
+    sendEvent("item/agentMessage/delta", jstrObject params)
+
+fn emitDiffUpdated(threadId: str, turnId: str, diffText: str) =
+    if len(diffText) == 0:
+        return
+    var params: seq[str] = newSeq[str]()
+    if len(threadId) > 0:
+        seqAdd(params, jstrPair("threadId", jstrString(threadId)))
+    if len(turnId) > 0:
+        seqAdd(params, jstrPair("turnId", jstrString(turnId)))
+    seqAdd(params, jstrPair("diff", jstrString(diffText)))
+    sendEvent("turn/diff/updated", jstrObject(params))
+
+fn emitPlanUpdated(threadId: str, turnId: str, explanation: str, planItems: seq[str]) =
+    var params: seq[str] = newSeq[str]()
+    if len(threadId) > 0:
+        seqAdd(params, jstrPair("threadId", jstrString(threadId)))
+    if len(turnId) > 0:
+        seqAdd(params, jstrPair("turnId", jstrString(turnId)))
+    if len(explanation) > 0:
+        seqAdd(params, jstrPair("explanation", jstrString(explanation)))
+    seqAdd(params, jstrPair("plan", jstrArray(planItems)))
+    sendEvent("turn/plan/updated", jstrObject(params))
+
+fn emitImageViewStarted(threadId: str, turnId: str, itemId: str, path: str) =
+    var itemFields: seq[str] = newSeq[str]()
+    seqAdd(itemFields, jstrPair("id", jstrString(itemId)))
+    seqAdd(itemFields, jstrPair("type", jstrString("imageView")))
+    seqAdd(itemFields, jstrPair("status", jstrString("running")))
+    if len(path) > 0:
+        seqAdd(itemFields, jstrPair("path", jstrString(path)))
+    var params: seq[str] = newSeq[str]()
+    if len(threadId) > 0:
+        seqAdd(params, jstrPair("threadId", jstrString(threadId)))
+    if len(turnId) > 0:
+        seqAdd(params, jstrPair("turnId", jstrString(turnId)))
+    seqAdd(params, jstrPair("item", jstrObject(itemFields)))
+    sendEvent("item/started", jstrObject(params))
+
+fn emitImageViewCompleted(threadId: str, turnId: str, itemId: str, path: str, ok: bool) =
+    var itemFields: seq[str] = newSeq[str]()
+    seqAdd(itemFields, jstrPair("id", jstrString(itemId)))
+    seqAdd(itemFields, jstrPair("type", jstrString("imageView")))
+    var statusText = "completed"
+    if ! ok:
+        statusText = "failed"
+    seqAdd(itemFields, jstrPair("status", jstrString(statusText)))
+    if len(path) > 0:
+        seqAdd(itemFields, jstrPair("path", jstrString(path)))
+    var params: seq[str] = newSeq[str]()
+    if len(threadId) > 0:
+        seqAdd(params, jstrPair("threadId", jstrString(threadId)))
+    if len(turnId) > 0:
+        seqAdd(params, jstrPair("turnId", jstrString(turnId)))
+    seqAdd(params, jstrPair("item", jstrObject(itemFields)))
+    sendEvent("item/completed", jstrObject(params))
+
+fn emitReviewModeStarted(threadId: str, turnId: str, itemId: str, reviewLabel: str) =
+    var itemFields: seq[str] = newSeq[str]()
+    seqAdd(itemFields, jstrPair("id", jstrString(itemId)))
+    seqAdd(itemFields, jstrPair("type", jstrString("enteredReviewMode")))
+    seqAdd(itemFields, jstrPair("status", jstrString("running")))
+    if len(reviewLabel) > 0:
+        seqAdd(itemFields, jstrPair("review", jstrString(reviewLabel)))
+    var params: seq[str] = newSeq[str]()
+    if len(threadId) > 0:
+        seqAdd(params, jstrPair("threadId", jstrString(threadId)))
+    if len(turnId) > 0:
+        seqAdd(params, jstrPair("turnId", jstrString(turnId)))
+    seqAdd(params, jstrPair("item", jstrObject(itemFields)))
+    sendEvent("item/started", jstrObject(params))
+
+fn emitWebSearchStarted(threadId: str, turnId: str, itemId: str, query: str) =
+    var itemFields: seq[str] = newSeq[str]()
+    seqAdd(itemFields, jstrPair("id", jstrString(itemId)))
+    seqAdd(itemFields, jstrPair("type", jstrString("webSearch")))
+    seqAdd(itemFields, jstrPair("status", jstrString("running")))
+    if len(query) > 0:
+        seqAdd(itemFields, jstrPair("query", jstrString(query)))
+    var params: seq[str] = newSeq[str]()
+    if len(threadId) > 0:
+        seqAdd(params, jstrPair("threadId", jstrString(threadId)))
+    if len(turnId) > 0:
+        seqAdd(params, jstrPair("turnId", jstrString(turnId)))
+    seqAdd(params, jstrPair("item", jstrObject(itemFields)))
+    sendEvent("item/started", jstrObject(params))
+
+fn emitWebSearchCompleted(threadId: str, turnId: str, itemId: str, query: str) =
+    var itemFields: seq[str] = newSeq[str]()
+    seqAdd(itemFields, jstrPair("id", jstrString(itemId)))
+    seqAdd(itemFields, jstrPair("type", jstrString("webSearch")))
+    seqAdd(itemFields, jstrPair("status", jstrString("completed")))
+    if len(query) > 0:
+        seqAdd(itemFields, jstrPair("query", jstrString(query)))
+    var params: seq[str] = newSeq[str]()
+    if len(threadId) > 0:
+        seqAdd(params, jstrPair("threadId", jstrString(threadId)))
+    if len(turnId) > 0:
+        seqAdd(params, jstrPair("turnId", jstrString(turnId)))
+    seqAdd(params, jstrPair("item", jstrObject(itemFields)))
+    sendEvent("item/completed", jstrObject(params))
+
+fn emitReviewModeCompleted(threadId: str, turnId: str, itemId: str, reviewText: str) =
+    var itemFields: seq[str] = newSeq[str]()
+    seqAdd(itemFields, jstrPair("id", jstrString(itemId)))
+    seqAdd(itemFields, jstrPair("type", jstrString("exitedReviewMode")))
+    seqAdd(itemFields, jstrPair("status", jstrString("completed")))
+    if len(reviewText) > 0:
+        seqAdd(itemFields, jstrPair("review", jstrString(reviewText)))
+    var params: seq[str] = newSeq[str]()
+    if len(threadId) > 0:
+        seqAdd(params, jstrPair("threadId", jstrString(threadId)))
+    if len(turnId) > 0:
+        seqAdd(params, jstrPair("turnId", jstrString(turnId)))
+    seqAdd(params, jstrPair("item", jstrObject(itemFields)))
+    sendEvent("item/completed", jstrObject(params))
+
+fn appendTranscript(transcript: var str, text: str) =
+    if len(text) == 0:
+        return
+    if len(transcript) == 0:
+        transcript = text
+    else:
+        transcript = transcript + text
+
+fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: seq[str], mode: str, requestThreadId: str, contextItems: seq[str], workDir: str, emitThread: bool): TurnInfo =
+    var threadId = requestThreadId
+    if len(threadId) == 0:
+        threadId = createThread(buildPreview(prompt), workDir, "appServer")
+    else:
+        let ensured = ensureThread(threadId, buildPreview(prompt), workDir, "appServer")
+        if ensured != threadId:
+            threadId = ensured
+    state.threadId = threadId
+    ensureLoadedThread(state, threadId)
+    if emitThread:
+        emitThreadStarted(threadId)
+    let turnId = newTurnId()
+    state.turnId = turnId
+    emitTurnStarted(threadId, turnId)
+    var reviewEnteredId = ""
+    if mode == "review":
+        reviewEnteredId = nextItemId(state, turnId)
+        emitReviewModeStarted(threadId, turnId, reviewEnteredId, "current changes")
+    let disableWebSearch = mode == "review"
+    let disableViewImage = mode == "review"
+    let inputItems = inputTokensToMessages(inputTokens, workDir)
+    var result: TurnResult = if len(inputItems) > 0:
+        runTurnWithItems(inputItems, contextItems, workDir, mode, state.approvalPolicy, state.baseInstructions, state.developerInstructions, "", true, disableWebSearch, disableViewImage)
+    else:
+        runTurn(prompt, contextItems, workDir, mode, state.approvalPolicy, state.baseInstructions, state.developerInstructions, "", true, disableWebSearch, disableViewImage)
+    var agentTranscript = ""
+    appendTranscript(agentTranscript, result.agentOutput)
+    while result.pending:
+        if result.pendingToolName == "shell" || result.pendingToolName == "shell_command":
+            let shellArgs = parseShellToolArgs(result.pendingArguments)
+            var command = shellArgs.commandText
+            if len(command) == 0 && len(shellArgs.commandTokens) > 0:
+                command = buildCommandTextFromTokens(shellArgs.commandTokens)
+            var execCwd: str = workDir
+            if len(shellArgs.workdir) > 0:
+                execCwd = shellArgs.workdir
+            var sandboxPerms: str = "use_default"
+            if len(shellArgs.sandboxPermissions) > 0:
+                sandboxPerms = shellArgs.sandboxPermissions
+            let itemId = nextItemId(state, turnId)
+            emitItemStarted(threadId, turnId, itemId, "commandExecution", command, "")
+            let policyNorm = normalizePolicy(trimLine(state.approvalPolicy))
+            if sandboxPermissionsRequiresEscalated(sandboxPerms) && policyNorm != "on-request" && policyNorm != "onrequest":
+                # Build incrementally to avoid deep temporary chains.
+                var reason: str = "approval policy is "
+                reason = reason + state.approvalPolicy
+                reason = reason + "; reject command — you should not ask for escalated permissions if the approval policy is "
+                reason = reason + state.approvalPolicy
+                emitCommandOutputDelta(threadId, turnId, itemId, reason)
+                emitItemCompleted(threadId, turnId, itemId, "commandExecution", "failed", -1, "", command)
+                appendToolEvent(threadId, "shell", command, reason, -1, "", "", false)
+                result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, reason, false, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
+                appendTranscript(agentTranscript, result.agentOutput)
+                continue
+            var evalErr = ""
+            let requirement = evaluateExecPolicyRequirement(shellArgs.commandTokens, state.approvalPolicy, state.sandboxMode, sandboxPerms, evalErr)
+            if requirement.kind == execReqForbidden:
+                var reason: str = "execpolicy forbids this command"
+                if len(requirement.reason) > 0:
+                    reason = requirement.reason
+                emitCommandOutputDelta(threadId, turnId, itemId, reason)
+                emitItemCompleted(threadId, turnId, itemId, "commandExecution", "failed", -1, "", command)
+                appendToolEvent(threadId, "shell", command, reason, -1, "", "", false)
+                result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, reason, false, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
+                appendTranscript(agentTranscript, result.agentOutput)
+                continue
+            var approved = true
+            var alreadyApproved = false
+            let approvalKey = approvalKeyForCommand(shellArgs.commandTokens, command, execCwd, sandboxPerms)
+            if requirement.kind == execReqNeedsApproval:
+                if approvalCacheHas(state, approvalKey):
+                    approved = true
+                    alreadyApproved = true
+                else:
+                    let reqId = nextRequestId(state)
+                    var reqFields: seq[str] = newSeq[str]()
+                    seqAdd(reqFields, jstrPair("threadId", jstrString(threadId)))
+                    seqAdd(reqFields, jstrPair("turnId", jstrString(turnId)))
+                    seqAdd(reqFields, jstrPair("itemId", jstrString(itemId)))
+                    if len(command) > 0:
+                        seqAdd(reqFields, jstrPair("command", jstrString(command)))
+                    if len(execCwd) > 0:
+                        seqAdd(reqFields, jstrPair("cwd", jstrString(execCwd)))
+                    var reasonText = requirement.reason
+                    if len(reasonText) == 0:
+                        reasonText = shellArgs.justification
+                    if len(reasonText) > 0:
+                        seqAdd(reqFields, jstrPair("reason", jstrString(reasonText)))
+                    if len(requirement.proposedExecpolicyAmendment) > 0:
+                        var amendItems: seq[str] = newSeq[str]()
+                        var ai: int32 = 0
+                        while ai < len(requirement.proposedExecpolicyAmendment):
+                            seqAdd(amendItems, jstrString(requirement.proposedExecpolicyAmendment[ai]))
+                            ai = ai + 1
+                        seqAdd(reqFields, jstrPair("proposedExecpolicyAmendment", jstrArray(amendItems)))
+                    sendRequest(reqId, "item/commandExecution/requestApproval", jstrObject(reqFields))
+                    let decision = waitForApproval(state, reqId)
+                    let dec = decision.decision
+                    if len(dec) == 0:
+                        approved = false
+                    elif dec == "accept" || dec == "acceptforsession" || hasPrefix(dec, "acceptwith"):
+                        approved = true
+                    else:
+                        approved = false
+                    if approved && decision.forSession:
+                        approvalCacheAdd(state, approvalKey)
+                    if approved && dec == "acceptwithexecpolicyamendment":
+                        var amend = decision.execpolicyAmendment
+                        if len(amend) == 0:
+                            amend = requirement.proposedExecpolicyAmendment
+                        if len(amend) > 0:
+                            var amendErr = ""
+                            appendExecPolicyAllowRule(amend, amendErr)
+            if ! approved:
+                emitItemCompleted(threadId, turnId, itemId, "commandExecution", "declined", -1, "", command)
+                appendToolEvent(threadId, "shell", command, "", -1, "", "", false)
+                result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, "declined", false, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
+                appendTranscript(agentTranscript, result.agentOutput)
+                continue
+            let bypassSandbox = requirement.bypassSandbox || sandboxPermissionsRequiresEscalated(sandboxPerms)
+            let useLogin = if shellArgs.hasLogin: shellArgs.login else: true
+            let res = runShellCommand(command, shellArgs.commandTokens, execCwd, state.sandboxMode, sandboxPerms, bypassSandbox, newSeq[str](), shellArgs.timeoutMs, useLogin)
+            emitCommandOutputDelta(threadId, turnId, itemId, res.output)
+            var finalRes = res
+            let mode = normalizeSandboxMode(state.sandboxMode)
+            let sandboxed = ! bypassSandbox && ! sandboxPermissionsRequiresEscalated(sandboxPerms) && len(mode) > 0 && mode != "danger-full-access" && mode != "external-sandbox"
+            if sandboxed && isLikelySandboxDenied(res.output, res.exitCode, sandboxed) && wantsNoSandboxApproval(state.approvalPolicy):
+                var retryApproved = alreadyApproved
+                if ! retryApproved:
+                    let retryId = nextRequestId(state)
+                    var retryFields: seq[str] = newSeq[str]()
+                    seqAdd(retryFields, jstrPair("threadId", jstrString(threadId)))
+                    seqAdd(retryFields, jstrPair("turnId", jstrString(turnId)))
+                    seqAdd(retryFields, jstrPair("itemId", jstrString(itemId)))
+                    seqAdd(retryFields, jstrPair("reason", jstrString(SANDBOX_DENIAL_REASON)))
+                    if len(requirement.proposedExecpolicyAmendment) > 0:
+                        var amendItems: seq[str] = newSeq[str]()
+                        var ai: int32 = 0
+                        while ai < len(requirement.proposedExecpolicyAmendment):
+                            seqAdd(amendItems, jstrString(requirement.proposedExecpolicyAmendment[ai]))
+                            ai = ai + 1
+                        seqAdd(retryFields, jstrPair("proposedExecpolicyAmendment", jstrArray(amendItems)))
+                    sendRequest(retryId, "item/commandExecution/requestApproval", jstrObject(retryFields))
+                    let retryDecision = waitForApproval(state, retryId)
+                    let rdec = retryDecision.decision
+                    if len(rdec) > 0 && (rdec == "accept" || rdec == "acceptforsession" || hasPrefix(rdec, "acceptwith")):
+                        retryApproved = true
+                        if retryDecision.forSession:
+                            approvalCacheAdd(state, approvalKey)
+                        if rdec == "acceptwithexecpolicyamendment":
+                            var amend = retryDecision.execpolicyAmendment
+                            if len(amend) == 0:
+                                amend = requirement.proposedExecpolicyAmendment
+                            if len(amend) > 0:
+                                var amendErr = ""
+                                appendExecPolicyAllowRule(amend, amendErr)
+                if retryApproved:
+                    finalRes = runShellCommand(command, shellArgs.commandTokens, execCwd, state.sandboxMode, sandboxPerms, true, newSeq[str](), shellArgs.timeoutMs, useLogin)
+                    emitCommandOutputDelta(threadId, turnId, itemId, finalRes.output)
+            var execStatus = "completed"
+            if ! finalRes.ok:
+                execStatus = "failed"
+            emitItemCompleted(threadId, turnId, itemId, "commandExecution", execStatus, finalRes.exitCode, "", command)
+            appendToolEvent(threadId, "shell", command, finalRes.output, finalRes.exitCode, "", "", finalRes.ok)
+            result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, finalRes.output, finalRes.ok, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
+            appendTranscript(agentTranscript, result.agentOutput)
+            continue
+        if result.pendingToolName == "view_image":
+            let path = jsonExtractString(result.pendingArguments, "path")
+            let itemId = nextItemId(state, turnId)
+            emitImageViewStarted(threadId, turnId, itemId, path)
+            var ok = true
+            let imageMessage = buildInputImageMessage(path)
+            if len(imageMessage) == 0:
+                ok = false
+            emitImageViewCompleted(threadId, turnId, itemId, path, ok)
+            var viewText = "attached local image path"
+            if ! ok:
+                viewText = "image attach failed"
+            appendToolEvent(threadId, "view_image", "", "", -1, "", viewText, ok)
+            if ok:
+                var nextItems: seq[str] = newSeq[str]()
+                var ii: int32 = 0
+                while ii < len(result.pendingInputItems):
+                    seqAdd(nextItems, result.pendingInputItems[ii])
+                    ii = ii + 1
+                seqAdd(nextItems, imageMessage)
+                result = resumeTurnWithTool(nextItems, result.pendingResponseId, result.pendingCallId, "attached local image path", true, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
+            else:
+                result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, "image attach failed", false, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
+            appendTranscript(agentTranscript, result.agentOutput)
+            continue
+        if result.pendingToolName == "apply_patch":
+            let patchText = jsonExtractString(result.pendingArguments, "patch")
+            let itemId = nextItemId(state, turnId)
+            emitItemStarted(threadId, turnId, itemId, "fileChange", "", "")
+            emitFileChangeDelta(threadId, turnId, itemId, patchText)
+            var approved = true
+            if approvalRequiresRequest(state.approvalPolicy):
+                let reqId = nextRequestId(state)
+                var reqFields: seq[str] = newSeq[str]()
+                seqAdd(reqFields, jstrPair("threadId", jstrString(threadId)))
+                seqAdd(reqFields, jstrPair("turnId", jstrString(turnId)))
+                seqAdd(reqFields, jstrPair("itemId", jstrString(itemId)))
+                if len(patchText) > 0:
+                    seqAdd(reqFields, jstrPair("diff", jstrString(patchText)))
+                sendRequest(reqId, "item/fileChange/requestApproval", jstrObject(reqFields))
+                let decision = waitForApproval(state, reqId)
+                let dec = decision.decision
+                if len(dec) == 0:
+                    approved = false
+                elif dec == "accept" || dec == "acceptforsession" || hasPrefix(dec, "acceptwith"):
+                    approved = true
+                else:
+                    approved = false
+            if ! approved:
+                emitItemCompleted(threadId, turnId, itemId, "fileChange", "declined", -1, "", "")
+                emitDiffUpdated(threadId, turnId, patchText)
+                appendToolEvent(threadId, "apply_patch", "", "", -1, patchText, "", false)
+                result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, "declined", false, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
+                appendTranscript(agentTranscript, result.agentOutput)
+                continue
+            let res = runPatchTool(patchText, workDir)
+            var patchStatus = "completed"
+            if ! res.ok:
+                patchStatus = "failed"
+            emitItemCompleted(threadId, turnId, itemId, "fileChange", patchStatus, -1, "", "")
+            emitDiffUpdated(threadId, turnId, patchText)
+            appendToolEvent(threadId, "apply_patch", "", "", -1, patchText, res.output, res.ok)
+            var toolText = res.output
+            if len(toolText) == 0:
+                if res.ok:
+                    toolText = "patch applied"
+                else:
+                    toolText = "patch failed"
+            result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolText, res.ok, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
+            appendTranscript(agentTranscript, result.agentOutput)
+            continue
+        if result.pendingToolName == "update_plan":
+            let explanation = jsonExtractString(result.pendingArguments, "explanation")
+            let planItems = extractPlanItems(result.pendingArguments)
+            emitPlanUpdated(threadId, turnId, explanation, planItems)
+            result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, "Plan updated", true, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
+            appendTranscript(agentTranscript, result.agentOutput)
+            continue
+        if result.pendingToolName == "spawn_agent":
+            let toolRes = collabSpawnAgent(result.pendingArguments, state.baseInstructions, state.developerInstructions, state.model, state.approvalPolicy, workDir)
+            appendToolEvent(threadId, "spawn_agent", "", "", -1, "", toolRes.output, toolRes.ok)
+            result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolRes.output, toolRes.ok, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
+            appendTranscript(agentTranscript, result.agentOutput)
+            continue
+        if result.pendingToolName == "send_input":
+            let toolRes = collabSendInput(result.pendingArguments, state.baseInstructions, state.developerInstructions, state.model, state.approvalPolicy, workDir)
+            appendToolEvent(threadId, "send_input", "", "", -1, "", toolRes.output, toolRes.ok)
+            result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolRes.output, toolRes.ok, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
+            appendTranscript(agentTranscript, result.agentOutput)
+            continue
+        if result.pendingToolName == "wait":
+            let toolRes = collabWaitAgents(result.pendingArguments)
+            appendToolEvent(threadId, "wait", "", "", -1, "", toolRes.output, toolRes.ok)
+            result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolRes.output, toolRes.ok, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
+            appendTranscript(agentTranscript, result.agentOutput)
+            continue
+        if result.pendingToolName == "close_agent":
+            let toolRes = collabCloseAgent(result.pendingArguments)
+            appendToolEvent(threadId, "close_agent", "", "", -1, "", toolRes.output, toolRes.ok)
+            result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolRes.output, toolRes.ok, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
+            appendTranscript(agentTranscript, result.agentOutput)
+            continue
+        result.ok = false
+        result.pending = false
+        result.agentText = "unsupported tool"
+        break
+    if len(result.webSearchQueries) > 0:
+        var widx: int32 = 0
+        while widx < len(result.webSearchQueries):
+            let query = result.webSearchQueries[widx]
+            let itemId = nextItemId(state, turnId)
+            emitWebSearchStarted(threadId, turnId, itemId, query)
+            emitWebSearchCompleted(threadId, turnId, itemId, query)
+            appendToolEvent(threadId, "web_search", "", "", -1, "", query, true)
+            widx = widx + 1
+    if mode == "review":
+        var reviewText: str = result.agentText
+        if len(agentTranscript) > 0:
+            reviewText = agentTranscript
+        let reviewExitedId = nextItemId(state, turnId)
+        emitReviewModeCompleted(threadId, turnId, reviewExitedId, reviewText)
+    else:
+        if len(agentTranscript) > 0:
+            emitAgentDelta(threadId, turnId, "", agentTranscript)
+        else:
+            emitAgentDelta(threadId, turnId, "", result.agentText)
+    appendTurnEvent(threadId, prompt, inputTokens, "codex-cheng", agentTranscript, "", "", -1, "", "")
+    emitTurnCompleted(threadId, turnId, result.ok)
+    TurnInfo(threadId: threadId, turnId: turnId)
+
+fn handleTurn(state: var ServerState, prompt: str, inputTokens: seq[str], mode: str, requestThreadId: str, workDir: str): TurnInfo =
+    var threadId = requestThreadId
+    var shouldEmitThread = false
+    if len(threadId) == 0:
+        threadId = createThread(buildPreview(prompt), workDir, "appServer")
+        shouldEmitThread = true
+    else:
+        let ensured = ensureThread(threadId, buildPreview(prompt), workDir, "appServer")
+        if ensured != threadId:
+            threadId = ensured
+        if state.threadId != threadId:
+            shouldEmitThread = true
+    let contextItems = threadContextItems(threadId)
+    return handleTurnWithContext(state, prompt, inputTokens, mode, threadId, contextItems, workDir, shouldEmitThread)
+
+fn handleRpc(state: var ServerState, payload: str, workDir: str) =
+    let methodName = jsonExtractString(payload, "method")
+    let id = jsonExtractInt(payload, "id", -1)
+    if len(methodName) == 0:
+        return
+    if methodName == "initialize":
+        if state.initialized:
+            sendError(id, "already initialized")
+            return
+        state.initialized = true
+        updateStateFromParams(state, payload, workDir)
+        var resFields: seq[str] = newSeq[str]()
+        let userAgent = buildUserAgent payload
+        seqAdd(resFields, jstrPair("userAgent", jstrString userAgent))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if ! state.initialized && methodName != "initialized":
+        sendError(id, "not initialized")
+        return
+    if methodName == "initialized":
+        sendResponse(id, jstrObject(newSeq[str]()))
+        return
+    if methodName == "thread/start":
+        updateStateFromParams(state, payload, workDir)
+        let preview = extractPreview(payload)
+        let threadId = createThread(preview, state.cwd, "appServer")
+        state.threadId = threadId
+        ensureLoadedThread(state, threadId)
+        emitThreadStarted(threadId)
+        var resFields: seq[str] = newSeq[str]()
+        seqAdd(resFields, jstrPair("thread", buildThreadObject(threadId)))
+        seqAdd(resFields, jstrPair("model", jstrString(state.model)))
+        seqAdd(resFields, jstrPair("modelProvider", jstrString(resolveModelProvider())))
+        seqAdd(resFields, jstrPair("cwd", jstrString(state.cwd)))
+        seqAdd(resFields, jstrPair("approvalPolicy", jstrString(state.approvalPolicy)))
+        seqAdd(resFields, jstrPair("sandbox", sandboxPolicyJson(state.sandboxMode, state.cwd)))
+        var effortJson: str = jstrNull()
+        if len(state.reasoningEffort) > 0:
+            effortJson = jstrString(state.reasoningEffort)
+        seqAdd(resFields, jstrPair("reasoningEffort", effortJson))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "thread/resume":
+        updateStateFromParams(state, payload, workDir)
+        var threadId = jsonExtractString(payload, "threadId")
+        if len(threadId) == 0:
+            sendError(id, "missing threadId")
+            return
+        threadId = ensureThread(threadId, "", state.cwd, "appServer")
+        state.threadId = threadId
+        ensureLoadedThread(state, threadId)
+        var resFields: seq[str] = newSeq[str]()
+        let turns = threadTurns(threadId)
+        seqAdd(resFields, jstrPair("thread", buildThreadObjectWithTurns(threadId, turns)))
+        seqAdd(resFields, jstrPair("model", jstrString(state.model)))
+        seqAdd(resFields, jstrPair("modelProvider", jstrString(resolveModelProvider())))
+        seqAdd(resFields, jstrPair("cwd", jstrString(state.cwd)))
+        seqAdd(resFields, jstrPair("approvalPolicy", jstrString(state.approvalPolicy)))
+        seqAdd(resFields, jstrPair("sandbox", sandboxPolicyJson(state.sandboxMode, state.cwd)))
+        var effortJson: str = jstrNull()
+        if len(state.reasoningEffort) > 0:
+            effortJson = jstrString(state.reasoningEffort)
+        seqAdd(resFields, jstrPair("reasoningEffort", effortJson))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "thread/fork":
+        updateStateFromParams(state, payload, workDir)
+        var sourceId = jsonExtractString(payload, "threadId")
+        if len(sourceId) == 0:
+            sourceId = jsonExtractString(payload, "thread_id")
+        if len(sourceId) == 0:
+            sendError(id, "missing threadId")
+            return
+        let newId = forkThread(sourceId, "", state.cwd, "appServer")
+        if len(newId) == 0:
+            sendError(id, "fork failed")
+            return
+        state.threadId = newId
+        ensureLoadedThread(state, newId)
+        emitThreadStarted(newId)
+        let turns = threadTurns(newId)
+        var resFields: seq[str] = newSeq[str]()
+        seqAdd(resFields, jstrPair("thread", buildThreadObjectWithTurns(newId, turns)))
+        seqAdd(resFields, jstrPair("model", jstrString(state.model)))
+        seqAdd(resFields, jstrPair("modelProvider", jstrString(resolveModelProvider())))
+        seqAdd(resFields, jstrPair("cwd", jstrString(state.cwd)))
+        seqAdd(resFields, jstrPair("approvalPolicy", jstrString(state.approvalPolicy)))
+        seqAdd(resFields, jstrPair("sandbox", sandboxPolicyJson(state.sandboxMode, state.cwd)))
+        var effortJson: str = jstrNull()
+        if len(state.reasoningEffort) > 0:
+            effortJson = jstrString(state.reasoningEffort)
+        seqAdd(resFields, jstrPair("reasoningEffort", effortJson))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "thread/list":
+        let cursorText = jsonExtractString(payload, "cursor")
+        let limitVal = jsonExtractInt(payload, "limit", 20)
+        var startIdx: int32 = 0
+        if len(cursorText) > 0:
+            startIdx = parseInt32Simple(cursorText, 0)
+        let infos = listThreadInfos("", true)
+        var data: seq[str] = newSeq[str]()
+        var idx: int32 = startIdx
+        var count: int32 = 0
+        while idx < len(infos) && count < limitVal:
+            seqAdd(data, buildThreadObject(infos[idx].id))
+            idx = idx + 1
+            count = count + 1
+        var resFields: seq[str] = newSeq[str]()
+        seqAdd(resFields, jstrPair("data", jstrArray(data)))
+        if idx < len(infos):
+            seqAdd(resFields, jstrPair("nextCursor", jstrString(intToStr(idx))))
+        else:
+            seqAdd(resFields, jstrPair("nextCursor", jstrNull()))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "thread/loaded/list":
+        let cursorText = jsonExtractString(payload, "cursor")
+        let limitVal = jsonExtractInt(payload, "limit", 0)
+        var startIdx: int32 = 0
+        if len(cursorText) > 0:
+            startIdx = parseInt32Simple(cursorText, 0)
+        var limit = limitVal
+        if limit <= 0:
+            limit = len(state.loadedThreadIds)
+        var data: seq[str] = newSeq[str]()
+        var idx: int32 = startIdx
+        var count: int32 = 0
+        while idx < len(state.loadedThreadIds) && count < limit:
+            seqAdd(data, jstrString(state.loadedThreadIds[idx]))
+            idx = idx + 1
+            count = count + 1
+        var resFields: seq[str] = newSeq[str]()
+        seqAdd(resFields, jstrPair("data", jstrArray(data)))
+        if idx < len(state.loadedThreadIds):
+            seqAdd(resFields, jstrPair("nextCursor", jstrString(intToStr(idx))))
+        else:
+            seqAdd(resFields, jstrPair("nextCursor", jstrNull()))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "thread/archive":
+        let threadId = jsonExtractString(payload, "threadId")
+        if len(threadId) == 0:
+            sendError(id, "missing threadId")
+            return
+        if ! archiveThread(threadId):
+            sendError(id, "archive failed")
+            return
+        removeLoadedThread(state, threadId)
+        sendResponse(id, jstrObject(newSeq[str]()))
+        return
+    if methodName == "thread/rollback":
+        let threadId = jsonExtractString(payload, "threadId")
+        var numTurns = jsonExtractInt(payload, "numTurns", 0)
+        if numTurns == 0:
+            numTurns = jsonExtractInt(payload, "num_turns", 0)
+        if len(threadId) == 0:
+            sendError(id, "missing threadId")
+            return
+        if numTurns <= 0:
+            sendError(id, "missing numTurns")
+            return
+        if ! rollbackThreadTurns(threadId, numTurns):
+            sendError(id, "rollback failed")
+            return
+        ensureLoadedThread(state, threadId)
+        let turns = threadTurns(threadId)
+        var resFields: seq[str] = newSeq[str]()
+        seqAdd(resFields, jstrPair("thread", buildThreadObjectWithTurns(threadId, turns)))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "turn/start":
+        updateStateFromParams(state, payload, workDir)
+        var inputTokens = extractInputTokens(payload)
+        let promptText = extractInputText(payload)
+        if len(promptText) > 0 && ! inputTokensHasText(inputTokens):
+            seqAdd(inputTokens, inputTokenText(promptText))
+        if len(inputTokens) == 0:
+            sendError(id, "missing input")
+            return
+        var prompt = inputTokensSummary(inputTokens)
+        if len(prompt) == 0:
+            prompt = promptText
+        let threadId = jsonExtractString(payload, "threadId")
+        let info = handleTurn(state, prompt, inputTokens, "ask", threadId, state.cwd)
+        var resFields: seq[str] = newSeq[str]()
+        seqAdd(resFields, jstrPair("turn", buildTurnObject(info.turnId, "inProgress")))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "turn/interrupt":
+        sendResponse(id, jstrObject(newSeq[str]()))
+        return
+    if methodName == "review/start":
+        updateStateFromParams(state, payload, workDir)
+        var prompt = extractInputText(payload)
+        if len(prompt) == 0:
+            let targetIdx = jsonFindKeyAfter(payload, "target", 0)
+            if targetIdx >= 0:
+                prompt = jsonExtractStringAfter(payload, "instructions", targetIdx)
+        var inputTokens = extractInputTokens(payload)
+        if len(prompt) > 0 && ! inputTokensHasText(inputTokens):
+            seqAdd(inputTokens, inputTokenText(prompt))
+        if len(inputTokens) == 0:
+            sendError(id, "missing text")
+            return
+        let promptSummary = inputTokensSummary(inputTokens)
+        if len(promptSummary) > 0:
+            prompt = promptSummary
+        let threadId = jsonExtractString(payload, "threadId")
+        let delivery = normalizePolicy(jsonExtractString(payload, "delivery"))
+        var info: TurnInfo
+        if delivery == "detached":
+            let contextItems = threadContextItems(threadId)
+            info = handleTurnWithContext(state, prompt, inputTokens, "review", "", contextItems, state.cwd, true)
+        else:
+            info = handleTurn(state, prompt, inputTokens, "review", threadId, state.cwd)
+        var resFields: seq[str] = newSeq[str]()
+        seqAdd(resFields, jstrPair("turn", buildTurnObject(info.turnId, "inProgress")))
+        seqAdd(resFields, jstrPair("reviewThreadId", jstrString(info.threadId)))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "command/exec":
+        let shellArgs = parseShellToolArgs(payload)
+        var command = shellArgs.commandText
+        if len(command) == 0 && len(shellArgs.commandTokens) > 0:
+            command = buildCommandTextFromTokens(shellArgs.commandTokens)
+        if len(command) == 0:
+            sendError(id, "missing command")
+            return
+        var execCwd: str = state.cwd
+        if len(shellArgs.workdir) > 0:
+            execCwd = shellArgs.workdir
+        var sandboxPerms: str = "use_default"
+        if len(shellArgs.sandboxPermissions) > 0:
+            sandboxPerms = shellArgs.sandboxPermissions
+        var evalErr = ""
+        let requirement = evaluateExecPolicyRequirement(shellArgs.commandTokens, state.approvalPolicy, state.sandboxMode, sandboxPerms, evalErr)
+        let itemId = nextItemId(state, state.turnId)
+        emitItemStarted(state.threadId, state.turnId, itemId, "commandExecution", command, "")
+        if requirement.kind == execReqForbidden:
+            var reason: str = "execpolicy forbids this command"
+            if len(requirement.reason) > 0:
+                reason = requirement.reason
+            emitCommandOutputDelta(state.threadId, state.turnId, itemId, reason)
+            emitItemCompleted(state.threadId, state.turnId, itemId, "commandExecution", "failed", -1, "", command)
+            var resFields: seq[str] = newSeq[str]()
+            seqAdd(resFields, jstrPair("exitCode", intToStr(-1)))
+            seqAdd(resFields, jstrPair("stdout", jstrString(reason)))
+            seqAdd(resFields, jstrPair("stderr", jstrString("")))
+            sendResponse(id, jstrObject(resFields))
+            return
+        var approved = true
+        let approvalKey = approvalKeyForCommand(shellArgs.commandTokens, command, execCwd, sandboxPerms)
+        if requirement.kind == execReqNeedsApproval:
+            if approvalCacheHas(state, approvalKey):
+                approved = true
+            else:
+                let reqId = nextRequestId(state)
+                var reqFields: seq[str] = newSeq[str]()
+                seqAdd(reqFields, jstrPair("threadId", jstrString(state.threadId)))
+                seqAdd(reqFields, jstrPair("turnId", jstrString(state.turnId)))
+                seqAdd(reqFields, jstrPair("itemId", jstrString(itemId)))
+                if len(command) > 0:
+                    seqAdd(reqFields, jstrPair("command", jstrString(command)))
+                if len(execCwd) > 0:
+                    seqAdd(reqFields, jstrPair("cwd", jstrString(execCwd)))
+                var reasonText = requirement.reason
+                if len(reasonText) == 0:
+                    reasonText = shellArgs.justification
+                if len(reasonText) > 0:
+                    seqAdd(reqFields, jstrPair("reason", jstrString(reasonText)))
+                if len(requirement.proposedExecpolicyAmendment) > 0:
+                    var amendItems: seq[str] = newSeq[str]()
+                    var ai: int32 = 0
+                    while ai < len(requirement.proposedExecpolicyAmendment):
+                        seqAdd(amendItems, jstrString(requirement.proposedExecpolicyAmendment[ai]))
+                        ai = ai + 1
+                    seqAdd(reqFields, jstrPair("proposedExecpolicyAmendment", jstrArray(amendItems)))
+                sendRequest(reqId, "item/commandExecution/requestApproval", jstrObject(reqFields))
+                let decision = waitForApproval(state, reqId)
+                let dec = decision.decision
+                if len(dec) == 0:
+                    approved = false
+                elif dec == "accept" || dec == "acceptforsession" || hasPrefix(dec, "acceptwith"):
+                    approved = true
+                else:
+                    approved = false
+                if approved && decision.forSession:
+                    approvalCacheAdd(state, approvalKey)
+                if approved && dec == "acceptwithexecpolicyamendment":
+                    var amend = decision.execpolicyAmendment
+                    if len(amend) == 0:
+                        amend = requirement.proposedExecpolicyAmendment
+                    if len(amend) > 0:
+                        var amendErr = ""
+                        appendExecPolicyAllowRule(amend, amendErr)
+        if ! approved:
+            emitItemCompleted(state.threadId, state.turnId, itemId, "commandExecution", "declined", -1, "", command)
+            var resFields: seq[str] = newSeq[str]()
+            seqAdd(resFields, jstrPair("exitCode", intToStr(-1)))
+            seqAdd(resFields, jstrPair("stdout", jstrString("declined")))
+            seqAdd(resFields, jstrPair("stderr", jstrString("")))
+            sendResponse(id, jstrObject(resFields))
+            return
+        let bypassSandbox = requirement.bypassSandbox || sandboxPermissionsRequiresEscalated(sandboxPerms)
+        let useLogin = if shellArgs.hasLogin: shellArgs.login else: true
+        let res = runShellCommand(command, shellArgs.commandTokens, execCwd, state.sandboxMode, sandboxPerms, bypassSandbox, newSeq[str](), shellArgs.timeoutMs, useLogin)
+        emitCommandOutputDelta(state.threadId, state.turnId, itemId, res.output)
+        var execStatus = "completed"
+        if ! res.ok:
+            execStatus = "failed"
+        emitItemCompleted(state.threadId, state.turnId, itemId, "commandExecution", execStatus, res.exitCode, "", command)
+        var resFields: seq[str] = newSeq[str]()
+        seqAdd(resFields, jstrPair("exitCode", intToStr(res.exitCode)))
+        seqAdd(resFields, jstrPair("stdout", jstrString(res.output)))
+        seqAdd(resFields, jstrPair("stderr", jstrString("")))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "model/list":
+        var models: seq[str] = newSeq[str]()
+        let effortOptions = defaultReasoningEffortOptionsJson()
+        let defaultEffort = "medium"
+        let baseModel = loadModel()
+        if len(baseModel) > 0:
+            var fields: seq[str] = newSeq[str]()
+            seqAdd(fields, jstrPair("id", jstrString baseModel))
+            seqAdd(fields, jstrPair("model", jstrString baseModel))
+            seqAdd(fields, jstrPair("displayName", jstrString baseModel))
+            seqAdd(fields, jstrPair("description", jstrString "default model"))
+            seqAdd(fields, jstrPair("supportedReasoningEfforts", effortOptions))
+            seqAdd(fields, jstrPair("defaultReasoningEffort", jstrString defaultEffort))
+            seqAdd(fields, jstrPair("isDefault", jstrBool true))
+            seqAdd(models, jstrObject(fields))
+        let reviewModel = loadReviewModel()
+        if len(reviewModel) > 0 && reviewModel != baseModel:
+            var fields: seq[str] = newSeq[str]()
+            seqAdd(fields, jstrPair("id", jstrString reviewModel))
+            seqAdd(fields, jstrPair("model", jstrString reviewModel))
+            seqAdd(fields, jstrPair("displayName", jstrString reviewModel))
+            seqAdd(fields, jstrPair("description", jstrString "review model"))
+            seqAdd(fields, jstrPair("supportedReasoningEfforts", effortOptions))
+            seqAdd(fields, jstrPair("defaultReasoningEffort", jstrString defaultEffort))
+            seqAdd(fields, jstrPair("isDefault", jstrBool false))
+            seqAdd(models, jstrObject(fields))
+        var resFields: seq[str] = newSeq[str]()
+        seqAdd(resFields, jstrPair("data", jstrArray models))
+        seqAdd(resFields, jstrPair("nextCursor", jstrNull()))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "fuzzyFileSearch":
+        let query = jsonExtractString(payload, "query")
+        var roots = jsonExtractStringArray(payload, "roots")
+        if len(roots) == 0:
+            if len(state.cwd) > 0:
+                seqAdd(roots, state.cwd)
+            else:
+                seqAdd(roots, workDir)
+        let matches = runFuzzyFileSearch(query, roots)
+        var files: seq[str] = newSeq[str]()
+        var idx: int32 = 0
+        while idx < len(matches):
+            seqAdd(files, fuzzyResultJson(matches[idx]))
+            idx = idx + 1
+        var resFields: seq[str] = newSeq[str]()
+        seqAdd(resFields, jstrPair("files", jstrArray(files)))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "collaborationMode/list":
+        var resFields: seq[str] = newSeq[str]()
+        var dataJson = jstrArray(newSeq[str]())
+        if isFeatureEnabled("collaboration_modes"):
+            dataJson = collaborationModeListJson()
+        seqAdd(resFields, jstrPair("data", dataJson))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "skills/list":
+        var cwds = jsonExtractStringArray(payload, "cwds")
+        let forceReload = indexOfSubstr(payload, "\"forceReload\":true", 0) >= 0 || indexOfSubstr(payload, "\"force_reload\":true", 0) >= 0
+        if len(cwds) == 0:
+            if len(state.cwd) > 0:
+                seqAdd(cwds, state.cwd)
+            else:
+                seqAdd(cwds, workDir)
+        var entries: seq[str] = newSeq[str]()
+        var idx: int32 = 0
+        while idx < len(cwds):
+            let cwd = cwds[idx]
+            var outcome = SkillLoadOutcome(
+                skills: newSeq[SkillMetadata](),
+                errors: newSeq[SkillError](),
+                disabledPaths: newSeq[str]()
+            )
+            if isFeatureEnabled("skills"):
+                outcome = loadSkillsForCwd(cwd, forceReload)
+            seqAdd(entries, skillsListEntryJson(cwd, outcome))
+            idx = idx + 1
+        var resFields: seq[str] = newSeq[str]()
+        seqAdd(resFields, jstrPair("data", jstrArray(entries)))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "skills/config/write":
+        let path = jsonExtractString(payload, "path")
+        var enabled = false
+        if indexOfSubstr(payload, "\"enabled\":true", 0) >= 0:
+            enabled = true
+        if len(path) == 0:
+            sendError(id, "missing path")
+            return
+        if ! writeSkillConfigEntry(path, enabled):
+            sendError(id, "failed to update skill settings")
+            return
+        clearSkillsCache()
+        var resFields: seq[str] = newSeq[str]()
+        seqAdd(resFields, jstrPair("effectiveEnabled", jstrBool(enabled)))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "mcpServerStatus/list":
+        var resFields: seq[str] = newSeq[str]()
+        seqAdd(resFields, jstrPair("data", jstrArray(newSeq[str]())))
+        seqAdd(resFields, jstrPair("nextCursor", jstrNull()))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "config/read":
+        let includeLayers = indexOfSubstr(payload, "\"includeLayers\":true", 0) >= 0 || indexOfSubstr(payload, "\"include_layers\":true", 0) >= 0
+        var cfgFields: seq[str] = newSeq[str]()
+        if len(state.model) > 0:
+            seqAdd(cfgFields, jstrPair("model", jstrString state.model))
+        if len(state.reviewModel) > 0:
+            seqAdd(cfgFields, jstrPair("review_model", jstrString state.reviewModel))
+        let provider = resolveModelProvider()
+        if len(provider) > 0:
+            seqAdd(cfgFields, jstrPair("model_provider", jstrString provider))
+        if len(state.approvalPolicy) > 0:
+            seqAdd(cfgFields, jstrPair("approval_policy", jstrString state.approvalPolicy))
+        if len(state.sandboxMode) > 0:
+            seqAdd(cfgFields, jstrPair("sandbox_mode", jstrString state.sandboxMode))
+        let chatgptBase = readConfigValue "chatgpt_base_url"
+        if len(chatgptBase) > 0:
+            seqAdd(cfgFields, jstrPair("chatgpt_base_url", jstrString chatgptBase))
+        let webSearch = configBoolValueAny(seqStr4("features.web_search_request", "web_search_request", "tools.web_search", "web_search"), false)
+        let viewImage = configBoolValueAny(seqStr2("features.view_image_tool", "tools.view_image"), true)
+        var toolsFields: seq[str] = newSeq[str]()
+        seqAdd(toolsFields, jstrPair("web_search", jstrBool webSearch))
+        seqAdd(toolsFields, jstrPair("view_image", jstrBool viewImage))
+        seqAdd(cfgFields, jstrPair("tools", jstrObject toolsFields))
+        var resFields: seq[str] = newSeq[str]()
+        seqAdd(resFields, jstrPair("config", jstrObject cfgFields))
+        seqAdd(resFields, jstrPair("origins", jstrObject newSeq[str]()))
+        if includeLayers:
+            seqAdd(resFields, jstrPair("layers", jstrArray newSeq[str]()))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "config/value/write":
+        let keyPath = normalizeConfigKey(jsonExtractString(payload, "keyPath"))
+        if len(keyPath) == 0:
+            sendError(id, "missing keyPath")
+            return
+        let valueText = extractValueAsString(payload)
+        if ! writeConfigValueWithProfile(keyPath, valueText):
+            sendError(id, "write failed")
+            return
+        sendResponse(id, jstrObject(newSeq[str]()))
+        return
+    if methodName == "config/batchWrite":
+        var idx: int32 = 0
+        var ok: bool = true
+        while true:
+            let keyIdx = jsonFindKeyAfter(payload, "keyPath", idx)
+            if keyIdx < 0:
+                break
+            let keyPath = normalizeConfigKey(jsonExtractStringAfter(payload, "keyPath", keyIdx))
+            let valueText = jsonExtractStringAfter(payload, "value", keyIdx)
+            if len(keyPath) > 0:
+                if ! writeConfigValueWithProfile(keyPath, valueText):
+                    ok = false
+            idx = keyIdx + 7
+        if ! ok:
+            sendError(id, "batch write failed")
+            return
+        sendResponse(id, jstrObject(newSeq[str]()))
+        return
+    if methodName == "config/mcpServer/reload":
+        sendResponse(id, jstrObject(newSeq[str]()))
+        return
+    if methodName == "configRequirements/read":
+        var approvalPolicies: seq[str] = newSeq[str]()
+        var sandboxModes: seq[str] = newSeq[str]()
+        let hasRequirements = readConfigRequirements(approvalPolicies, sandboxModes)
+        var resFields: seq[str] = newSeq[str]()
+        if ! hasRequirements:
+            seqAdd(resFields, jstrPair("requirements", jstrNull()))
+            sendResponse(id, jstrObject(resFields))
+            return
+        var reqFields: seq[str] = newSeq[str]()
+        if len(approvalPolicies) > 0:
+            var items: seq[str] = newSeq[str]()
+            var idx: int32 = 0
+            while idx < len(approvalPolicies):
+                seqAdd(items, jstrString(approvalPolicies[idx]))
+                idx = idx + 1
+            seqAdd(reqFields, jstrPair("allowedApprovalPolicies", jstrArray(items)))
+        else:
+            seqAdd(reqFields, jstrPair("allowedApprovalPolicies", jstrNull()))
+        if len(sandboxModes) > 0:
+            var items: seq[str] = newSeq[str]()
+            var idx: int32 = 0
+            while idx < len(sandboxModes):
+                seqAdd(items, jstrString(sandboxModes[idx]))
+                idx = idx + 1
+            seqAdd(reqFields, jstrPair("allowedSandboxModes", jstrArray(items)))
+        else:
+            seqAdd(reqFields, jstrPair("allowedSandboxModes", jstrNull()))
+        seqAdd(resFields, jstrPair("requirements", jstrObject(reqFields)))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "account/read":
+        let refreshToken = indexOfSubstr(payload, "\"refreshToken\":true", 0) >= 0 || indexOfSubstr(payload, "\"refresh_token\":true", 0) >= 0
+        if refreshToken:
+            var tokens: AuthTokens
+            if readChatgptTokens(tokens):
+                if shouldRefresh(tokens):
+                    var updated: AuthTokens
+                    var refreshErr = ""
+                    if refreshTokens(authIssuerDefault(), authClientIdDefault(), tokens, updated, refreshErr):
+                        tokens = updated
+        let requiresAuth = providerRequiresOpenaiAuth()
+        if ! requiresAuth:
+            let resFields = seqStr2(
+                jstrPair("account", jstrNull()),
+                jstrPair("requiresOpenaiAuth", jstrBool(false))
+            )
+            sendResponse(id, jstrObject(resFields))
+            return
+        var accountJson = "null"
+        var apiKey = readConfigValue("auth.token")
+        if len(apiKey) > 0 && isChatgptPlaceholderToken(apiKey):
+            apiKey = ""
+        if len(apiKey) == 0:
+            var apiKeyJson = ""
+            readAuthJsonApiKey(apiKeyJson)
+            apiKey = apiKeyJson
+            if len(apiKey) > 0 && isChatgptPlaceholderToken(apiKey):
+                apiKey = ""
+        if len(apiKey) > 0:
+            accountJson = jstrObject(seqStr1(jstrPair("type", jstrString("apiKey"))))
+        else:
+            var tokens: AuthTokens
+            if readChatgptTokens(tokens):
+                let info = buildAccountInfo(tokens)
+                if len(info.email) == 0 || len(info.planType) == 0:
+                    sendError(id, "email and plan type are required for chatgpt authentication")
+                    return
+                accountJson = jstrObject(seqStr3(
+                    jstrPair("type", jstrString("chatgpt")),
+                    jstrPair("email", jstrString(info.email)),
+                    jstrPair("planType", jstrString(info.planType))
+                ))
+        let resFields = seqStr2(
+            jstrPair("account", accountJson),
+            jstrPair("requiresOpenaiAuth", jstrBool(true))
+        )
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "account/login/start":
+        cleanupLoginSessions(state)
+        let loginType = jsonExtractString(payload, "type")
+        if loginType == "apiKey":
+            let apiKey = jsonExtractString(payload, "apiKey")
+            if len(apiKey) == 0:
+                sendError(id, "missing apiKey")
+                return
+            if isChatgptPlaceholderToken(apiKey):
+                sendError(id, "invalid apiKey")
+                return
+            if normalizePolicy(trimLine(readConfigValue("forced_login_method"))) == "chatgpt":
+                sendError(id, "API key login is disabled")
+                return
+            if ! writeConfigValue("auth.token", apiKey):
+                sendError(id, "login failed")
+                return
+            writeAuthJsonApiKey(apiKey)
+            sendEvent("account/updated", jstrObject(seqStr1(jstrPair("authMode", jstrString("apikey")))))
+            sendResponse(id, jstrObject(seqStr1(jstrPair("type", jstrString("apiKey")))))
+            return
+        if loginType == "chatgpt":
+            if normalizePolicy(trimLine(readConfigValue("forced_login_method"))) == "api":
+                sendError(id, "ChatGPT login is disabled")
+                return
+            let issuer = authIssuerDefault()
+            let clientId = authClientIdDefault()
+            let workspaceId = readConfigValue("forced_chatgpt_workspace_id")
+            var loginId = ""
+            var authUrl = ""
+            var userCode = ""
+            var err = ""
+            if ! startChatgptLogin(state, issuer, clientId, workspaceId, loginId, authUrl, err):
+                var errText = err
+                let errLower = normalizePolicy(trimLine(errText))
+                if len(errLower) > 0 && indexOfSubstr(errLower, "bind", 0) >= 0:
+                    var deviceErr = ""
+                    if startDeviceCodeLogin(state, issuer, clientId, workspaceId, loginId, authUrl, userCode, deviceErr):
+                        let resFields = seqStr4(
+                            jstrPair("type", jstrString("chatgpt")),
+                            jstrPair("loginId", jstrString(loginId)),
+                            jstrPair("authUrl", jstrString(authUrl)),
+                            jstrPair("userCode", jstrString(userCode))
+                        )
+                        sendResponse(id, jstrObject(resFields))
+                        return
+                    if len(deviceErr) > 0:
+                        errText = deviceErr
+                if len(errText) == 0:
+                    errText = "login failed"
+                sendError(id, errText)
+                return
+            var resFields = seqStr3(
+                jstrPair("type", jstrString("chatgpt")),
+                jstrPair("loginId", jstrString(loginId)),
+                jstrPair("authUrl", jstrString(authUrl))
+            )
+            sendResponse(id, jstrObject(resFields))
+            return
+        sendError(id, "unsupported login type")
+        return
+    if methodName == "account/login/cancel":
+        let loginId = jsonExtractString(payload, "loginId")
+        let idx = findLoginIndex(state, loginId)
+        if idx < 0:
+            sendResponse(id, jstrObject(seqStr1(jstrPair("status", jstrString("notFound")))))
+            return
+        stopLoginSession(state, idx)
+        sendResponse(id, jstrObject(seqStr1(jstrPair("status", jstrString("canceled")))))
+        return
+    if methodName == "account/logout":
+        clearConfigValue("auth.token")
+        clearAuthJson()
+        sendEvent("account/updated", jstrObject(seqStr1(jstrPair("authMode", jstrNull()))))
+        sendResponse(id, jstrObject(newSeq[str]()))
+        return
+    if methodName == "account/rateLimits/read":
+        var apiKey = readConfigValue("auth.token")
+        if len(apiKey) > 0 && isChatgptPlaceholderToken(apiKey):
+            apiKey = ""
+        if len(apiKey) == 0:
+            var apiKeyJson = ""
+            readAuthJsonApiKey(apiKeyJson)
+            apiKey = apiKeyJson
+            if len(apiKey) > 0 && isChatgptPlaceholderToken(apiKey):
+                apiKey = ""
+        var tokens: AuthTokens
+        if ! readChatgptTokens(tokens):
+            if len(apiKey) > 0:
+                sendError(id, "chatgpt authentication required to read rate limits")
+            else:
+                sendError(id, "codex account authentication required to read rate limits")
+            return
+        if shouldRefresh(tokens):
+            var updated: AuthTokens
+            var refreshErr = ""
+            if refreshTokens(authIssuerDefault(), authClientIdDefault(), tokens, updated, refreshErr):
+                tokens = updated
+        if len(tokens.accessToken) == 0:
+            sendError(id, "chatgpt authentication required to read rate limits")
+            return
+        let baseUrl = loadCloudBaseUrl()
+        let url = cloudApiPath(baseUrl, "/usage")
+        var accountId: str = ""
+        if len(tokens.accountId) > 0:
+            accountId = tokens.accountId
+        else:
+            accountId = extractAccountIdFromJwt(tokens.idToken)
+        if len(accountId) == 0:
+            accountId = extractAccountIdFromJwt(tokens.accessToken)
+        let res = cloudHttpRequest("GET", url, url, "", tokens.accessToken, accountId)
+        if ! res.ok:
+            var errText = res.error
+            if len(errText) == 0:
+                errText = "failed to fetch rate limits"
+            sendError(id, errText)
+            return
+        let parsed = parseJsonSafe(res.body)
+        if ! parsed.ok:
+            sendError(id, "failed to parse rate limits")
+            return
+        let root: json.JsonNode = parsed.value
+        var rateFields: seq[str] = newSeq[str]()
+        var rateNode: json.JsonNode = json.newJNull()
+        if root.kind == json.JObject && root.hasKey("rate_limit"):
+            rateNode = json.jsonGetField(root, "rate_limit")
+        var primaryNode: json.JsonNode = json.newJNull()
+        if rateNode != nil && rateNode.kind == json.JObject && rateNode.hasKey("primary_window"):
+            primaryNode = json.jsonGetField(rateNode, "primary_window")
+        var secondaryNode: json.JsonNode = json.newJNull()
+        if rateNode != nil && rateNode.kind == json.JObject && rateNode.hasKey("secondary_window"):
+            secondaryNode = json.jsonGetField(rateNode, "secondary_window")
+        let primaryJson = buildRateLimitWindow(primaryNode)
+        let secondaryJson = buildRateLimitWindow(secondaryNode)
+        var primaryValue = primaryJson
+        if len(primaryValue) == 0:
+            primaryValue = jstrNull()
+        seqAdd(rateFields, jstrPair("primary", primaryValue))
+        var secondaryValue = secondaryJson
+        if len(secondaryValue) == 0:
+            secondaryValue = jstrNull()
+        seqAdd(rateFields, jstrPair("secondary", secondaryValue))
+        var creditsNode: json.JsonNode = json.newJNull()
+        if root.kind == json.JObject && root.hasKey("credits"):
+            creditsNode = json.jsonGetField(root, "credits")
+        let creditsJson = buildCreditsSnapshot(creditsNode)
+        var creditsValue = creditsJson
+        if len(creditsValue) == 0:
+            creditsValue = jstrNull()
+        seqAdd(rateFields, jstrPair("credits", creditsValue))
+        let planType = getStringField(root, "plan_type", "")
+        var planValue = jstrNull()
+        if len(planType) > 0:
+            planValue = jstrString(planType)
+        seqAdd(rateFields, jstrPair("planType", planValue))
+        sendResponse(id, jstrObject(seqStr1(jstrPair("rateLimits", jstrObject(rateFields)))))
+        return
+    if methodName == "feedback/upload":
+        var threadId = jsonExtractString(payload, "threadId")
+        if len(threadId) == 0:
+            threadId = state.threadId
+        var resFields: seq[str] = newSeq[str]()
+        seqAdd(resFields, jstrPair("threadId", jstrString(threadId)))
+        sendResponse(id, jstrObject(resFields))
+        return
+    if methodName == "mcpServer/oauth/login":
+        sendError(id, "mcp oauth not supported")
+        return
+    sendError(id, "unknown method")
+
+fn runAppServer(args: seq[str], start: int32): int32 =
+    var analyticsDefaultEnabled = false
+    var listenUrl = "stdio://"
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if arg == "--help" || arg == "-h":
+            printLine("[experimental] Run the app server or related tooling")
+            printLine("")
+            printLine("Usage: codex app-server [OPTIONS] [COMMAND]")
+            printLine("")
+            printLine("Commands:")
+            printLine("  generate-ts           [experimental] Generate TypeScript bindings for the app server protocol")
+            printLine("  generate-json-schema  [experimental] Generate JSON Schema for the app server protocol")
+            printLine("  help                  Print this message or the help of the given subcommand(s)")
+            printLine("")
+            printLine("Options:")
+            printConfigFlagHelp()
+            printEnableFlagHelp()
+            printDisableFlagHelp()
+            printLine("      --listen <URL>")
+            printLine("          Transport endpoint URL. Supported values: `stdio://` (default), `ws://IP:PORT`")
+            printLine("          ")
+            printLine("          [default: stdio://]")
+            printLine("")
+            printLine("      --analytics-default-enabled")
+            printLine("          Controls whether analytics are enabled by default.")
+            printLine("          ")
+            printLine("          Analytics are disabled by default for app-server. Users have to explicitly opt in via the")
+            printLine("          `analytics` section in the config.toml file.")
+            printLine("          ")
+            printLine("          However, for first-party use cases like the VSCode IDE extension, we default analytics to")
+            printLine("          be enabled by default by setting this flag. Users can still opt out by setting this in")
+            printLine("          their config.toml:")
+            printLine("          ")
+            printLine("          ```toml [analytics] enabled = false ```")
+            printLine("          ")
+            printLine("          See https://developers.openai.com/codex/config-advanced/#metrics for more details.")
+            printLine("")
+            printLine("  -h, --help")
+            printLine("          Print help (see a summary with '-h')")
+            return 0
+        if arg == "--listen":
+            if i + 1 >= len(args):
+                printErr("error: a value is required for '--listen <URL>' but none was supplied")
+                printErr("")
+                printErr("For more information, try '--help'.")
+                return 2
+            listenUrl = argAt(args, i + 1)
+            i = i + 1
+        elif hasPrefix(arg, "--listen:"):
+            # Non-clap sugar; keep for now but validate the value.
+            listenUrl = dropPrefix(arg, "--listen:")
+        if arg == "--analytics-default-enabled":
+            analyticsDefaultEnabled = true
+        i = i + 1
+    if len(listenUrl) == 0:
+        listenUrl = "stdio://"
+    if listenUrl != "stdio://" && ! hasPrefix(listenUrl, "ws://"):
+        var msg: str = "error: invalid value '"
+        msg = msg + listenUrl
+        msg = msg + "' for '--listen <URL>': unsupported --listen URL `"
+        msg = msg + listenUrl
+        msg = msg + "`; expected `stdio://` or `ws://IP:PORT`"
+        printErr(msg)
+        printErr("")
+        printErr("For more information, try '--help'.")
+        return 2
+    if analyticsDefaultEnabled:
+        let cfg = readConfigValue("analytics.enabled")
+        if len(cfg) == 0:
+            addConfigOverride("analytics.enabled", "true")
+    var readyParams: seq[str] = newSeq[str]()
+    seqAdd(readyParams, jstrPair("server", jstrString("codex-cheng")))
+    seqAdd(readyParams, jstrPair("status", jstrString("ready")))
+    sendEvent("app-server/ready", jstrObject(readyParams))
+    var state: ServerState = ServerState(
+        initialized: false,
+        threadId: "",
+        turnId: "",
+        loadedThreadIds: newSeq[str](),
+        itemSeq: 0,
+        requestSeq: 0,
+        cwd: "",
+        model: "",
+        reviewModel: "",
+        approvalPolicy: "",
+        sandboxMode: "",
+        baseInstructions: "",
+        developerInstructions: "",
+        reasoningEffort: "",
+        loginIds: newSeq[str](),
+        loginPids: newSeq[int32](),
+        loginPorts: newSeq[int32](),
+        approvalKeys: newSeq[str]()
+    )
+    let workDir = os.getCurrentDir()
+    while true:
+        let rl = stdinReadLine()
+        if ! rl.ok:
+            break
+        let trimmed = trimLine(rl.line)
+        if len(trimmed) == 0:
+            continue
+        handleRpc(state, trimmed, workDir)
+    cleanupLoginSessions(state)
+    return 0

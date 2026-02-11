@@ -1,0 +1,3323 @@
+import cmdline
+import system
+import std/os
+import std/times
+import seqs
+
+import cheng/codex/common
+import cheng/codex/json_util
+import cheng/codex/config
+import cheng/codex/auth_store
+import cheng/codex/features
+import cheng/codex/command_safety
+import cheng/codex/execpolicy_runtime
+import cheng/codex/shell_tool_args
+import cheng/codex/sandbox_runner
+import cheng/codex/shell_snapshot
+import cheng/codex/posix_net
+import cheng/codex/collab_agents
+import cheng/codex/auth_login
+import cheng/codex/mcp_oauth
+import cheng/codex/model_client
+import cheng/codex/skills
+import cheng/codex/storage
+import cheng/codex/tools/shell
+import cheng/codex/tools/patch
+import cheng/codex/tools/mock
+import cheng/codex/cloud_tasks_cmd
+import cheng/codex/engine
+import cheng/codex/exec_cmd
+import cheng/codex/execpolicy_cmd
+import cheng/codex/interactive
+import cheng/codex/mcp_cmd
+import cheng/codex/mcp_server_cmd
+import cheng/codex/responses_proxy_cmd
+import cheng/codex/stdio_to_uds_cmd
+import cheng/codex/app_server
+import cheng/codex/app_server_test_client
+import cheng/codex/app_cmd
+
+fn collectArgsFromArgv(argc: int32, argv: str*): seq[str] =
+    argc
+    argv
+    var out: seq[str] = newSeq[str]()
+    let total: int32 = cmdline.paramCount()
+    if total <= 0:
+        return out
+    var i: int32 = 1
+    while i <= total:
+        seqAdd(out, "" + cmdline.paramStr(i))
+        i = i + 1
+    return out
+
+fn traceMainLocal(msg: str) =
+    let enabled = normalizePolicy(trimLine(os.getEnv("CODEX_TRACE_MAIN")))
+    if enabled == "1" || enabled == "true" || enabled == "yes":
+        printErr("[main] " + msg)
+
+fn printVersionNamed(name: str) =
+    # codex-rs prints `codex-cli[-<cmd>] <version>`.
+    var out = name
+    if len(CODEX_VERSION) > 0:
+        out = out + " "
+        out = out + CODEX_VERSION
+    printLine(out)
+
+fn normalizeSandboxModeLocal(mode: str): str =
+    let normalized = normalizePolicy(trimLine(mode))
+    if len(normalized) == 0:
+        return ""
+    if normalized == "read-only" || normalized == "readonly":
+        return "read-only"
+    if normalized == "workspace-write" || normalized == "workspacewrite":
+        return "workspace-write"
+    if normalized == "danger-full-access" || normalized == "dangerfullaccess":
+        return "danger-full-access"
+    return normalized
+
+fn isMacHostLocal(): bool =
+    return detectOsKind() == "macos"
+
+fn printUsage() =
+    # Keep help text aligned with codex-rs clap output.
+    printLine("Codex CLI")
+    printLine("")
+    printLine("If no subcommand is specified, options will be forwarded to the interactive CLI.")
+    printLine("")
+    printLine("Usage: codex [OPTIONS] [PROMPT]")
+    printLine("       codex [OPTIONS] <COMMAND> [ARGS]")
+    printLine("")
+    printLine("Commands:")
+    printLine("  exec        Run Codex non-interactively [aliases: e]")
+    printLine("  review      Run a code review non-interactively")
+    printLine("  login       Manage login")
+    printLine("  logout      Remove stored authentication credentials")
+    printLine("  mcp         [experimental] Run Codex as an MCP server and manage MCP servers")
+    printLine("  mcp-server  [experimental] Run the Codex MCP server (stdio transport)")
+    printLine("  app-server  [experimental] Run the app server or related tooling")
+    if isMacHostLocal():
+        printLine("  app         Launch the Codex desktop app (downloads the macOS installer if missing)")
+    printLine("  completion  Generate shell completion scripts")
+    printLine("  sandbox     Run commands within a Codex-provided sandbox")
+    printLine("  debug       Debugging tools")
+    printLine("  apply       Apply the latest diff produced by Codex agent as a `git apply` to your local working")
+    printLine("              tree [aliases: a]")
+    printLine("  resume      Resume a previous interactive session (picker by default; use --last to continue the")
+    printLine("              most recent)")
+    printLine("  fork        Fork a previous interactive session (picker by default; use --last to fork the most")
+    printLine("              recent)")
+    printLine("  cloud       [EXPERIMENTAL] Browse tasks from Codex Cloud and apply changes locally")
+    printLine("  features    Inspect feature flags")
+    printLine("  help        Print this message or the help of the given subcommand(s)")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [PROMPT]")
+    printLine("          Optional user prompt to start the session")
+    printLine("")
+    printLine("Options:")
+    printLine("  -c, --config <key=value>")
+    printLine("          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`.")
+    printLine("          Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed")
+    printLine("          as TOML. If it fails to parse as TOML, the raw string is used as a literal.")
+    printLine("          ")
+    printLine("          Examples: - `-c model=\"o3\"` - `-c 'sandbox_permissions=[\"disk-full-read-access\"]'` - `-c")
+    printLine("          shell_environment_policy.inherit=all`")
+    printLine("")
+    printLine("      --enable <FEATURE>")
+    printLine("          Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    printLine("")
+    printLine("      --disable <FEATURE>")
+    printLine("          Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    printLine("")
+    printLine("  -i, --image <FILE>...")
+    printLine("          Optional image(s) to attach to the initial prompt")
+    printLine("")
+    printLine("  -m, --model <MODEL>")
+    printLine("          Model the agent should use")
+    printLine("")
+    printLine("      --oss")
+    printLine("          Convenience flag to select the local open source model provider. Equivalent to -c")
+    printLine("          model_provider=oss; verifies a local LM Studio or Ollama server is running")
+    printLine("")
+    printLine("      --local-provider <OSS_PROVIDER>")
+    printLine("          Specify which local provider to use (lmstudio or ollama). If not specified with --oss,")
+    printLine("          will use config default or show selection")
+    printLine("")
+    printLine("  -p, --profile <CONFIG_PROFILE>")
+    printLine("          Configuration profile from config.toml to specify default options")
+    printLine("")
+    printLine("  -s, --sandbox <SANDBOX_MODE>")
+    printLine("          Select the sandbox policy to use when executing model-generated shell commands")
+    printLine("          ")
+    printLine("          [possible values: read-only, workspace-write, danger-full-access]")
+    printLine("")
+    printLine("  -a, --ask-for-approval <APPROVAL_POLICY>")
+    printLine("          Configure when the model requires human approval before executing a command")
+    printLine("")
+    printLine("          Possible values:")
+    printLine("          - untrusted:  Only run \"trusted\" commands (e.g. ls, cat, sed) without asking for user")
+    printLine("            approval. Will escalate to the user if the model proposes a command that is not in the")
+    printLine("            \"trusted\" set")
+    printLine("          - on-failure: Run all commands without asking for user approval. Only asks for approval if")
+    printLine("            a command fails to execute, in which case it will escalate to the user to ask for")
+    printLine("            un-sandboxed execution")
+    printLine("          - on-request: The model decides when to ask the user for approval")
+    printLine("          - never:      Never ask for user approval Execution failures are immediately returned to")
+    printLine("            the model")
+    printLine("")
+    printLine("      --full-auto")
+    printLine("          Convenience alias for low-friction sandboxed automatic execution (-a on-request, --sandbox")
+    printLine("          workspace-write)")
+    printLine("")
+    printLine("      --dangerously-bypass-approvals-and-sandbox")
+    printLine("          Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY")
+    printLine("          DANGEROUS. Intended solely for running in environments that are externally sandboxed")
+    printLine("")
+    printLine("  -C, --cd <DIR>")
+    printLine("          Tell the agent to use the specified directory as its working root")
+    printLine("")
+    printLine("      --search")
+    printLine("          Enable live web search. When enabled, the native Responses `web_search` tool is available")
+    printLine("          to the model (no per‑call approval)")
+    printLine("")
+    printLine("      --add-dir <DIR>")
+    printLine("          Additional directories that should be writable alongside the primary workspace")
+    printLine("")
+    printLine("      --no-alt-screen")
+    printLine("          Disable alternate screen mode")
+    printLine("          ")
+    printLine("          Runs the TUI in inline mode, preserving terminal scrollback history. This is useful in")
+    printLine("          terminal multiplexers like Zellij that follow the xterm spec strictly and disable")
+    printLine("          scrollback in alternate screen buffers.")
+    printLine("")
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    printLine("")
+    printLine("  -V, --version")
+    printLine("          Print version")
+
+fn printUsageShort() =
+    # Clap short help (`-h`) output (1:1 with codex-rs).
+    printLine("Codex CLI")
+    printLine("")
+    printLine("Usage: codex [OPTIONS] [PROMPT]")
+    printLine("       codex [OPTIONS] <COMMAND> [ARGS]")
+    printLine("")
+    printLine("Commands:")
+    printLine("  exec        Run Codex non-interactively [aliases: e]")
+    printLine("  review      Run a code review non-interactively")
+    printLine("  login       Manage login")
+    printLine("  logout      Remove stored authentication credentials")
+    printLine("  mcp         [experimental] Run Codex as an MCP server and manage MCP servers")
+    printLine("  mcp-server  [experimental] Run the Codex MCP server (stdio transport)")
+    printLine("  app-server  [experimental] Run the app server or related tooling")
+    if isMacHostLocal():
+        printLine("  app         Launch the Codex desktop app (downloads the macOS installer if missing)")
+    printLine("  completion  Generate shell completion scripts")
+    printLine("  sandbox     Run commands within a Codex-provided sandbox")
+    printLine("  debug       Debugging tools")
+    printLine("  apply       Apply the latest diff produced by Codex agent as a `git apply` to your local working")
+    printLine("              tree [aliases: a]")
+    printLine("  resume      Resume a previous interactive session (picker by default; use --last to continue the")
+    printLine("              most recent)")
+    printLine("  fork        Fork a previous interactive session (picker by default; use --last to fork the most")
+    printLine("              recent)")
+    printLine("  cloud       [EXPERIMENTAL] Browse tasks from Codex Cloud and apply changes locally")
+    printLine("  features    Inspect feature flags")
+    printLine("  help        Print this message or the help of the given subcommand(s)")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [PROMPT]  Optional user prompt to start the session")
+    printLine("")
+    printLine("Options:")
+    printLine("  -c, --config <key=value>")
+    printLine("          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`.")
+    printLine("          Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed")
+    printLine("          as TOML. If it fails to parse as TOML, the raw string is used as a literal")
+    printLine("      --enable <FEATURE>")
+    printLine("          Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    printLine("      --disable <FEATURE>")
+    printLine("          Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    printLine("  -i, --image <FILE>...")
+    printLine("          Optional image(s) to attach to the initial prompt")
+    printLine("  -m, --model <MODEL>")
+    printLine("          Model the agent should use")
+    printLine("      --oss")
+    printLine("          Convenience flag to select the local open source model provider. Equivalent to -c")
+    printLine("          model_provider=oss; verifies a local LM Studio or Ollama server is running")
+    printLine("      --local-provider <OSS_PROVIDER>")
+    printLine("          Specify which local provider to use (lmstudio or ollama). If not specified with --oss,")
+    printLine("          will use config default or show selection")
+    printLine("  -p, --profile <CONFIG_PROFILE>")
+    printLine("          Configuration profile from config.toml to specify default options")
+    printLine("  -s, --sandbox <SANDBOX_MODE>")
+    printLine("          Select the sandbox policy to use when executing model-generated shell commands [possible")
+    printLine("          values: read-only, workspace-write, danger-full-access]")
+    printLine("  -a, --ask-for-approval <APPROVAL_POLICY>")
+    printLine("          Configure when the model requires human approval before executing a command [possible")
+    printLine("          values: untrusted, on-failure, on-request, never]")
+    printLine("      --full-auto")
+    printLine("          Convenience alias for low-friction sandboxed automatic execution (-a on-request, --sandbox")
+    printLine("          workspace-write)")
+    printLine("      --dangerously-bypass-approvals-and-sandbox")
+    printLine("          Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY")
+    printLine("          DANGEROUS. Intended solely for running in environments that are externally sandboxed")
+    printLine("  -C, --cd <DIR>")
+    printLine("          Tell the agent to use the specified directory as its working root")
+    printLine("      --search")
+    printLine("          Enable live web search. When enabled, the native Responses `web_search` tool is available")
+    printLine("          to the model (no per‑call approval)")
+    printLine("      --add-dir <DIR>")
+    printLine("          Additional directories that should be writable alongside the primary workspace")
+    printLine("      --no-alt-screen")
+    printLine("          Disable alternate screen mode")
+    printLine("  -h, --help")
+    printLine("          Print help (see more with '--help')")
+    printLine("  -V, --version")
+    printLine("          Print version")
+
+type
+    ParsedArgs =
+        args: seq[str]
+        overrides: seq[str]
+        err: str
+
+    ClosedLoopStep =
+        name: str
+        status: str
+        exitCode: int32
+        detail: str
+
+    ClosedLoopOptions =
+        workDir: str
+        online: bool
+        checkOnly: str
+
+    FeatureSetCommandArgs =
+        feature: str
+        showHelp: bool
+        err: str
+
+fn featureOverride(name: str, enabled: bool, err: var str): str =
+    if len(err) > 0:
+        return ""
+    if ! isKnownFeatureKey(name):
+        err = "Unknown feature flag: " + name
+        return ""
+    var value: str = "false"
+    if enabled:
+        value = "true"
+    # Build incrementally to avoid deep temporary chains.
+    var out: str = "features."
+    out = out + name
+    out = out + "="
+    out = out + value
+    return out
+
+fn ownedStr(s: str): str =
+    if s == nil:
+        return ""
+    return "" + s
+
+fn streqSafe(a: str, b: str): bool =
+    if a == nil || b == nil:
+        return false
+    if len(a) != len(b):
+        return false
+    var i: int32 = 0
+    while i < len(a):
+        if ord(a[i]) != ord(b[i]):
+            return false
+        i = i + 1
+    return true
+
+fn parseGlobalOverrides(args: seq[str]): ParsedArgs =
+    var res: ParsedArgs
+    var outArgs: seq[str] = newSeq[str]()
+    var overrides: seq[str] = newSeq[str]()
+    var err = ""
+    var i: int32 = 0
+    while i < len(args):
+        let arg: str = get[str](args, i)
+        if arg == "--":
+            # Preserve the delimiter: some subcommands (e.g. sandbox) need it.
+            seqAdd(outArgs, ownedStr(arg))
+            var j: int32 = i + 1
+            while j < len(args):
+                seqAdd(outArgs, ownedStr(get[str](args, j)))
+                j = j + 1
+            break
+        if arg == "-c" || arg == "--config":
+            if i + 1 < len(args):
+                seqAdd(overrides, ownedStr(get[str](args, i + 1)))
+                i = i + 1
+            else:
+                err = "missing value for --config"
+                break
+        elif arg == "--enable":
+            if i + 1 < len(args):
+                let override = featureOverride(ownedStr(get[str](args, i + 1)), true, err)
+                if len(override) > 0:
+                    seqAdd(overrides, ownedStr(override))
+                i = i + 1
+            else:
+                err = "missing value for --enable"
+                break
+        elif arg == "--disable":
+            if i + 1 < len(args):
+                let override = featureOverride(ownedStr(get[str](args, i + 1)), false, err)
+                if len(override) > 0:
+                    seqAdd(overrides, ownedStr(override))
+                i = i + 1
+            else:
+                err = "missing value for --disable"
+                break
+        else:
+            seqAdd(outArgs, ownedStr(arg))
+        i = i + 1
+    res.args = outArgs
+    res.overrides = overrides
+    res.err = err
+    return res
+
+fn joinShellArgs(args: seq[str], start: int32): str =
+    var out = ""
+    var i: int32 = start
+    while i < len(args):
+        let part = shellQuote(argAt(args, i))
+        if len(out) == 0:
+            out = part
+        else:
+            out = out + " " + part
+        i = i + 1
+    return out
+
+fn completionCommands(): str =
+    if isMacHostLocal():
+        return "exec e review login logout mcp mcp-server app-server app completion sandbox debug apply a resume fork cloud cloud-tasks features help"
+    return "exec e review login logout mcp mcp-server app-server completion sandbox debug apply a resume fork cloud cloud-tasks features help"
+
+fn runCompletion(args: seq[str], start: int32): int32 =
+    var shell = "bash"
+    var sawShell = false
+    var showHelp = false
+    var i: int32 = start
+    while i < len(args):
+        let arg = ownedStr(get[str](args, i))
+        if arg == "--help" || arg == "-h":
+            showHelp = true
+        elif arg == "--":
+            # Stop parsing options; remaining tokens are positionals.
+            i = i + 1
+            while i < len(args):
+                if sawShell:
+                    printErr("error: unexpected argument '" + ownedStr(get[str](args, i)) + "' found")
+                    return 2
+                shell = ownedStr(get[str](args, i))
+                sawShell = true
+                i = i + 1
+            break
+        elif hasPrefix(arg, "-"):
+            printErr("error: unexpected argument '" + arg + "' found")
+            return 2
+        else:
+            # Positional [SHELL] (default: bash).
+            if sawShell:
+                printErr("error: unexpected argument '" + arg + "' found")
+                return 2
+            shell = arg
+            sawShell = true
+        i = i + 1
+    if showHelp:
+        if ! wantsLongHelp(args, start):
+            printLine("Generate shell completion scripts")
+            printLine("")
+            printLine("Usage: codex completion [OPTIONS] [SHELL]")
+            printLine("")
+            printLine("Arguments:")
+            printLine("  [SHELL]  Shell to generate completions for [default: bash] [possible values: bash, elvish, fish,")
+            printLine("           powershell, zsh]")
+            printLine("")
+            printLine("Options:")
+            printLine("  -c, --config <key=value>  Override a configuration value that would otherwise be loaded from")
+            printLine("                            `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`) to override")
+            printLine("                            nested values. The `value` portion is parsed as TOML. If it fails to")
+            printLine("                            parse as TOML, the raw string is used as a literal")
+            printLine("      --enable <FEATURE>    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+            printLine("      --disable <FEATURE>   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+            printLine("  -h, --help                Print help (see more with '--help')")
+            return 0
+        printLine("Generate shell completion scripts")
+        printLine("")
+        printLine("Usage: codex completion [OPTIONS] [SHELL]")
+        printLine("")
+        printLine("Arguments:")
+        printLine("  [SHELL]")
+        printLine("          Shell to generate completions for")
+        printLine("          ")
+        printLine("          [default: bash]")
+        printLine("          [possible values: bash, elvish, fish, powershell, zsh]")
+        printLine("")
+        printLine("Options:")
+        printConfigFlagHelp()
+        printEnableFlagHelp()
+        printDisableFlagHelp()
+        printLine("  -h, --help")
+        printLine("          Print help (see a summary with '-h')")
+        return 0
+    let cmds = completionCommands()
+    if shell == "bash":
+        printLine("_codex_cheng() {")
+        printLine("  local cur=\"${COMP_WORDS[COMP_CWORD]}\"")
+        printLine("  if [[ $COMP_CWORD -eq 1 ]]; then")
+        printLine("    COMPREPLY=( $(compgen -W \"" + cmds + "\" -- \"$cur\") )")
+        printLine("  fi")
+        printLine("}")
+        printLine("complete -F _codex_cheng codex-cheng codex")
+        return 0
+    if shell == "zsh":
+        printLine("#compdef codex-cheng codex")
+        printLine("_arguments '1: :((" + cmds + "))'")
+        return 0
+    if shell == "fish":
+        printLine("complete -c codex-cheng -f -a \"" + cmds + "\"")
+        printLine("complete -c codex -f -a \"" + cmds + "\"")
+        return 0
+    if shell == "elvish":
+        printLine("edit:completion:arg-completer[codex-cheng] = {|@words|")
+        printLine("  if (== (count $words) 1) {")
+        printLine("    put " + cmds)
+        printLine("  }")
+        printLine("}")
+        printLine("edit:completion:arg-completer[codex] = $edit:completion:arg-completer[codex-cheng]")
+        return 0
+    if shell == "powershell":
+        printLine("Register-ArgumentCompleter -Native -CommandName codex-cheng,codex -ScriptBlock {")
+        printLine("  param($wordToComplete, $commandAst, $cursorPosition)")
+        printLine("  \"" + cmds + "\" -split ' ' | Where-Object { $_ -like \"$wordToComplete*\" } | ForEach-Object {")
+        printLine("    [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)")
+        printLine("  }")
+        printLine("}")
+        return 0
+    printErr("unknown shell: " + shell)
+    return 2
+
+fn printFeaturesUsage() =
+    printLine("Inspect feature flags")
+    printLine("")
+    printLine("Usage: codex features [OPTIONS] <COMMAND>")
+    printLine("")
+    printLine("Commands:")
+    printLine("  list     List known features with their stage and effective state")
+    printLine("  enable   Enable a feature in config.toml")
+    printLine("  disable  Disable a feature in config.toml")
+    printLine("  help     Print this message or the help of the given subcommand(s)")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+
+fn printFeaturesUsageShort() =
+    printLine("Inspect feature flags")
+    printLine("")
+    printLine("Usage: codex features [OPTIONS] <COMMAND>")
+    printLine("")
+    printLine("Commands:")
+    printLine("  list     List known features with their stage and effective state")
+    printLine("  enable   Enable a feature in config.toml")
+    printLine("  disable  Disable a feature in config.toml")
+    printLine("  help     Print this message or the help of the given subcommand(s)")
+    printLine("")
+    printLine("Options:")
+    printLine("  -c, --config <key=value>  Override a configuration value that would otherwise be loaded from")
+    printLine("                            `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`) to override")
+    printLine("                            nested values. The `value` portion is parsed as TOML. If it fails to")
+    printLine("                            parse as TOML, the raw string is used as a literal")
+    printLine("      --enable <FEATURE>    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    printLine("      --disable <FEATURE>   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    printLine("  -h, --help                Print help (see more with '--help')")
+
+fn printFeaturesListHelp(): int32 =
+    printLine("List known features with their stage and effective state")
+    printLine("")
+    printLine("Usage: codex features list [OPTIONS]")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn printFeaturesEnableHelp(): int32 =
+    printLine("Enable a feature in config.toml")
+    printLine("")
+    printLine("Usage: codex features enable [OPTIONS] <FEATURE>")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  <FEATURE>")
+    printLine("          Feature key to update (for example: unified_exec)")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn printFeaturesDisableHelp(): int32 =
+    printLine("Disable a feature in config.toml")
+    printLine("")
+    printLine("Usage: codex features disable [OPTIONS] <FEATURE>")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  <FEATURE>")
+    printLine("          Feature key to update (for example: unified_exec)")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn parseFeatureSetCommandArgs(args: seq[str], start: int32): FeatureSetCommandArgs =
+    var parsed = FeatureSetCommandArgs(feature: "", showHelp: false, err: "")
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if arg == "--help" || arg == "-h":
+            parsed.showHelp = true
+            return parsed
+        if hasPrefix(arg, "-"):
+            parsed.err = "unexpected argument '" + arg + "' found"
+            return parsed
+        if len(parsed.feature) == 0:
+            parsed.feature = arg
+        else:
+            parsed.err = "unexpected argument '" + arg + "' found"
+            return parsed
+        i = i + 1
+    return parsed
+
+fn runFeaturesSet(args: seq[str], start: int32, enabled: bool): int32 =
+    let parsed = parseFeatureSetCommandArgs(args, start)
+    if parsed.showHelp:
+        if enabled:
+            return printFeaturesEnableHelp()
+        return printFeaturesDisableHelp()
+    if len(parsed.err) > 0:
+        printErr(parsed.err)
+        return 2
+    let feature = trimLine(parsed.feature)
+    if len(feature) == 0:
+        printErr("missing feature key")
+        return 2
+    if ! isKnownFeatureKey(feature):
+        printErr("Unknown feature flag: " + feature)
+        return 2
+    var value: str = "false"
+    if enabled:
+        value = "true"
+    let key = "features." + feature
+    let ok = writeConfigValueWithProfile(key, value)
+    if ! ok:
+        printErr("config write failed")
+        return 1
+    if enabled:
+        printLine("Enabled feature `" + feature + "` in config.toml.")
+    else:
+        printLine("Disabled feature `" + feature + "` in config.toml.")
+    return 0
+
+fn runFeatures(args: seq[str], start: int32): int32 =
+    if start >= len(args):
+        printFeaturesUsage()
+        return 2
+    let sub = argAt(args, start)
+    if sub == "list":
+        if start + 1 < len(args):
+            let next = argAt(args, start + 1)
+            if next == "--help" || next == "-h":
+                return printFeaturesListHelp()
+            printErr("error: unexpected argument '" + next + "' found")
+            return 2
+        return runFeaturesList()
+    if sub == "enable":
+        return runFeaturesSet(args, start + 1, true)
+    if sub == "disable":
+        return runFeaturesSet(args, start + 1, false)
+    if sub == "help" || sub == "--help" || sub == "-h":
+        if sub == "-h":
+            printFeaturesUsageShort()
+        else:
+            printFeaturesUsage()
+        return 0
+    printErr("error: unrecognized subcommand '" + sub + "'")
+    return 2
+
+fn sandboxPrint(toErr: bool, text: str) =
+    if toErr:
+        printErr(text)
+    else:
+        printLine(text)
+
+fn sandboxUnexpectedArgWithUsage(arg: str, usage: str, tip: str): int32 =
+    var msg = "error: unexpected argument '"
+    msg = msg + arg
+    msg = msg + "' found"
+    printErr(msg)
+    printErr("")
+    if len(tip) > 0:
+        printErr("  tip: " + tip)
+        printErr("")
+    printErr("Usage: " + usage)
+    printErr("")
+    printErr("For more information, try '--help'.")
+    return 2
+
+fn sandboxUnrecognizedSubcommandWithUsage(sub: str, usage: str): int32 =
+    var msg = "error: unrecognized subcommand '"
+    msg = msg + sub
+    msg = msg + "'"
+    printErr(msg)
+    printErr("")
+    printErr("Usage: " + usage)
+    printErr("")
+    printErr("For more information, try '--help'.")
+    return 2
+
+fn printSandboxUsageShort(toErr: bool): int32 =
+    sandboxPrint(toErr, "Run commands within a Codex-provided sandbox")
+    sandboxPrint(toErr, "")
+    sandboxPrint(toErr, "Usage: codex sandbox [OPTIONS] <COMMAND>")
+    sandboxPrint(toErr, "")
+    sandboxPrint(toErr, "Commands:")
+    sandboxPrint(toErr, "  macos    Run a command under Seatbelt (macOS only) [aliases: seatbelt]")
+    sandboxPrint(toErr, "  linux    Run a command under Landlock+seccomp (Linux only) [aliases: landlock]")
+    sandboxPrint(toErr, "  windows  Run a command under Windows restricted token (Windows only)")
+    sandboxPrint(toErr, "  help     Print this message or the help of the given subcommand(s)")
+    sandboxPrint(toErr, "")
+    sandboxPrint(toErr, "Options:")
+    sandboxPrint(toErr, "  -c, --config <key=value>  Override a configuration value that would otherwise be loaded from")
+    sandboxPrint(toErr, "                            `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`) to override")
+    sandboxPrint(toErr, "                            nested values. The `value` portion is parsed as TOML. If it fails to")
+    sandboxPrint(toErr, "                            parse as TOML, the raw string is used as a literal")
+    sandboxPrint(toErr, "      --enable <FEATURE>    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    sandboxPrint(toErr, "      --disable <FEATURE>   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    sandboxPrint(toErr, "  -h, --help                Print help (see more with '--help')")
+    return 0
+
+fn printSandboxUsageLong(): int32 =
+    printLine("Run commands within a Codex-provided sandbox")
+    printLine("")
+    printLine("Usage: codex sandbox [OPTIONS] <COMMAND>")
+    printLine("")
+    printLine("Commands:")
+    printLine("  macos    Run a command under Seatbelt (macOS only) [aliases: seatbelt]")
+    printLine("  linux    Run a command under Landlock+seccomp (Linux only) [aliases: landlock]")
+    printLine("  windows  Run a command under Windows restricted token (Windows only)")
+    printLine("  help     Print this message or the help of the given subcommand(s)")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn printSandboxMacosHelpShort(): int32 =
+    printLine("Run a command under Seatbelt (macOS only)")
+    printLine("")
+    printLine("Usage: codex sandbox macos [OPTIONS] [COMMAND]...")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [COMMAND]...  Full command args to run under seatbelt")
+    printLine("")
+    printLine("Options:")
+    printLine("  -c, --config <key=value>  Override a configuration value that would otherwise be loaded from")
+    printLine("                            `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`) to override")
+    printLine("                            nested values. The `value` portion is parsed as TOML. If it fails to")
+    printLine("                            parse as TOML, the raw string is used as a literal")
+    printLine("      --full-auto           Convenience alias for low-friction sandboxed automatic execution")
+    printLine("                            (network-disabled sandbox that can write to cwd and TMPDIR)")
+    printLine("      --enable <FEATURE>    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    printLine("      --log-denials         While the command runs, capture macOS sandbox denials via `log stream`")
+    printLine("                            and print them after exit")
+    printLine("      --disable <FEATURE>   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    printLine("  -h, --help                Print help (see more with '--help')")
+    return 0
+
+fn printSandboxMacosHelpLong(): int32 =
+    printLine("Run a command under Seatbelt (macOS only)")
+    printLine("")
+    printLine("Usage: codex sandbox macos [OPTIONS] [COMMAND]...")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [COMMAND]...")
+    printLine("          Full command args to run under seatbelt")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printLine("      --full-auto")
+    printLine("          Convenience alias for low-friction sandboxed automatic execution (network-disabled sandbox")
+    printLine("          that can write to cwd and TMPDIR)")
+    printLine("")
+    printEnableFlagHelp()
+    printLine("      --log-denials")
+    printLine("          While the command runs, capture macOS sandbox denials via `log stream` and print them")
+    printLine("          after exit")
+    printLine("")
+    printDisableFlagHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn printSandboxLinuxHelpShort(): int32 =
+    printLine("Run a command under Landlock+seccomp (Linux only)")
+    printLine("")
+    printLine("Usage: codex sandbox linux [OPTIONS] [COMMAND]...")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [COMMAND]...  Full command args to run under landlock")
+    printLine("")
+    printLine("Options:")
+    printLine("  -c, --config <key=value>  Override a configuration value that would otherwise be loaded from")
+    printLine("                            `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`) to override")
+    printLine("                            nested values. The `value` portion is parsed as TOML. If it fails to")
+    printLine("                            parse as TOML, the raw string is used as a literal")
+    printLine("      --full-auto           Convenience alias for low-friction sandboxed automatic execution")
+    printLine("                            (network-disabled sandbox that can write to cwd and TMPDIR)")
+    printLine("      --enable <FEATURE>    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    printLine("      --disable <FEATURE>   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    printLine("  -h, --help                Print help (see more with '--help')")
+    return 0
+
+fn printSandboxLinuxHelpLong(): int32 =
+    printLine("Run a command under Landlock+seccomp (Linux only)")
+    printLine("")
+    printLine("Usage: codex sandbox linux [OPTIONS] [COMMAND]...")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [COMMAND]...")
+    printLine("          Full command args to run under landlock")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printLine("      --full-auto")
+    printLine("          Convenience alias for low-friction sandboxed automatic execution (network-disabled sandbox")
+    printLine("          that can write to cwd and TMPDIR)")
+    printLine("")
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn printSandboxWindowsHelpShort(): int32 =
+    printLine("Run a command under Windows restricted token (Windows only)")
+    printLine("")
+    printLine("Usage: codex sandbox windows [OPTIONS] [COMMAND]...")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [COMMAND]...  Full command args to run under Windows restricted token sandbox")
+    printLine("")
+    printLine("Options:")
+    printLine("  -c, --config <key=value>  Override a configuration value that would otherwise be loaded from")
+    printLine("                            `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`) to override")
+    printLine("                            nested values. The `value` portion is parsed as TOML. If it fails to")
+    printLine("                            parse as TOML, the raw string is used as a literal")
+    printLine("      --full-auto           Convenience alias for low-friction sandboxed automatic execution")
+    printLine("                            (network-disabled sandbox that can write to cwd and TMPDIR)")
+    printLine("      --enable <FEATURE>    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    printLine("      --disable <FEATURE>   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    printLine("  -h, --help                Print help (see more with '--help')")
+    return 0
+
+fn printSandboxWindowsHelpLong(): int32 =
+    printLine("Run a command under Windows restricted token (Windows only)")
+    printLine("")
+    printLine("Usage: codex sandbox windows [OPTIONS] [COMMAND]...")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [COMMAND]...")
+    printLine("          Full command args to run under Windows restricted token sandbox")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printLine("      --full-auto")
+    printLine("          Convenience alias for low-friction sandboxed automatic execution (network-disabled sandbox")
+    printLine("          that can write to cwd and TMPDIR)")
+    printLine("")
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn sandboxExecUsageToErr(): int32 =
+    printErr("Usage: sandbox-exec [options] command [args]")
+    printErr("Options:")
+    printErr("  -f profile-file     Read profile from file.")
+    printErr("  -n profile-name     Use pre-defined profile.")
+    printErr("  -p profile-string   Specify profile on the command line.")
+    printErr("  -D key=value        Define a profile parameter.")
+    printErr("Exactly one of -f, -n, -p must be specified.")
+    return 0
+
+fn sandboxKnownRootSubcommand(name: str): bool =
+    return name == "macos" || name == "seatbelt" || name == "linux" || name == "landlock" || name == "windows" || name == "help"
+
+fn runSandboxPlatform(platform: str, args: seq[str], start: int32): int32 =
+    var fullAuto = false
+    var logDenials = false
+    var cmdParts: seq[str] = newSeq[str]()
+    var optionsEnded = false
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if ! optionsEnded:
+            if arg == "--help":
+                if platform == "macos":
+                    return printSandboxMacosHelpLong()
+                if platform == "linux":
+                    return printSandboxLinuxHelpLong()
+                return printSandboxWindowsHelpLong()
+            if arg == "-h":
+                if platform == "macos":
+                    return printSandboxMacosHelpShort()
+                if platform == "linux":
+                    return printSandboxLinuxHelpShort()
+                return printSandboxWindowsHelpShort()
+            if arg == "--full-auto":
+                fullAuto = true
+                i = i + 1
+                continue
+            if platform == "macos" && arg == "--log-denials":
+                logDenials = true
+                i = i + 1
+                continue
+            if arg == "--":
+                optionsEnded = true
+                i = i + 1
+                continue
+            if hasPrefix(arg, "-"):
+                var tip = ""
+                if len(arg) > 0:
+                    tip = "to pass '" + arg + "' as a value, use '-- " + arg + "'"
+                let usage = "codex sandbox " + platform + " [OPTIONS] [COMMAND]..."
+                return sandboxUnexpectedArgWithUsage(arg, usage, tip)
+            # First non-option starts the command; remaining tokens are command args.
+            optionsEnded = true
+        seqAdd(cmdParts, ownedStr(arg))
+        i = i + 1
+
+    let osKind = detectOsKind()
+    if platform == "macos" && osKind != "macos":
+        printErr("sandbox: macos seatbelt only available on macOS")
+        return 2
+    if platform == "linux" && osKind != "linux":
+        printErr("sandbox: linux sandbox only available on Linux")
+        return 2
+    if platform == "windows" && osKind != "windows":
+        printErr("sandbox: windows sandbox only available on Windows")
+        return 2
+
+    if len(cmdParts) == 0:
+        if platform == "macos":
+            sandboxExecUsageToErr()
+            return 64
+        printErr("sandbox: missing command")
+        return 2
+
+    let cfgSandbox = readConfigValue("sandbox_mode")
+    var sandboxMode = "read-only"
+    if fullAuto:
+        sandboxMode = "workspace-write"
+    elif len(cfgSandbox) > 0:
+        sandboxMode = normalizeSandboxModeLocal(cfgSandbox)
+
+    var cmdText = buildCommandTextFromTokens(cmdParts)
+    if logDenials && osKind != "macos":
+        printErr("sandbox: --log-denials is only supported on macOS")
+    if logDenials && osKind == "macos":
+        let pid = c_getpid()
+        let logFile = "/tmp/codex-sandbox-denials-" + intToStr(pid) + ".log"
+        let predicate = "subsystem == \"com.apple.sandbox\""
+        let logCmd = "log stream --style compact --predicate " + shellQuote(predicate) + " > $LOG_FILE 2>/dev/null"
+        # Build incrementally to avoid deep temporary chains.
+        var wrapped: str = "LOG_FILE="
+        wrapped = wrapped + shellQuote(logFile)
+        wrapped = wrapped + "; "
+        wrapped = wrapped + logCmd
+        wrapped = wrapped + " & LOG_PID=$!; "
+        wrapped = wrapped + "/bin/sh -c "
+        wrapped = wrapped + shellQuote(cmdText)
+        wrapped = wrapped + "; STATUS=$?; "
+        wrapped = wrapped + "kill $LOG_PID >/dev/null 2>&1; wait $LOG_PID >/dev/null 2>&1; "
+        wrapped = wrapped + "if [ -s $LOG_FILE ]; then cat $LOG_FILE; fi; "
+        wrapped = wrapped + "rm -f $LOG_FILE; exit $STATUS"
+        cmdText = wrapped
+
+    let res = runShellCommand(cmdText, cmdParts, os.getCurrentDir(), sandboxMode, "use_default", false, newSeq[str](), -1, false)
+    if len(res.output) > 0:
+        os.write(os.get_stdout(), res.output)
+    return res.exitCode
+
+fn runSandbox(args: seq[str], start: int32): int32 =
+    if start >= len(args):
+        printSandboxUsageShort(true)
+        return 2
+
+    var sub = argAt(args, start)
+    if sub == "--":
+        if start + 1 >= len(args):
+            printSandboxUsageShort(true)
+            return 2
+        let next = argAt(args, start + 1)
+        if sandboxKnownRootSubcommand(next):
+            let tip = "subcommand '" + next + "' exists; to use it, remove the '--' before it"
+            return sandboxUnexpectedArgWithUsage(next, "codex sandbox [OPTIONS] <COMMAND>", tip)
+        return sandboxUnrecognizedSubcommandWithUsage(next, "codex sandbox [OPTIONS] <COMMAND>")
+
+    if sub == "--help":
+        return printSandboxUsageLong()
+    if sub == "-h":
+        return printSandboxUsageShort(false)
+
+    if sub == "help":
+        if start + 1 >= len(args):
+            return printSandboxUsageLong()
+        let target = argAt(args, start + 1)
+        if target == "macos" || target == "seatbelt":
+            return printSandboxMacosHelpLong()
+        if target == "linux" || target == "landlock":
+            return printSandboxLinuxHelpLong()
+        if target == "windows":
+            return printSandboxWindowsHelpLong()
+        return sandboxUnrecognizedSubcommandWithUsage(target, "codex sandbox [OPTIONS] <COMMAND>")
+
+    if hasPrefix(sub, "-"):
+        var tip = ""
+        if sub == "--full-auto":
+            tip = "'macos --full-auto' exists"
+        elif sub == "--log-denials":
+            tip = "'macos --log-denials' exists"
+        return sandboxUnexpectedArgWithUsage(sub, "codex sandbox [OPTIONS] <COMMAND>", tip)
+
+    if sub == "macos" || sub == "seatbelt":
+        return runSandboxPlatform("macos", args, start + 1)
+    if sub == "linux" || sub == "landlock":
+        return runSandboxPlatform("linux", args, start + 1)
+    if sub == "windows":
+        return runSandboxPlatform("windows", args, start + 1)
+
+    return sandboxUnrecognizedSubcommandWithUsage(sub, "codex sandbox [OPTIONS] <COMMAND>")
+
+fn runCloud(args: seq[str], start: int32): int32 =
+    var msg: str = "runCloud.enter start="
+    msg = msg + intToStr(start)
+    msg = msg + " argc="
+    msg = msg + intToStr(len(args))
+    traceMainLocal(msg)
+    return runCloudLocal(args, start)
+
+fn runResponsesApiProxy(args: seq[str], start: int32): int32 =
+    let res = runResponsesApiProxyLocal(args, start)
+    if res == 2:
+        return res
+    return res
+
+fn runStdioToUds(args: seq[str], start: int32): int32 =
+    return runStdioToUdsLocal(args, start)
+
+fn shipDefaultPrompt(): str =
+    let path = findPromptFile("ship_prompt.md")
+    let content = loadPromptFile(path)
+    if len(content) > 0:
+        return content
+    # Build incrementally to avoid deep temporary chains.
+    var out: str = "Treat the user input as the requirement. If wrapped in <requirement>, use that block as source of truth.\n"
+    out = out + "0) If SPEC.md / CONTRACT.md / ACCEPTANCE.md are missing or placeholders, derive them from the requirement and write the files.\n"
+    out = out + "   - SPEC: goals, non-goals, constraints, risks, dependencies, rollout/rollback.\n"
+    out = out + "   - CONTRACT: API/schema/events/permissions/errors with examples and edge cases.\n"
+    out = out + "   - ACCEPTANCE: BDD scenarios + negative/edge cases + performance/SLO checks.\n"
+    out = out + "1) Generate or update TASK_MATRIX.yaml with orthogonal atomic tasks + dependencies.\n"
+    out = out + "2) Execute the matrix: spawn one worker per ready cell; enforce touch_scope and done_checks.\n"
+    out = out + "3) Integrate results, run release/validation steps, and update docs/runbook as needed.\n"
+    out = out + "4) Stop only when all checks pass; report remaining risks."
+    return out
+
+fn closedLoopWorkDir(cwd: str): str =
+    if len(cwd) > 0:
+        return cwd
+    return os.getCurrentDir()
+
+fn closedLoopEnsureDir(path: str) =
+    if len(path) == 0 || os.dirExists(path):
+        return
+    let parent = os.parentDir(path)
+    if len(parent) > 0 && parent != path && ! os.dirExists(parent):
+        closedLoopEnsureDir(parent)
+    if ! os.dirExists(path):
+        os.createDir(path)
+
+fn closedLoopReportDir(workDir: str): str =
+    let buildDir = os.joinPath(workDir, "build")
+    let reportDir = os.joinPath(buildDir, "closed-loop")
+    closedLoopEnsureDir(reportDir)
+    return reportDir
+
+fn closedLoopJoin(items: seq[str], sep: str): str =
+    var out = ""
+    var i: int32 = 0
+    while i < len(items):
+        if len(out) > 0:
+            out = out + sep
+        out = out + items[i]
+        i = i + 1
+    return out
+
+fn closedLoopTempDir(): str =
+    var base = os.getEnv("TMPDIR")
+    if len(base) == 0:
+        base = "/tmp"
+    let name = "codex-cheng-closed-loop-" + int64ToStr(times.toUnix(times.now()))
+    let path = os.joinPath(base, name)
+    closedLoopEnsureDir(path)
+    return path
+
+fn closedLoopResolveBin(workDir: str): str =
+    let envBin = os.getEnv("CODEX_CHENG_BIN")
+    if len(envBin) > 0 && os.fileExists(envBin):
+        return envBin
+    let buildBin = os.joinPath(workDir, "build/codex-cheng")
+    if os.fileExists(buildBin):
+        return buildBin
+    let parent = os.parentDir(workDir)
+    if len(parent) > 0:
+        let repoBin = os.joinPath(parent, "codex-cheng-bin")
+        if os.fileExists(repoBin):
+            return repoBin
+    return ""
+
+fn closedLoopRecordStep(steps: var seq[ClosedLoopStep], name: str, status: str, exitCode: int32, detail: str) =
+    seqAdd(steps, ClosedLoopStep(name: name, status: status, exitCode: exitCode, detail: detail))
+
+fn closedLoopWriteReports(steps: seq[ClosedLoopStep], reportDir: str) =
+    let tsvPath = os.joinPath(reportDir, "report.tsv")
+    let jsonPath = os.joinPath(reportDir, "report.json")
+    let txtPath = os.joinPath(reportDir, "report.txt")
+    var tsvParts: seq[str] = newSeq[str]()
+    var stepObjs: seq[str] = newSeq[str]()
+    var anyFail = false
+    var i: int32 = 0
+    while i < len(steps):
+        let step = steps[i]
+        if step.status == "fail":
+            anyFail = true
+        seqAdd(tsvParts, step.name)
+        seqAdd(tsvParts, "\t")
+        seqAdd(tsvParts, step.status)
+        seqAdd(tsvParts, "\t")
+        seqAdd(tsvParts, intToStr(step.exitCode))
+        seqAdd(tsvParts, "\t")
+        seqAdd(tsvParts, step.detail)
+        seqAdd(tsvParts, "\n")
+        let fields = seqStr4(
+            jstrPair("name", jstrString(step.name)),
+            jstrPair("status", jstrString(step.status)),
+            jstrPair("exit_code", intToStr(step.exitCode)),
+            jstrPair("detail", jstrString(step.detail))
+        )
+        seqAdd(stepObjs, jstrObject(fields))
+        i = i + 1
+    var result: str = "pass"
+    if anyFail:
+        result = "fail"
+    let reportFields = seqStr3(
+        jstrPair("timestamp", int64ToStr(times.toUnix(times.now()))),
+        jstrPair("result", jstrString(result)),
+        jstrPair("steps", jstrArray(stepObjs))
+    )
+    let tsv: str = joinPartsBalanced(tsvParts)
+    os.writeFile(tsvPath, tsv)
+    os.writeFile(jsonPath, jstrObject(reportFields))
+    var summary = "Closed loop report\n"
+    summary = summary + "- result: "
+    summary = summary + result
+    summary = summary + "\n"
+    summary = summary + "- report.tsv: "
+    summary = summary + tsvPath
+    summary = summary + "\n"
+    summary = summary + "- report.json: "
+    summary = summary + jsonPath
+    summary = summary + "\n"
+    os.writeFile(txtPath, summary)
+
+fn closedLoopCheckPreflight(workDir: str, detail: var str): int32 =
+    var missing: seq[str] = newSeq[str]()
+    var files = seqStr4("SPEC.md", "CONTRACT.md", "ACCEPTANCE.md", "TASK_MATRIX.yaml")
+    var i: int32 = 0
+    while i < len(files):
+        let path = os.joinPath(workDir, files[i])
+        if ! os.fileExists(path):
+            seqAdd(missing, files[i])
+        else:
+            let content = os.readFile(path)
+            if content == nil || len(content) == 0:
+                seqAdd(missing, files[i])
+        i = i + 1
+    if len(missing) > 0:
+        detail = "missing: " + closedLoopJoin(missing, ", ")
+        return 1
+    detail = "ok"
+    return 0
+
+fn closedLoopCheckBuild(workDir: str, detail: var str): int32 =
+    let res = runShellCommand("./build.sh", newSeq[str](), workDir, readConfigValue("sandbox_mode"), "use_default", false, newSeq[str](), -1, true)
+    detail = "./build.sh"
+    if res.exitCode != 0:
+        detail = res.output
+        return 1
+    return 0
+
+fn closedLoopCheckExecpolicy(workDir: str, detail: var str): int32 =
+    let tmpDir = closedLoopTempDir()
+    let rulesPath = os.joinPath(tmpDir, "policy.rules")
+    let rulesText = "prefix_rule(\\n    pattern = [\\\"git\\\", \\\"push\\\"],\\n    decision = \\\"forbidden\\\",\\n)\\n"
+    os.writeFile(rulesPath, rulesText)
+    var args: seq[str] = newSeq[str]()
+    seqAdd(args, "check")
+    seqAdd(args, "--rules")
+    seqAdd(args, rulesPath)
+    seqAdd(args, "git")
+    seqAdd(args, "push")
+    seqAdd(args, "origin")
+    seqAdd(args, "main")
+    detail = "execpolicy check"
+    return runExecpolicy(args, 0)
+
+fn closedLoopCheckCompletion(workDir: str, detail: var str): int32 =
+    let bin = closedLoopResolveBin(workDir)
+    if len(bin) == 0:
+        detail = "codex-cheng binary not found"
+        return 1
+    let cmd = shellQuote(bin) + " completion bash"
+    let res = runShellCommand(cmd, newSeq[str](), workDir, readConfigValue("sandbox_mode"), "use_default", false, newSeq[str](), -1, true)
+    detail = cmd
+    if res.exitCode != 0:
+        detail = res.output
+        return 1
+    return 0
+
+fn closedLoopCheckLogin(detail: var str): int32 =
+    detail = "login status"
+    return runLoginStatusLocal()
+
+fn closedLoopCheckExecSmoke(workDir: str, detail: var str): int32 =
+    let tmpDir = closedLoopTempDir()
+    let lastMsg = os.joinPath(tmpDir, "last_message.txt")
+    var opts = defaultExecOptions()
+    opts.prompt = "Say OK."
+    opts.jsonMode = true
+    opts.cwd = workDir
+    opts.lastMessagePath = lastMsg
+    if len(opts.approvalPolicy) == 0:
+        let cfgApproval = readConfigValue("approval_policy")
+        if len(cfgApproval) > 0:
+            opts.approvalPolicy = cfgApproval
+        else:
+            opts.approvalPolicy = "never"
+    detail = "exec smoke"
+    let code = runExecFlow(opts, "exec")
+    if code != 0:
+        return code
+    if ! os.fileExists(lastMsg):
+        detail = "missing last message"
+        return 1
+    let content = os.readFile(lastMsg)
+    if content == nil || len(content) == 0:
+        detail = "empty last message"
+        return 1
+    return 0
+
+fn runClosedLoop(opts: ClosedLoopOptions): int32 =
+    let workDir = closedLoopWorkDir(opts.workDir)
+    let reportDir = closedLoopReportDir(workDir)
+    var steps: seq[ClosedLoopStep] = newSeq[ClosedLoopStep]()
+    var failures = false
+    var detail = ""
+    var code = 0
+
+    let check = normalizePolicy(trimLine(opts.checkOnly))
+    if len(check) == 0 || check == "preflight":
+        detail = ""
+        code = closedLoopCheckPreflight(workDir, detail)
+        var status: str = "fail"
+        if code == 0:
+            status = "ok"
+        closedLoopRecordStep(steps, "preflight", status, code, detail)
+        if code != 0:
+            failures = true
+        if len(check) > 0:
+            closedLoopWriteReports(steps, reportDir)
+            let result = if failures: 1 else: 0
+            return result
+    if len(check) == 0 || check == "build":
+        detail = ""
+        code = closedLoopCheckBuild(workDir, detail)
+        var status: str = "fail"
+        if code == 0:
+            status = "ok"
+        closedLoopRecordStep(steps, "build", status, code, detail)
+        if code != 0:
+            failures = true
+        if len(check) > 0:
+            closedLoopWriteReports(steps, reportDir)
+            let result = if failures: 1 else: 0
+            return result
+    if len(check) == 0 || check == "execpolicy":
+        detail = ""
+        code = closedLoopCheckExecpolicy(workDir, detail)
+        var status: str = "fail"
+        if code == 0:
+            status = "ok"
+        closedLoopRecordStep(steps, "execpolicy", status, code, detail)
+        if code != 0:
+            failures = true
+        if len(check) > 0:
+            closedLoopWriteReports(steps, reportDir)
+            let result = if failures: 1 else: 0
+            return result
+    if len(check) == 0 || check == "completion":
+        detail = ""
+        code = closedLoopCheckCompletion(workDir, detail)
+        var status: str = "fail"
+        if code == 0:
+            status = "ok"
+        closedLoopRecordStep(steps, "completion", status, code, detail)
+        if code != 0:
+            failures = true
+        if len(check) > 0:
+            closedLoopWriteReports(steps, reportDir)
+            let result = if failures: 1 else: 0
+            return result
+    if opts.online:
+        if len(check) == 0 || check == "login-smoke":
+            detail = ""
+            code = closedLoopCheckLogin(detail)
+            var status: str = "fail"
+            if code == 0:
+                status = "ok"
+            closedLoopRecordStep(steps, "login-smoke", status, code, detail)
+            if code != 0:
+                failures = true
+            if len(check) > 0:
+                closedLoopWriteReports(steps, reportDir)
+                let result = if failures: 1 else: 0
+                return result
+        if len(check) == 0 || check == "exec-smoke":
+            detail = ""
+            code = closedLoopCheckExecSmoke(workDir, detail)
+            var status: str = "fail"
+            if code == 0:
+                status = "ok"
+            closedLoopRecordStep(steps, "exec-smoke", status, code, detail)
+            if code != 0:
+                failures = true
+            if len(check) > 0:
+                closedLoopWriteReports(steps, reportDir)
+                let result = if failures: 1 else: 0
+                return result
+    else:
+        if len(check) == 0:
+            closedLoopRecordStep(steps, "login-smoke", "skip", 0, "CODEX_CHENG_ONLINE not set")
+            closedLoopRecordStep(steps, "exec-smoke", "skip", 0, "CODEX_CHENG_ONLINE not set")
+
+    closedLoopWriteReports(steps, reportDir)
+    if failures:
+        return 1
+    return 0
+
+fn runShip(args: seq[str], start: int32): int32 =
+    var i: int32 = start
+    var runClosedLoopAfter = true
+    var filtered: seq[str] = newSeq[str]()
+    var j: int32 = 0
+    while j < start && j < len(args):
+        seqAdd(filtered, argAt(args, j))
+        j = j + 1
+    while i < len(args):
+        let arg = argAt(args, i)
+        if arg == "--help" || arg == "-h":
+            printLine("usage: codex-cheng ship [options] [prompt]")
+            printLine("options: same as `codex-cheng exec`")
+            return 0
+        if arg == "--no-closed-loop" || arg == "--skip-closed-loop":
+            runClosedLoopAfter = false
+        else:
+            seqAdd(filtered, arg)
+        i = i + 1
+    var opts = parseExecArgs(filtered, start)
+    opts.outputSchemaJson = loadOutputSchemaJson(opts.outputSchemaPath)
+    if len(opts.approvalPolicy) == 0:
+        let cfgApproval = readConfigValue("approval_policy")
+        if len(cfgApproval) > 0:
+            opts.approvalPolicy = cfgApproval
+        else:
+            opts.approvalPolicy = "never"
+    var userPrompt = opts.prompt
+    if userPrompt == "-":
+        userPrompt = readPromptFromStdin()
+    if len(userPrompt) == 0:
+        let stdinText = readPromptFromStdin()
+        if len(stdinText) > 0:
+            userPrompt = stdinText
+    let basePrompt = shipDefaultPrompt()
+    var prompt = basePrompt
+    if len(userPrompt) > 0:
+        prompt = basePrompt
+        prompt = prompt + "\n\n<requirement>\n"
+        prompt = prompt + userPrompt
+        prompt = prompt + "\n</requirement>"
+    if len(trimLine(prompt)) == 0:
+        printErr("missing prompt")
+        return 2
+    var err = ""
+    if ! applyExecOverrides(opts, err):
+        if len(err) == 0:
+            err = "failed to apply exec overrides"
+        printErr(err)
+        return 1
+    var approvalPolicy = opts.approvalPolicy
+    if opts.fullAuto:
+        approvalPolicy = "on-request"
+    if opts.bypass:
+        approvalPolicy = "never"
+    var workDir: str = os.getCurrentDir()
+    if len(opts.cwd) > 0:
+        workDir = opts.cwd
+    let spawnArgs = jstrObject(seqStr2(
+        jstrPair("message", jstrString(prompt)),
+        jstrPair("agent_type", jstrString("orchestrator"))
+    ))
+    let spawnRes = collabSpawnAgent(spawnArgs, opts.baseInstructions, opts.developerInstructions, opts.model, approvalPolicy, workDir)
+    if ! spawnRes.ok:
+        printErr(spawnRes.output)
+        return 1
+    let agentId = jsonExtractString(spawnRes.output, "agent_id")
+    if len(agentId) == 0:
+        printErr("failed to read agent id")
+        return 1
+    let idsJson = jstrArray(seqStr1(jstrString(agentId)))
+    let waitArgs = jstrObject(seqStr2(
+        jstrPair("ids", idsJson),
+        jstrPair("timeout_ms", jstrNumber(int64(60000)))
+    ))
+    while true:
+        let waitRes = collabWaitAgents(waitArgs)
+        if ! waitRes.ok:
+            printErr(waitRes.output)
+            return 1
+        let waitOut = waitRes.output
+        if indexOfSubstr(waitOut, "\"timed_out\":true", 0) >= 0:
+            continue
+        let completedMsg = jsonExtractString(waitOut, "completed")
+        if indexOfSubstr(waitOut, "\"completed\"", 0) >= 0:
+            if len(completedMsg) > 0:
+                printLine(completedMsg)
+            if ! runClosedLoopAfter:
+                return 0
+            let online = os.getEnv("CODEX_CHENG_ONLINE")
+            let closedOpts = ClosedLoopOptions(
+                workDir: workDir,
+                online: len(online) > 0,
+                checkOnly: ""
+            )
+            return runClosedLoop(closedOpts)
+        let erroredMsg = jsonExtractString(waitOut, "errored")
+        if indexOfSubstr(waitOut, "\"errored\"", 0) >= 0:
+            if len(erroredMsg) > 0:
+                printErr(erroredMsg)
+            else:
+                printErr("orchestrator errored")
+            return 1
+        if indexOfSubstr(waitOut, "\"not_found\"", 0) >= 0:
+            printErr("orchestrator not found")
+            return 1
+        if indexOfSubstr(waitOut, "\"shutdown\"", 0) >= 0:
+            printErr("orchestrator shutdown")
+            return 1
+        printErr("unexpected wait response")
+        return 1
+
+fn appServerMethodNames(): seq[str] =
+    var names: seq[str] = newSeq[str]()
+    seqAdd(names, "initialize")
+    seqAdd(names, "initialized")
+    seqAdd(names, "thread/start")
+    seqAdd(names, "thread/resume")
+    seqAdd(names, "thread/fork")
+    seqAdd(names, "thread/list")
+    seqAdd(names, "thread/loaded/list")
+    seqAdd(names, "thread/archive")
+    seqAdd(names, "thread/rollback")
+    seqAdd(names, "turn/start")
+    seqAdd(names, "turn/interrupt")
+    seqAdd(names, "review/start")
+    seqAdd(names, "command/exec")
+    seqAdd(names, "model/list")
+    seqAdd(names, "collaborationMode/list")
+    seqAdd(names, "skills/list")
+    seqAdd(names, "skills/config/write")
+    seqAdd(names, "mcpServerStatus/list")
+    seqAdd(names, "config/read")
+    seqAdd(names, "config/value/write")
+    seqAdd(names, "config/batchWrite")
+    seqAdd(names, "config/mcpServer/reload")
+    seqAdd(names, "configRequirements/read")
+    seqAdd(names, "account/read")
+    seqAdd(names, "account/login/start")
+    seqAdd(names, "account/login/cancel")
+    seqAdd(names, "account/logout")
+    seqAdd(names, "account/rateLimits/read")
+    seqAdd(names, "feedback/upload")
+    seqAdd(names, "mcpServer/oauth/login")
+    return names
+
+fn tsStringUnion(items: seq[str]): str =
+    var out = ""
+    var i: int32 = 0
+    while i < len(items):
+        if len(out) > 0:
+            out = out + " | "
+        out = out + "'"
+        out = out + items[i]
+        out = out + "'"
+        i = i + 1
+    if len(out) == 0:
+        return "str"
+    return out
+
+fn jsonEnumList(items: seq[str]): str =
+    var out = ""
+    var i: int32 = 0
+    while i < len(items):
+        if len(out) > 0:
+            out = out + ", "
+        out = out + "\""
+        out = out + items[i]
+        out = out + "\""
+        i = i + 1
+    return out
+
+fn normalizePathRoot(path: str): str =
+    if path == nil || len(path) == 0:
+        return ""
+    var stop = len(path) - 1
+    while stop >= 0 && path[stop] == '/':
+        stop = stop - 1
+    if stop < 0:
+        return ""
+    if stop == len(path) - 1:
+        return path
+    return __cheng_slice_string(path, 0, stop, false)
+
+fn pathRelative(root: str, full: str): str =
+    let base = normalizePathRoot(root)
+    if len(base) == 0 || len(full) <= len(base):
+        return full
+    if ! hasPrefix(full, base):
+        return full
+    var start = len(base)
+    if start < len(full) && full[start] == '/':
+        start = start + 1
+    if start >= len(full):
+        return ""
+    return __cheng_slice_string(full, start, len(full) - 1, false)
+
+fn ensureDirPath(path: str) =
+    if len(path) == 0:
+        return
+    if os.dirExists(path):
+        return
+    let cmd = "mkdir -p " + shellQuote(path)
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    os.execCmdEx(cmd, opts, os.getCurrentDir())
+
+fn protocolResourceDir(): str =
+    let envDir = os.getEnv("CODEX_APP_SERVER_SCHEMA_DIR")
+    if len(envDir) > 0 && os.dirExists(envDir):
+        return envDir
+    let cwd = os.getCurrentDir()
+    let repoPath = os.joinPath(os.joinPath(cwd, "codex-cheng"), "protocol")
+    if os.dirExists(repoPath):
+        return repoPath
+    let localPath = os.joinPath(cwd, "protocol")
+    if os.dirExists(localPath):
+        return localPath
+    return ""
+
+fn copyProtocolFiles(srcDir: str, destDir: str, extFilter: str): bool =
+    if len(srcDir) == 0 || ! os.dirExists(srcDir):
+        return false
+    let files = os.walkDirRec(srcDir)
+    var wrote = false
+    var idx: int32 = 0
+    while idx < len(files):
+        let srcPath = ownedStr(files[idx])
+        if ! os.fileExists(srcPath):
+            idx = idx + 1
+            continue
+        if len(extFilter) > 0 && ! endsWithSuffix(srcPath, extFilter):
+            idx = idx + 1
+            continue
+        let rel = ownedStr(pathRelative(srcDir, srcPath))
+        var destPath: str = ""
+        if len(rel) > 0:
+            destPath = ownedStr(os.joinPath(destDir, rel))
+        else:
+            destPath = ownedStr(os.joinPath(destDir, extractFilename(srcPath)))
+        let parts = os.splitFile(destPath)
+        ensureDirPath(parts.dir)
+        let content = os.readFile(srcPath)
+        var contentText: str = ""
+        if content != nil:
+            contentText = content
+        os.writeFile(destPath, contentText)
+        wrote = true
+        idx = idx + 1
+    return wrote
+
+fn runAppServerGenerateTs(args: seq[str], start: int32): int32 =
+    var outDir = ""
+    var prettierBin = ""
+    var experimental = false
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if arg == "--help" || arg == "-h":
+            printLine("[experimental] Generate TypeScript bindings for the app server protocol")
+            printLine("")
+            printLine("Usage: codex app-server generate-ts [OPTIONS] --out <DIR>")
+            printLine("")
+            printLine("Options:")
+            printConfigFlagHelp()
+            printLine("  -o, --out <DIR>")
+            printLine("          Output directory where .ts files will be written")
+            printLine("")
+            printEnableFlagHelp()
+            printLine("  -p, --prettier <PRETTIER_BIN>")
+            printLine("          Optional path to the Prettier executable to format generated files")
+            printLine("")
+            printDisableFlagHelp()
+            printLine("      --experimental")
+            printLine("          Include experimental methods and fields in the generated output")
+            printLine("")
+            printLine("  -h, --help")
+            printLine("          Print help (see a summary with '-h')")
+            return 0
+        if (arg == "--out" || arg == "-o") && i + 1 < len(args):
+            outDir = ownedStr(argAt(args, i + 1))
+            i = i + 1
+        elif hasPrefix(arg, "--out:"):
+            outDir = ownedStr(dropPrefix(arg, "--out:"))
+        elif hasPrefix(arg, "-o:"):
+            outDir = ownedStr(dropPrefix(arg, "-o:"))
+        elif (arg == "--prettier" || arg == "-p") && i + 1 < len(args):
+            prettierBin = ownedStr(argAt(args, i + 1))
+            i = i + 1
+        elif hasPrefix(arg, "--prettier:"):
+            prettierBin = ownedStr(dropPrefix(arg, "--prettier:"))
+        elif hasPrefix(arg, "-p:"):
+            prettierBin = ownedStr(dropPrefix(arg, "-p:"))
+        elif arg == "--experimental":
+            experimental = true
+        else:
+            printErr("unknown option: " + arg)
+            return 2
+        i = i + 1
+    if len(outDir) == 0:
+        printErr("missing required option: --out")
+        return 2
+    if experimental:
+        outDir = outDir
+    let srcDir = protocolResourceDir()
+    if len(srcDir) == 0:
+        printErr("protocol resources not found (set CODEX_APP_SERVER_SCHEMA_DIR or ensure ./protocol exists)")
+        return 2
+    ensureDirPath(outDir)
+    if ! copyProtocolFiles(srcDir, outDir, ".ts"):
+        printErr("no TypeScript protocol files were generated")
+        return 1
+    if len(prettierBin) > 0:
+        let fmtCmd = shellQuote(prettierBin) + " --write " + shellQuote(outDir)
+        let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+        let res = os.execCmdEx(fmtCmd, opts, os.getCurrentDir())
+        if res.exitCode != 0:
+            if len(res.output) > 0:
+                printErr(res.output)
+            return res.exitCode
+    return 0
+
+fn runAppServerGenerateJson(args: seq[str], start: int32): int32 =
+    var outDir = ""
+    var experimental = false
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if arg == "--help" || arg == "-h":
+            printLine("[experimental] Generate JSON Schema for the app server protocol")
+            printLine("")
+            printLine("Usage: codex app-server generate-json-schema [OPTIONS] --out <DIR>")
+            printLine("")
+            printLine("Options:")
+            printConfigFlagHelp()
+            printLine("  -o, --out <DIR>")
+            printLine("          Output directory where the schema bundle will be written")
+            printLine("")
+            printEnableFlagHelp()
+            printLine("      --experimental")
+            printLine("          Include experimental methods and fields in the generated output")
+            printLine("")
+            printDisableFlagHelp()
+            printLine("  -h, --help")
+            printLine("          Print help (see a summary with '-h')")
+            return 0
+        if (arg == "--out" || arg == "-o") && i + 1 < len(args):
+            outDir = ownedStr(argAt(args, i + 1))
+            i = i + 1
+        elif hasPrefix(arg, "--out:"):
+            outDir = ownedStr(dropPrefix(arg, "--out:"))
+        elif hasPrefix(arg, "-o:"):
+            outDir = ownedStr(dropPrefix(arg, "-o:"))
+        elif arg == "--experimental":
+            experimental = true
+        else:
+            printErr("unknown option: " + arg)
+            return 2
+        i = i + 1
+    if len(outDir) == 0:
+        printErr("missing required option: --out")
+        return 2
+    if experimental:
+        outDir = outDir
+    let srcDir = protocolResourceDir()
+    if len(srcDir) == 0:
+        printErr("protocol resources not found (set CODEX_APP_SERVER_SCHEMA_DIR or ensure ./protocol exists)")
+        return 2
+    ensureDirPath(outDir)
+    if ! copyProtocolFiles(srcDir, outDir, ".json"):
+        printErr("no JSON schema files were generated")
+        return 1
+    return 0
+
+fn printApplyHelp(): int32 =
+    printLine("Apply the latest diff produced by Codex agent as a `git apply` to your local working tree")
+    printLine("")
+    printLine("Usage: codex apply [OPTIONS] <TASK_ID>")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  <TASK_ID>")
+    printLine("          ")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn printApplyHelpShort(): int32 =
+    printLine("Apply the latest diff produced by Codex agent as a `git apply` to your local working tree")
+    printLine("")
+    printLine("Usage: codex apply [OPTIONS] <TASK_ID>")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  <TASK_ID>  ")
+    printLine("")
+    printLine("Options:")
+    printLine("  -c, --config <key=value>  Override a configuration value that would otherwise be loaded from")
+    printLine("                            `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`) to override")
+    printLine("                            nested values. The `value` portion is parsed as TOML. If it fails to")
+    printLine("                            parse as TOML, the raw string is used as a literal")
+    printLine("      --enable <FEATURE>    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    printLine("      --disable <FEATURE>   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    printLine("  -h, --help                Print help (see more with '--help')")
+    return 0
+
+fn runApply(args: seq[str], start: int32): int32 =
+    var taskIdArg = ""
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if arg == "--help":
+            return printApplyHelp()
+        if arg == "-h":
+            return printApplyHelpShort()
+        if arg == "--":
+            i = i + 1
+            continue
+        if hasPrefix(arg, "-"):
+            printErr("error: unexpected argument '" + arg + "' found")
+            return 2
+        if len(taskIdArg) == 0:
+            taskIdArg = arg
+        else:
+            printErr("error: unexpected argument '" + arg + "' found")
+            return 2
+        i = i + 1
+    if len(taskIdArg) == 0:
+        printErr("error: missing required argument <TASK_ID>")
+        return 2
+    let taskId = parseTaskIdLocal(taskIdArg)
+    if len(taskId) == 0:
+        printErr("task id must not be empty")
+        return 2
+    return applyCloudTaskDiff(taskId, 1)
+
+fn runConfig(args: seq[str], start: int32): int32 =
+    if start >= len(args):
+        printLine("home: " + codexHomeDir())
+        printLine("config: " + codexConfigPath())
+        printLine("threads: " + codexThreadsDir())
+        return 0
+    let arg = argAt(args, start)
+    if arg == "path":
+        printLine(codexConfigPath())
+        return 0
+    if arg == "home":
+        printLine(codexHomeDir())
+        return 0
+    if arg == "threads":
+        printLine(codexThreadsDir())
+        return 0
+    if arg == "get" && start + 1 < len(args):
+        let key = argAt(args, start + 1)
+        let value = readConfigValue(key)
+        printLine(value)
+        return 0
+    if hasPrefix(arg, "--get:"):
+        let key = dropPrefix(arg, "--get:")
+        let value = readConfigValue(key)
+        printLine(value)
+        return 0
+    if arg == "set" && start + 2 < len(args):
+        let key = argAt(args, start + 1)
+        let value = joinArgs(args, start + 2)
+        if writeConfigValueWithProfile(key, value):
+            return 0
+        printErr("config write failed")
+        return 1
+    if hasPrefix(arg, "--set:"):
+        let rest = dropPrefix(arg, "--set:")
+        let eq = indexOfSubstr(rest, "=", 0)
+        if eq > 0:
+            let key = __cheng_slice_string(rest, 0, eq - 1, false)
+            let value = __cheng_slice_string(rest, eq + 1, len(rest) - 1, false)
+            if writeConfigValueWithProfile(trimLine(key), trimLine(value)):
+                return 0
+        printErr("config write failed")
+        return 1
+    if arg == "unset" && start + 1 < len(args):
+        let key = argAt(args, start + 1)
+        if clearConfigValueWithProfile(key):
+            return 0
+        printErr("config unset failed")
+        return 1
+    printErr("unknown config command")
+    return 2
+
+fn runThreads(): int32 =
+    let lines = listThreadLines()
+    if len(lines) == 0:
+        printLine("threads: none")
+        return 0
+    var idx: int32 = 0
+    while idx < len(lines):
+        printLine(lines[idx])
+        idx = idx + 1
+    return 0
+
+fn maskApiKey(key: str): str =
+    if len(key) <= 13:
+        return "***"
+    let prefix = __cheng_slice_string(key, 0, 7, false)
+    let suffix = __cheng_slice_string(key, (len(key) - 5), (len(key) - 1), false)
+    return prefix + "***" + suffix
+
+fn runLoginStatusLocal(): int32 =
+    let debug = normalizePolicy(trimLine(os.getEnv("CODEX_DEBUG_LOGIN_STATUS")))
+    if debug == "1" || debug == "true" || debug == "yes":
+        printErr("[debug] runLoginStatusLocal entered")
+    var tokens: AuthTokens
+    let cfgToken = readConfigValue("auth.token")
+    if len(cfgToken) > 0 && ! isChatgptPlaceholderToken(cfgToken) && looksLikeJwt(cfgToken):
+        if debug == "1" || debug == "true" || debug == "yes":
+            printErr("[debug] login status via config jwt")
+        printErr("Logged in using ChatGPT")
+        return 0
+    if len(cfgToken) > 0 && ! isChatgptPlaceholderToken(cfgToken):
+        if debug == "1" || debug == "true" || debug == "yes":
+            printErr("[debug] login status via config api key")
+        printErr("Logged in using an API key - " + maskApiKey(cfgToken))
+        return 0
+    var apiKey = ""
+    if debug == "1" || debug == "true" || debug == "yes":
+        printErr("[debug] login status before auth.json api key")
+    if readAuthJsonApiKey(apiKey) && len(apiKey) > 0 && ! isChatgptPlaceholderToken(apiKey):
+        if debug == "1" || debug == "true" || debug == "yes":
+            printErr("[debug] login status via auth.json api key")
+        printErr("Logged in using an API key - " + maskApiKey(apiKey))
+        return 0
+    let env1 = os.getEnv("CODEX_API_KEY")
+    if len(env1) > 0 && ! isChatgptPlaceholderToken(env1):
+        if debug == "1" || debug == "true" || debug == "yes":
+            printErr("[debug] login status via env CODEX_API_KEY")
+        printErr("Logged in using an API key - " + maskApiKey(env1))
+        return 0
+    let env2 = os.getEnv("OPENAI_API_KEY")
+    if len(env2) > 0 && ! isChatgptPlaceholderToken(env2):
+        if debug == "1" || debug == "true" || debug == "yes":
+            printErr("[debug] login status via env OPENAI_API_KEY")
+        printErr("Logged in using an API key - " + maskApiKey(env2))
+        return 0
+    if debug == "1" || debug == "true" || debug == "yes":
+        printErr("[debug] login status before auth.json chatgpt tokens")
+    if readChatgptTokens(tokens) && len(tokens.accessToken) > 0:
+        if debug == "1" || debug == "true" || debug == "yes":
+            printErr("[debug] login status via auth.json chatgpt tokens")
+        printErr("Logged in using ChatGPT")
+        return 0
+    if debug == "1" || debug == "true" || debug == "yes":
+        printErr("[debug] login status end not logged in")
+    printErr("Not logged in")
+    return 1
+
+fn printLoginHelp(): int32 =
+    printLine("Manage login")
+    printLine("")
+    printLine("Usage: codex login [OPTIONS] [COMMAND]")
+    printLine("")
+    printLine("Commands:")
+    printLine("  status  Show login status")
+    printLine("  help    Print this message or the help of the given subcommand(s)")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printLine("      --with-api-key")
+    printLine("          Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`)")
+    printLine("")
+    printEnableFlagHelp()
+    printLine("      --device-auth")
+    printLine("          ")
+    printLine("")
+    printDisableFlagHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn printLoginHelpShort(): int32 =
+    printLine("Manage login")
+    printLine("")
+    printLine("Usage: codex login [OPTIONS] [COMMAND]")
+    printLine("")
+    printLine("Commands:")
+    printLine("  status  Show login status")
+    printLine("  help    Print this message or the help of the given subcommand(s)")
+    printLine("")
+    printLine("Options:")
+    printLine("  -c, --config <key=value>  Override a configuration value that would otherwise be loaded from")
+    printLine("                            `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`) to override")
+    printLine("                            nested values. The `value` portion is parsed as TOML. If it fails to")
+    printLine("                            parse as TOML, the raw string is used as a literal")
+    printLine("      --with-api-key        Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | codex login")
+    printLine("                            --with-api-key`)")
+    printLine("      --enable <FEATURE>    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    printLine("      --device-auth         ")
+    printLine("      --disable <FEATURE>   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    printLine("  -h, --help                Print help (see more with '--help')")
+    return 0
+
+fn printLoginStatusHelp(): int32 =
+    printLine("Show login status")
+    printLine("")
+    printLine("Usage: codex login status [OPTIONS]")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn loginUnexpectedArgWithUsage(arg: str, usage: str): int32 =
+    var msg = "error: unexpected argument '"
+    msg = msg + arg
+    msg = msg + "' found"
+    printErr(msg)
+    printErr("")
+    printErr("Usage: " + usage)
+    printErr("")
+    printErr("For more information, try '--help'.")
+    return 2
+
+fn loginUnrecognizedSubcommandWithUsage(sub: str, usage: str): int32 =
+    var msg = "error: unrecognized subcommand '"
+    msg = msg + sub
+    msg = msg + "'"
+    printErr(msg)
+    printErr("")
+    printErr("Usage: " + usage)
+    printErr("")
+    printErr("For more information, try '--help'.")
+    return 2
+
+fn runLogin(args: seq[str], start: int32): int32 =
+    var withApiKey = false
+    var useDevice = false
+    var deprecatedApiKey = ""
+    var issuerOverride = ""
+    var clientOverride = ""
+    var sub = ""
+    var subIndex: int32 = -1
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if arg == "--help":
+            return printLoginHelp()
+        if arg == "-h":
+            return printLoginHelpShort()
+        if arg == "--with-api-key":
+            withApiKey = true
+        elif arg == "--api-key":
+            if i + 1 >= len(args):
+                return loginUnexpectedArgWithUsage(arg, "codex login [OPTIONS] [COMMAND]")
+            deprecatedApiKey = argAt(args, i + 1)
+            i = i + 1
+        elif arg == "--device-auth":
+            useDevice = true
+        elif arg == "--experimental_issuer":
+            if i + 1 >= len(args):
+                return loginUnexpectedArgWithUsage(arg, "codex login [OPTIONS] [COMMAND]")
+            issuerOverride = argAt(args, i + 1)
+            i = i + 1
+        elif arg == "--experimental_client-id":
+            if i + 1 >= len(args):
+                return loginUnexpectedArgWithUsage(arg, "codex login [OPTIONS] [COMMAND]")
+            clientOverride = argAt(args, i + 1)
+            i = i + 1
+        elif hasPrefix(arg, "-"):
+            return loginUnexpectedArgWithUsage(arg, "codex login [OPTIONS] [COMMAND]")
+        else:
+            # First positional is the subcommand (status/help).
+            sub = arg
+            subIndex = i
+            break
+        i = i + 1
+
+    if len(deprecatedApiKey) > 0:
+        printErr("The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`.")
+        return 1
+
+    if len(sub) > 0:
+        if sub == "status":
+            var j: int32 = subIndex + 1
+            while j < len(args):
+                let tok = argAt(args, j)
+                if tok == "--help" || tok == "-h":
+                    return printLoginStatusHelp()
+                return loginUnexpectedArgWithUsage(tok, "codex login status [OPTIONS]")
+            return runLoginStatusLocal()
+        if sub == "help":
+            if subIndex + 1 >= len(args):
+                return printLoginHelp()
+            let target = argAt(args, subIndex + 1)
+            if target == "status":
+                if subIndex + 2 < len(args):
+                    return loginUnrecognizedSubcommandWithUsage(argAt(args, subIndex + 2), "codex login status [OPTIONS]")
+                return printLoginStatusHelp()
+            return loginUnrecognizedSubcommandWithUsage(target, "codex login [OPTIONS] [COMMAND]")
+        return loginUnrecognizedSubcommandWithUsage(sub, "codex login [OPTIONS] [COMMAND]")
+
+    let forcedLogin = normalizePolicy(trimLine(readConfigValue("forced_login_method")))
+    if withApiKey:
+        if forcedLogin == "chatgpt":
+            printErr("API key login is disabled. Use ChatGPT login instead.")
+            return 1
+        printErr("Reading API key from stdin...")
+        var token = ""
+        let stdinText = os.readAll(os.get_stdin())
+        if stdinText != nil && len(stdinText) > 0:
+            token = trimLine(stdinText)
+        if len(token) == 0 || isChatgptPlaceholderToken(token):
+            printErr("No API key provided via stdin.")
+            return 1
+        if writeConfigValue("auth.token", token):
+            if ! looksLikeJwt(token):
+                writeAuthJsonApiKey(token)
+            printErr("Successfully logged in")
+            return 0
+        printErr("login failed")
+        return 1
+
+    if useDevice:
+        if forcedLogin == "api":
+            printErr("ChatGPT login is disabled. Use API key login instead.")
+            return 1
+        var issuer: str = authIssuerDefault()
+        if len(issuerOverride) > 0:
+            issuer = issuerOverride
+        var clientId: str = authClientIdDefault()
+        if len(clientOverride) > 0:
+            clientId = clientOverride
+        let workspaceId = readConfigValue("forced_chatgpt_workspace_id")
+        var err = ""
+        if runDeviceCodeLogin(issuer, clientId, workspaceId, err):
+            printErr("Successfully logged in")
+            return 0
+        printErr("Error logging in with device code: " + err)
+        return 1
+
+    if forcedLogin == "api":
+        printErr("ChatGPT login is disabled. Use API key login instead.")
+        return 1
+    var issuer: str = authIssuerDefault()
+    if len(issuerOverride) > 0:
+        issuer = issuerOverride
+    var clientId: str = authClientIdDefault()
+    if len(clientOverride) > 0:
+        clientId = clientOverride
+    let workspaceId = readConfigValue("forced_chatgpt_workspace_id")
+    var err = ""
+    if runBrowserLogin(issuer, clientId, workspaceId, true, err):
+        printErr("Successfully logged in")
+        return 0
+    printErr("Error logging in with ChatGPT: " + err)
+    return 1
+
+fn printLogoutHelp(): int32 =
+    printLine("Remove stored authentication credentials")
+    printLine("")
+    printLine("Usage: codex logout [OPTIONS]")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn runLogout(args: seq[str], start: int32): int32 =
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if arg == "--help" || arg == "-h":
+            return printLogoutHelp()
+        return loginUnexpectedArgWithUsage(arg, "codex logout [OPTIONS]")
+    var ok = clearConfigValue("auth.token")
+    clearAuthJson()
+    if ok:
+        printLine("ok")
+        return 0
+    printErr("logout failed")
+    return 1
+
+type
+    RootCliParse =
+        opts: ExecOptions
+        cmd: str
+        cmdIndex: int32
+        showHelp: bool
+        showVersion: bool
+        errArg: str
+        errTip: str
+
+    TuiSessionParse =
+        opts: ExecOptions
+        sessionId: str
+        prompt: str
+        last: bool
+        showAll: bool
+        showHelp: bool
+        showVersion: bool
+        errArg: str
+        errTip: str
+
+fn isOptionLikeLocal(arg: str): bool =
+    if arg == nil || len(arg) == 0:
+        return false
+    return arg[0] == '-'
+
+fn isRootCommandTokenLocal(tok: str): bool =
+    if tok == nil:
+        return false
+    # Visible commands.
+    if tok == "exec" || tok == "e":
+        return true
+    if tok == "review":
+        return true
+    if tok == "login" || tok == "logout":
+        return true
+    if tok == "mcp" || tok == "mcp-server":
+        return true
+    if tok == "app-server":
+        return true
+    if tok == "app":
+        return true
+    if tok == "completion":
+        return true
+    if tok == "sandbox":
+        return true
+    if tok == "debug":
+        return true
+    if tok == "apply" || tok == "a":
+        return true
+    if tok == "resume" || tok == "fork":
+        return true
+    if tok == "cloud" || tok == "cloud-tasks":
+        return true
+    if tok == "features":
+        return true
+    if tok == "help":
+        return true
+    # Hidden commands that codex-rs still accepts.
+    if tok == "execpolicy":
+        return true
+    if tok == "responses-api-proxy":
+        return true
+    if tok == "stdio-to-uds":
+        return true
+    return false
+
+fn splitByCharLocal(text: str, sep: char): seq[str] =
+    var outVal: seq[str] = newSeq[str]()
+    if text == nil:
+        return outVal
+    var start: int32 = 0
+    var i: int32 = 0
+    while i < len(text):
+        if text[i] == sep:
+            if i >= start:
+                seqAdd(outVal, __cheng_slice_string(text, start, i - 1, false))
+            else:
+                seqAdd(outVal, "")
+            start = i + 1
+        i = i + 1
+    if start <= len(text) - 1:
+        seqAdd(outVal, __cheng_slice_string(text, start, len(text) - 1, false))
+    elif start == len(text):
+        seqAdd(outVal, "")
+    return outVal
+
+fn appendCommaSeparatedLocal(outList: var seq[str], raw: str) =
+    let parts = splitByCharLocal(raw, ',')
+    var i: int32 = 0
+    while i < len(parts):
+        let part = trimLine(argAt(parts, i))
+        if len(part) > 0:
+            seqAdd(outList, part)
+        i = i + 1
+
+fn printRootUnexpectedArg(arg: str, tip: str): int32 =
+    # Match clap-ish formatting and exit codes.
+    var msg = "error: unexpected argument '"
+    msg = msg + arg
+    msg = msg + "' found"
+    printErr(msg)
+    printErr("")
+    if len(tip) > 0:
+        printErr("  tip: " + tip)
+        printErr("")
+    printErr("Usage: codex [OPTIONS] [PROMPT]")
+    printErr("       codex [OPTIONS] <COMMAND> [ARGS]")
+    printErr("")
+    printErr("For more information, try '--help'.")
+    return 2
+
+fn parseRootCli(args: seq[str]): RootCliParse =
+    var parsed: RootCliParse
+    parsed.opts = defaultExecOptions()
+    parsed.cmd = ""
+    parsed.cmdIndex = -1
+    parsed.showHelp = false
+    parsed.showVersion = false
+    parsed.errArg = ""
+    parsed.errTip = ""
+    var stopParsing = false
+    var sawPrompt = false
+    var i: int32 = 0
+    while i < len(args):
+        let arg = argAt(args, i)
+        if ! stopParsing && (arg == "--help" || arg == "-h"):
+            parsed.showHelp = true
+            return parsed
+        if ! stopParsing && (arg == "--version" || arg == "-V"):
+            parsed.showVersion = true
+            return parsed
+        if ! stopParsing && arg == "--":
+            stopParsing = true
+            i = i + 1
+            continue
+        if ! stopParsing && isOptionLikeLocal(arg):
+            if arg == "--image" || arg == "-i":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                var j: int32 = i + 1
+                var consumed = false
+                while j < len(args):
+                    let v = argAt(args, j)
+                    if v == "--" || isOptionLikeLocal(v):
+                        break
+                    appendCommaSeparatedLocal(parsed.opts.images, v)
+                    consumed = true
+                    j = j + 1
+                if ! consumed:
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                i = j - 1
+            elif arg == "--model" || arg == "-m":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.model = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--oss":
+                parsed.opts.oss = true
+            elif arg == "--local-provider":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.ossProvider = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--profile" || arg == "-p":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.profile = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--sandbox" || arg == "-s":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.sandboxMode = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--ask-for-approval" || arg == "-a":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.approvalPolicy = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--full-auto":
+                parsed.opts.fullAuto = true
+            elif arg == "--dangerously-bypass-approvals-and-sandbox" || arg == "--yolo":
+                parsed.opts.bypass = true
+            elif arg == "--cd" || arg == "-C":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.cwd = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--search":
+                parsed.opts.webSearch = true
+            elif arg == "--add-dir":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                seqAdd(parsed.opts.addDirs, argAt(args, i + 1))
+                i = i + 1
+            elif arg == "--no-alt-screen":
+                parsed.opts.noAltScreen = true
+            else:
+                parsed.errArg = arg
+                parsed.errTip = "to pass '" + arg + "' as a value, use '-- " + arg + "'"
+                return parsed
+            i = i + 1
+            continue
+        # Positional token (or after `--`).
+        if ! sawPrompt && ! stopParsing && isRootCommandTokenLocal(arg):
+            parsed.cmd = arg
+            parsed.cmdIndex = i
+            return parsed
+        if sawPrompt && ! stopParsing && isRootCommandTokenLocal(arg):
+            parsed.cmd = arg
+            parsed.cmdIndex = i
+            return parsed
+        if ! sawPrompt:
+            parsed.opts.prompt = arg
+            sawPrompt = true
+        else:
+            parsed.errArg = arg
+            return parsed
+        i = i + 1
+    return parsed
+
+fn mergeTuiOpts(base: ExecOptions, sub: ExecOptions): ExecOptions =
+    var out = base
+    if len(sub.model) > 0:
+        out.model = sub.model
+    if sub.oss:
+        out.oss = true
+    if len(sub.ossProvider) > 0:
+        out.ossProvider = sub.ossProvider
+    if len(sub.profile) > 0:
+        out.profile = sub.profile
+    if len(sub.sandboxMode) > 0:
+        out.sandboxMode = sub.sandboxMode
+    if len(sub.approvalPolicy) > 0:
+        out.approvalPolicy = sub.approvalPolicy
+    if sub.fullAuto:
+        out.fullAuto = true
+    if sub.bypass:
+        out.bypass = true
+    if len(sub.cwd) > 0:
+        out.cwd = sub.cwd
+    if sub.webSearch:
+        out.webSearch = true
+    if len(sub.images) > 0:
+        out.images = sub.images
+    if len(sub.addDirs) > 0:
+        var i: int32 = 0
+        while i < len(sub.addDirs):
+            seqAdd(out.addDirs, argAt(sub.addDirs, i))
+            i = i + 1
+    if sub.noAltScreen:
+        out.noAltScreen = true
+    if len(sub.prompt) > 0:
+        out.prompt = sub.prompt
+    return out
+
+fn parseTuiSessionArgs(args: seq[str], start: int32, allowLastWithId: bool): TuiSessionParse =
+    var parsed: TuiSessionParse
+    parsed.opts = defaultExecOptions()
+    parsed.sessionId = ""
+    parsed.prompt = ""
+    parsed.last = false
+    parsed.showAll = false
+    parsed.showHelp = false
+    parsed.showVersion = false
+    parsed.errArg = ""
+    parsed.errTip = ""
+    var stopParsing = false
+    var i: int32 = start
+    while i < len(args):
+        let arg = argAt(args, i)
+        if ! stopParsing && (arg == "--help" || arg == "-h"):
+            parsed.showHelp = true
+            return parsed
+        if ! stopParsing && (arg == "--version" || arg == "-V"):
+            parsed.showVersion = true
+            return parsed
+        if ! stopParsing && arg == "--":
+            stopParsing = true
+            i = i + 1
+            continue
+        if ! stopParsing && isOptionLikeLocal(arg):
+            if arg == "--last":
+                parsed.last = true
+            elif arg == "--all":
+                parsed.showAll = true
+            elif arg == "--image" || arg == "-i":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                var j: int32 = i + 1
+                var consumed = false
+                while j < len(args):
+                    let v = argAt(args, j)
+                    if v == "--" || isOptionLikeLocal(v):
+                        break
+                    appendCommaSeparatedLocal(parsed.opts.images, v)
+                    consumed = true
+                    j = j + 1
+                if ! consumed:
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                i = j - 1
+            elif arg == "--model" || arg == "-m":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.model = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--oss":
+                parsed.opts.oss = true
+            elif arg == "--local-provider":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.ossProvider = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--profile" || arg == "-p":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.profile = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--sandbox" || arg == "-s":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.sandboxMode = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--ask-for-approval" || arg == "-a":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.approvalPolicy = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--full-auto":
+                parsed.opts.fullAuto = true
+            elif arg == "--dangerously-bypass-approvals-and-sandbox" || arg == "--yolo":
+                parsed.opts.bypass = true
+            elif arg == "--cd" || arg == "-C":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                parsed.opts.cwd = argAt(args, i + 1)
+                i = i + 1
+            elif arg == "--search":
+                parsed.opts.webSearch = true
+            elif arg == "--add-dir":
+                if i + 1 >= len(args):
+                    parsed.errArg = arg
+                    parsed.errTip = "missing value"
+                    return parsed
+                seqAdd(parsed.opts.addDirs, argAt(args, i + 1))
+                i = i + 1
+            elif arg == "--no-alt-screen":
+                parsed.opts.noAltScreen = true
+            else:
+                parsed.errArg = arg
+                parsed.errTip = "to pass '" + arg + "' as a value, use '-- " + arg + "'"
+                return parsed
+            i = i + 1
+            continue
+        # Positionals: [SESSION_ID] [PROMPT]
+        if len(parsed.sessionId) == 0:
+            parsed.sessionId = arg
+        elif len(parsed.prompt) == 0:
+            parsed.prompt = arg
+        else:
+            parsed.errArg = arg
+            return parsed
+        i = i + 1
+    if parsed.last && ! allowLastWithId && len(parsed.sessionId) > 0:
+        parsed.errArg = parsed.sessionId
+        parsed.errTip = "the argument '" + parsed.sessionId + "' cannot be used with --last"
+    return parsed
+
+fn printResumeUsage(): int32 =
+    printLine("Resume a previous interactive session (picker by default; use --last to continue the most recent)")
+    printLine("")
+    printLine("Usage: codex resume [OPTIONS] [SESSION_ID] [PROMPT]")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [SESSION_ID]")
+    printLine("          Conversation/session id (UUID) or thread name. UUIDs take precedence if it parses. If")
+    printLine("          omitted, use --last to pick the most recent recorded session")
+    printLine("")
+    printLine("  [PROMPT]")
+    printLine("          Optional user prompt to start the session")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printLine("      --last")
+    printLine("          Continue the most recent session without showing the picker")
+    printLine("")
+    printLine("      --all")
+    printLine("          Show all sessions (disables cwd filtering and shows CWD column)")
+    printLine("")
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -i, --image <FILE>...")
+    printLine("          Optional image(s) to attach to the initial prompt")
+    printLine("")
+    printLine("  -m, --model <MODEL>")
+    printLine("          Model the agent should use")
+    printLine("")
+    printLine("      --oss")
+    printLine("          Convenience flag to select the local open source model provider. Equivalent to -c")
+    printLine("          model_provider=oss; verifies a local LM Studio or Ollama server is running")
+    printLine("")
+    printLine("      --local-provider <OSS_PROVIDER>")
+    printLine("          Specify which local provider to use (lmstudio or ollama). If not specified with --oss,")
+    printLine("          will use config default or show selection")
+    printLine("")
+    printLine("  -p, --profile <CONFIG_PROFILE>")
+    printLine("          Configuration profile from config.toml to specify default options")
+    printLine("")
+    printLine("  -s, --sandbox <SANDBOX_MODE>")
+    printLine("          Select the sandbox policy to use when executing model-generated shell commands")
+    printLine("          ")
+    printLine("          [possible values: read-only, workspace-write, danger-full-access]")
+    printLine("")
+    printLine("  -a, --ask-for-approval <APPROVAL_POLICY>")
+    printLine("          Configure when the model requires human approval before executing a command")
+    printLine("")
+    printLine("          Possible values:")
+    printLine("          - untrusted:  Only run \"trusted\" commands (e.g. ls, cat, sed) without asking for user")
+    printLine("            approval. Will escalate to the user if the model proposes a command that is not in the")
+    printLine("            \"trusted\" set")
+    printLine("          - on-failure: Run all commands without asking for user approval. Only asks for approval if")
+    printLine("            a command fails to execute, in which case it will escalate to the user to ask for")
+    printLine("            un-sandboxed execution")
+    printLine("          - on-request: The model decides when to ask the user for approval")
+    printLine("          - never:      Never ask for user approval Execution failures are immediately returned to")
+    printLine("            the model")
+    printLine("")
+    printLine("      --full-auto")
+    printLine("          Convenience alias for low-friction sandboxed automatic execution (-a on-request, --sandbox")
+    printLine("          workspace-write)")
+    printLine("")
+    printLine("      --dangerously-bypass-approvals-and-sandbox")
+    printLine("          Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY")
+    printLine("          DANGEROUS. Intended solely for running in environments that are externally sandboxed")
+    printLine("")
+    printLine("  -C, --cd <DIR>")
+    printLine("          Tell the agent to use the specified directory as its working root")
+    printLine("")
+    printLine("      --search")
+    printLine("          Enable live web search. When enabled, the native Responses `web_search` tool is available")
+    printLine("          to the model (no per‑call approval)")
+    printLine("")
+    printLine("      --add-dir <DIR>")
+    printLine("          Additional directories that should be writable alongside the primary workspace")
+    printLine("")
+    printLine("      --no-alt-screen")
+    printLine("          Disable alternate screen mode")
+    printLine("          ")
+    printLine("          Runs the TUI in inline mode, preserving terminal scrollback history. This is useful in")
+    printLine("          terminal multiplexers like Zellij that follow the xterm spec strictly and disable")
+    printLine("          scrollback in alternate screen buffers.")
+    printLine("")
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    printLine("")
+    printLine("  -V, --version")
+    printLine("          Print version")
+    return 0
+
+fn printResumeUsageShort(): int32 =
+    printLine("Resume a previous interactive session (picker by default; use --last to continue the most recent)")
+    printLine("")
+    printLine("Usage: codex resume [OPTIONS] [SESSION_ID] [PROMPT]")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [SESSION_ID]  Conversation/session id (UUID) or thread name. UUIDs take precedence if it parses.")
+    printLine("                If omitted, use --last to pick the most recent recorded session")
+    printLine("  [PROMPT]      Optional user prompt to start the session")
+    printLine("")
+    printLine("Options:")
+    printLine("  -c, --config <key=value>")
+    printLine("          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`.")
+    printLine("          Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed")
+    printLine("          as TOML. If it fails to parse as TOML, the raw string is used as a literal")
+    printLine("      --last")
+    printLine("          Continue the most recent session without showing the picker")
+    printLine("      --all")
+    printLine("          Show all sessions (disables cwd filtering and shows CWD column)")
+    printLine("      --enable <FEATURE>")
+    printLine("          Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    printLine("      --disable <FEATURE>")
+    printLine("          Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    printLine("  -i, --image <FILE>...")
+    printLine("          Optional image(s) to attach to the initial prompt")
+    printLine("  -m, --model <MODEL>")
+    printLine("          Model the agent should use")
+    printLine("      --oss")
+    printLine("          Convenience flag to select the local open source model provider. Equivalent to -c")
+    printLine("          model_provider=oss; verifies a local LM Studio or Ollama server is running")
+    printLine("      --local-provider <OSS_PROVIDER>")
+    printLine("          Specify which local provider to use (lmstudio or ollama). If not specified with --oss,")
+    printLine("          will use config default or show selection")
+    printLine("  -p, --profile <CONFIG_PROFILE>")
+    printLine("          Configuration profile from config.toml to specify default options")
+    printLine("  -s, --sandbox <SANDBOX_MODE>")
+    printLine("          Select the sandbox policy to use when executing model-generated shell commands [possible")
+    printLine("          values: read-only, workspace-write, danger-full-access]")
+    printLine("  -a, --ask-for-approval <APPROVAL_POLICY>")
+    printLine("          Configure when the model requires human approval before executing a command [possible")
+    printLine("          values: untrusted, on-failure, on-request, never]")
+    printLine("      --full-auto")
+    printLine("          Convenience alias for low-friction sandboxed automatic execution (-a on-request, --sandbox")
+    printLine("          workspace-write)")
+    printLine("      --dangerously-bypass-approvals-and-sandbox")
+    printLine("          Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY")
+    printLine("          DANGEROUS. Intended solely for running in environments that are externally sandboxed")
+    printLine("  -C, --cd <DIR>")
+    printLine("          Tell the agent to use the specified directory as its working root")
+    printLine("      --search")
+    printLine("          Enable live web search. When enabled, the native Responses `web_search` tool is available")
+    printLine("          to the model (no per‑call approval)")
+    printLine("      --add-dir <DIR>")
+    printLine("          Additional directories that should be writable alongside the primary workspace")
+    printLine("      --no-alt-screen")
+    printLine("          Disable alternate screen mode")
+    printLine("  -h, --help")
+    printLine("          Print help (see more with '--help')")
+    printLine("  -V, --version")
+    printLine("          Print version")
+    return 0
+
+fn printForkUsage(): int32 =
+    printLine("Fork a previous interactive session (picker by default; use --last to fork the most recent)")
+    printLine("")
+    printLine("Usage: codex fork [OPTIONS] [SESSION_ID] [PROMPT]")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [SESSION_ID]")
+    printLine("          Conversation/session id (UUID). When provided, forks this session. If omitted, use --last")
+    printLine("          to pick the most recent recorded session")
+    printLine("")
+    printLine("  [PROMPT]")
+    printLine("          Optional user prompt to start the session")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printLine("      --last")
+    printLine("          Fork the most recent session without showing the picker")
+    printLine("")
+    printLine("      --all")
+    printLine("          Show all sessions (disables cwd filtering and shows CWD column)")
+    printLine("")
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -i, --image <FILE>...")
+    printLine("          Optional image(s) to attach to the initial prompt")
+    printLine("")
+    printLine("  -m, --model <MODEL>")
+    printLine("          Model the agent should use")
+    printLine("")
+    printLine("      --oss")
+    printLine("          Convenience flag to select the local open source model provider. Equivalent to -c")
+    printLine("          model_provider=oss; verifies a local LM Studio or Ollama server is running")
+    printLine("")
+    printLine("      --local-provider <OSS_PROVIDER>")
+    printLine("          Specify which local provider to use (lmstudio or ollama). If not specified with --oss,")
+    printLine("          will use config default or show selection")
+    printLine("")
+    printLine("  -p, --profile <CONFIG_PROFILE>")
+    printLine("          Configuration profile from config.toml to specify default options")
+    printLine("")
+    printLine("  -s, --sandbox <SANDBOX_MODE>")
+    printLine("          Select the sandbox policy to use when executing model-generated shell commands")
+    printLine("          ")
+    printLine("          [possible values: read-only, workspace-write, danger-full-access]")
+    printLine("")
+    printLine("  -a, --ask-for-approval <APPROVAL_POLICY>")
+    printLine("          Configure when the model requires human approval before executing a command")
+    printLine("")
+    printLine("          Possible values:")
+    printLine("          - untrusted:  Only run \"trusted\" commands (e.g. ls, cat, sed) without asking for user")
+    printLine("            approval. Will escalate to the user if the model proposes a command that is not in the")
+    printLine("            \"trusted\" set")
+    printLine("          - on-failure: Run all commands without asking for user approval. Only asks for approval if")
+    printLine("            a command fails to execute, in which case it will escalate to the user to ask for")
+    printLine("            un-sandboxed execution")
+    printLine("          - on-request: The model decides when to ask the user for approval")
+    printLine("          - never:      Never ask for user approval Execution failures are immediately returned to")
+    printLine("            the model")
+    printLine("")
+    printLine("      --full-auto")
+    printLine("          Convenience alias for low-friction sandboxed automatic execution (-a on-request, --sandbox")
+    printLine("          workspace-write)")
+    printLine("")
+    printLine("      --dangerously-bypass-approvals-and-sandbox")
+    printLine("          Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY")
+    printLine("          DANGEROUS. Intended solely for running in environments that are externally sandboxed")
+    printLine("")
+    printLine("  -C, --cd <DIR>")
+    printLine("          Tell the agent to use the specified directory as its working root")
+    printLine("")
+    printLine("      --search")
+    printLine("          Enable live web search. When enabled, the native Responses `web_search` tool is available")
+    printLine("          to the model (no per‑call approval)")
+    printLine("")
+    printLine("      --add-dir <DIR>")
+    printLine("          Additional directories that should be writable alongside the primary workspace")
+    printLine("")
+    printLine("      --no-alt-screen")
+    printLine("          Disable alternate screen mode")
+    printLine("          ")
+    printLine("          Runs the TUI in inline mode, preserving terminal scrollback history. This is useful in")
+    printLine("          terminal multiplexers like Zellij that follow the xterm spec strictly and disable")
+    printLine("          scrollback in alternate screen buffers.")
+    printLine("")
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    printLine("")
+    printLine("  -V, --version")
+    printLine("          Print version")
+    return 0
+
+fn printForkUsageShort(): int32 =
+    printLine("Fork a previous interactive session (picker by default; use --last to fork the most recent)")
+    printLine("")
+    printLine("Usage: codex fork [OPTIONS] [SESSION_ID] [PROMPT]")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  [SESSION_ID]  Conversation/session id (UUID). When provided, forks this session. If omitted, use")
+    printLine("                --last to pick the most recent recorded session")
+    printLine("  [PROMPT]      Optional user prompt to start the session")
+    printLine("")
+    printLine("Options:")
+    printLine("  -c, --config <key=value>")
+    printLine("          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`.")
+    printLine("          Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed")
+    printLine("          as TOML. If it fails to parse as TOML, the raw string is used as a literal")
+    printLine("      --last")
+    printLine("          Fork the most recent session without showing the picker")
+    printLine("      --all")
+    printLine("          Show all sessions (disables cwd filtering and shows CWD column)")
+    printLine("      --enable <FEATURE>")
+    printLine("          Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    printLine("      --disable <FEATURE>")
+    printLine("          Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    printLine("  -i, --image <FILE>...")
+    printLine("          Optional image(s) to attach to the initial prompt")
+    printLine("  -m, --model <MODEL>")
+    printLine("          Model the agent should use")
+    printLine("      --oss")
+    printLine("          Convenience flag to select the local open source model provider. Equivalent to -c")
+    printLine("          model_provider=oss; verifies a local LM Studio or Ollama server is running")
+    printLine("      --local-provider <OSS_PROVIDER>")
+    printLine("          Specify which local provider to use (lmstudio or ollama). If not specified with --oss,")
+    printLine("          will use config default or show selection")
+    printLine("  -p, --profile <CONFIG_PROFILE>")
+    printLine("          Configuration profile from config.toml to specify default options")
+    printLine("  -s, --sandbox <SANDBOX_MODE>")
+    printLine("          Select the sandbox policy to use when executing model-generated shell commands [possible")
+    printLine("          values: read-only, workspace-write, danger-full-access]")
+    printLine("  -a, --ask-for-approval <APPROVAL_POLICY>")
+    printLine("          Configure when the model requires human approval before executing a command [possible")
+    printLine("          values: untrusted, on-failure, on-request, never]")
+    printLine("      --full-auto")
+    printLine("          Convenience alias for low-friction sandboxed automatic execution (-a on-request, --sandbox")
+    printLine("          workspace-write)")
+    printLine("      --dangerously-bypass-approvals-and-sandbox")
+    printLine("          Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY")
+    printLine("          DANGEROUS. Intended solely for running in environments that are externally sandboxed")
+    printLine("  -C, --cd <DIR>")
+    printLine("          Tell the agent to use the specified directory as its working root")
+    printLine("      --search")
+    printLine("          Enable live web search. When enabled, the native Responses `web_search` tool is available")
+    printLine("          to the model (no per‑call approval)")
+    printLine("      --add-dir <DIR>")
+    printLine("          Additional directories that should be writable alongside the primary workspace")
+    printLine("      --no-alt-screen")
+    printLine("          Disable alternate screen mode")
+    printLine("  -h, --help")
+    printLine("          Print help (see more with '--help')")
+    printLine("  -V, --version")
+    printLine("          Print version")
+    return 0
+
+fn runResumeInteractive(rootOpts: ExecOptions, args: seq[str], start: int32): int32 =
+    traceMainLocal("resume.begin")
+    let parsed = parseTuiSessionArgs(args, start, true)
+    if parsed.showVersion:
+        printVersionNamed("codex-cli-resume")
+        return 0
+    if parsed.showHelp:
+        if wantsLongHelp(args, start):
+            return printResumeUsage()
+        return printResumeUsageShort()
+    if len(parsed.errArg) > 0:
+        return printRootUnexpectedArg(parsed.errArg, parsed.errTip)
+    var opts = mergeTuiOpts(rootOpts, parsed.opts)
+    if len(parsed.prompt) > 0:
+        opts.prompt = parsed.prompt
+    # Avoid `let x = if ...: <str> else: <str>`: can crash in `strlen` on some builds.
+    var resumeCwd: str = currentDirSafe()
+    if len(opts.cwd) > 0:
+        resumeCwd = opts.cwd
+    opts.cwd = resumeCwd
+    var threadId = parsed.sessionId
+    let filterCwd = resumeCwd
+    if parsed.last && len(threadId) == 0:
+        let infos = listThreadInfos(filterCwd, parsed.showAll)
+        if len(infos) > 0:
+            threadId = threadInfoAtLocal(infos, 0).id
+    if len(threadId) == 0 && (! parsed.last):
+        threadId = selectThreadIdLocal(filterCwd, parsed.showAll)
+    if len(threadId) == 0:
+        printErr("missing session id")
+        return 2
+    return runInteractiveWithOpts(opts, threadId)
+
+fn runForkInteractive(rootOpts: ExecOptions, args: seq[str], start: int32): int32 =
+    let parsed = parseTuiSessionArgs(args, start, false)
+    if parsed.showVersion:
+        printVersionNamed("codex-cli-fork")
+        return 0
+    if parsed.showHelp:
+        if wantsLongHelp(args, start):
+            return printForkUsage()
+        return printForkUsageShort()
+    if len(parsed.errArg) > 0:
+        return printRootUnexpectedArg(parsed.errArg, parsed.errTip)
+    var opts = mergeTuiOpts(rootOpts, parsed.opts)
+    if len(parsed.prompt) > 0:
+        opts.prompt = parsed.prompt
+    var forkCwd: str = currentDirSafe()
+    if len(opts.cwd) > 0:
+        forkCwd = opts.cwd
+    opts.cwd = forkCwd
+    var sourceId = parsed.sessionId
+    let filterCwd = forkCwd
+    if parsed.last && len(sourceId) == 0:
+        let infos = listThreadInfos(filterCwd, parsed.showAll)
+        if len(infos) > 0:
+            sourceId = threadInfoAtLocal(infos, 0).id
+    if len(sourceId) == 0 && (! parsed.last):
+        sourceId = selectThreadIdLocal(filterCwd, parsed.showAll)
+    if len(sourceId) == 0:
+        printErr("missing session id")
+        return 2
+    let newId = forkThread(sourceId, "", opts.cwd, "cli")
+    if len(newId) == 0:
+        printErr("fork failed")
+        return 1
+    return runInteractiveWithOpts(opts, newId)
+
+fn runMcp(args: seq[str], start: int32): int32 =
+    return runMcpCommand(args, start)
+
+fn runMcpServer(args: seq[str], start: int32): int32 =
+    return runMcpServerCommand(args, start)
+
+fn debugPrint(toErr: bool, text: str) =
+    if toErr:
+        printErr(text)
+    else:
+        printLine(text)
+
+fn debugUnexpectedArgWithUsage(arg: str, usage: str, tip: str): int32 =
+    var msg = "error: unexpected argument '"
+    msg = msg + arg
+    msg = msg + "' found"
+    printErr(msg)
+    printErr("")
+    if len(tip) > 0:
+        printErr("  tip: " + tip)
+        printErr("")
+    printErr("Usage: " + usage)
+    printErr("")
+    printErr("For more information, try '--help'.")
+    return 2
+
+fn debugUnrecognizedSubcommandWithUsage(sub: str, usage: str): int32 =
+    var msg = "error: unrecognized subcommand '"
+    msg = msg + sub
+    msg = msg + "'"
+    printErr(msg)
+    printErr("")
+    printErr("Usage: " + usage)
+    printErr("")
+    printErr("For more information, try '--help'.")
+    return 2
+
+fn printDebugUsageShort(toErr: bool): int32 =
+    debugPrint(toErr, "Debugging tools")
+    debugPrint(toErr, "")
+    debugPrint(toErr, "Usage: codex debug [OPTIONS] <COMMAND>")
+    debugPrint(toErr, "")
+    debugPrint(toErr, "Commands:")
+    debugPrint(toErr, "  app-server  Tooling: helps debug the app server")
+    debugPrint(toErr, "  help        Print this message or the help of the given subcommand(s)")
+    debugPrint(toErr, "")
+    debugPrint(toErr, "Options:")
+    debugPrint(toErr, "  -c, --config <key=value>  Override a configuration value that would otherwise be loaded from")
+    debugPrint(toErr, "                            `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`) to override")
+    debugPrint(toErr, "                            nested values. The `value` portion is parsed as TOML. If it fails to")
+    debugPrint(toErr, "                            parse as TOML, the raw string is used as a literal")
+    debugPrint(toErr, "      --enable <FEATURE>    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    debugPrint(toErr, "      --disable <FEATURE>   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    debugPrint(toErr, "  -h, --help                Print help (see more with '--help')")
+    return 0
+
+fn printDebugUsageLong(): int32 =
+    printLine("Debugging tools")
+    printLine("")
+    printLine("Usage: codex debug [OPTIONS] <COMMAND>")
+    printLine("")
+    printLine("Commands:")
+    printLine("  app-server  Tooling: helps debug the app server")
+    printLine("  help        Print this message or the help of the given subcommand(s)")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn printDebugAppServerUsageShort(toErr: bool): int32 =
+    debugPrint(toErr, "Tooling: helps debug the app server")
+    debugPrint(toErr, "")
+    debugPrint(toErr, "Usage: codex debug app-server [OPTIONS] <COMMAND>")
+    debugPrint(toErr, "")
+    debugPrint(toErr, "Commands:")
+    debugPrint(toErr, "  send-message-v2  ")
+    debugPrint(toErr, "  help             Print this message or the help of the given subcommand(s)")
+    debugPrint(toErr, "")
+    debugPrint(toErr, "Options:")
+    debugPrint(toErr, "  -c, --config <key=value>  Override a configuration value that would otherwise be loaded from")
+    debugPrint(toErr, "                            `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`) to override")
+    debugPrint(toErr, "                            nested values. The `value` portion is parsed as TOML. If it fails to")
+    debugPrint(toErr, "                            parse as TOML, the raw string is used as a literal")
+    debugPrint(toErr, "      --enable <FEATURE>    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    debugPrint(toErr, "      --disable <FEATURE>   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    debugPrint(toErr, "  -h, --help                Print help (see more with '--help')")
+    return 0
+
+fn printDebugAppServerUsageLong(): int32 =
+    printLine("Tooling: helps debug the app server")
+    printLine("")
+    printLine("Usage: codex debug app-server [OPTIONS] <COMMAND>")
+    printLine("")
+    printLine("Commands:")
+    printLine("  send-message-v2  ")
+    printLine("  help             Print this message or the help of the given subcommand(s)")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn printDebugAppServerSendMessageUsageShort(): int32 =
+    printLine("Usage: codex debug app-server send-message-v2 [OPTIONS] <USER_MESSAGE>")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  <USER_MESSAGE>  ")
+    printLine("")
+    printLine("Options:")
+    printLine("  -c, --config <key=value>  Override a configuration value that would otherwise be loaded from")
+    printLine("                            `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`) to override")
+    printLine("                            nested values. The `value` portion is parsed as TOML. If it fails to")
+    printLine("                            parse as TOML, the raw string is used as a literal")
+    printLine("      --enable <FEATURE>    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    printLine("      --disable <FEATURE>   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    printLine("  -h, --help                Print help (see more with '--help')")
+    return 0
+
+fn printDebugAppServerSendMessageUsageLong(): int32 =
+    printLine("Usage: codex debug app-server send-message-v2 [OPTIONS] <USER_MESSAGE>")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  <USER_MESSAGE>")
+    printLine("          ")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn debugKnownRootSubcommand(name: str): bool =
+    return name == "app-server" || name == "help"
+
+fn debugKnownAppServerSubcommand(name: str): bool =
+    return name == "send-message-v2" || name == "help"
+
+fn debugHasFlagBeforeDelim(args: seq[str], start: int32, flag: str): bool =
+    var i: int32 = start
+    while i < len(args):
+        let tok = argAt(args, i)
+        if tok == "--":
+            break
+        if tok == flag:
+            return true
+        i = i + 1
+    return false
+
+fn runDebugAppServerSendMessage(args: seq[str], start: int32): int32 =
+    if debugHasFlagBeforeDelim(args, start, "--help"):
+        return printDebugAppServerSendMessageUsageLong()
+    if debugHasFlagBeforeDelim(args, start, "-h"):
+        return printDebugAppServerSendMessageUsageShort()
+
+    var sawDelim = false
+    var message = ""
+    var messageAfterDelim = false
+    var extra = ""
+    var extraAfterDelim = false
+    var i: int32 = start
+    while i < len(args):
+        let tok = argAt(args, i)
+        if tok == "--":
+            sawDelim = true
+            i = i + 1
+            continue
+        if len(message) == 0:
+            message = tok
+            messageAfterDelim = sawDelim
+        else:
+            extra = tok
+            extraAfterDelim = sawDelim
+            break
+        i = i + 1
+
+    if len(message) == 0:
+        printErr("error: the following required arguments were not provided:")
+        printErr("  <USER_MESSAGE>")
+        printErr("")
+        printErr("Usage: codex debug app-server send-message-v2 <USER_MESSAGE>")
+        printErr("")
+        printErr("For more information, try '--help'.")
+        return 2
+
+    if len(extra) > 0:
+        if (! extraAfterDelim) && hasPrefix(extra, "-"):
+            let tip = "to pass '" + extra + "' as a value, use '-- " + extra + "'"
+            return debugUnexpectedArgWithUsage(extra, "codex debug app-server send-message-v2 <USER_MESSAGE>", tip)
+        return debugUnexpectedArgWithUsage(extra, "codex debug app-server send-message-v2 [OPTIONS] <USER_MESSAGE>", "")
+
+    if (! messageAfterDelim) && hasPrefix(message, "-"):
+        let tip = "to pass '" + message + "' as a value, use '-- " + message + "'"
+        return debugUnexpectedArgWithUsage(message, "codex debug app-server send-message-v2 [OPTIONS] <USER_MESSAGE>", tip)
+
+    var localArgs: seq[str] = newSeq[str]()
+    seqAdd(localArgs, "app-server-test")
+    seqAdd(localArgs, "send-message-v2")
+    seqAdd(localArgs, message)
+    return runAppServerTest(localArgs, 1)
+
+fn runDebugAppServerCommand(args: seq[str], start: int32): int32 =
+    if start >= len(args):
+        printDebugAppServerUsageShort(true)
+        return 2
+
+    let sub = argAt(args, start)
+    if sub == "--":
+        if start + 1 >= len(args):
+            printDebugAppServerUsageShort(true)
+            return 2
+        let next = argAt(args, start + 1)
+        if debugKnownAppServerSubcommand(next):
+            let tip = "subcommand '" + next + "' exists; to use it, remove the '--' before it"
+            return debugUnexpectedArgWithUsage(next, "codex debug app-server [OPTIONS] <COMMAND>", tip)
+        return debugUnrecognizedSubcommandWithUsage(next, "codex debug app-server [OPTIONS] <COMMAND>")
+
+    if sub == "--help":
+        return printDebugAppServerUsageLong()
+    if sub == "-h":
+        return printDebugAppServerUsageShort(false)
+
+    if sub == "help":
+        if start + 1 >= len(args):
+            return printDebugAppServerUsageLong()
+        let target = argAt(args, start + 1)
+        if target == "send-message-v2":
+            if start + 2 < len(args):
+                return debugUnrecognizedSubcommandWithUsage(argAt(args, start + 2), "codex debug app-server send-message-v2 [OPTIONS] <USER_MESSAGE>")
+            return printDebugAppServerSendMessageUsageLong()
+        return debugUnrecognizedSubcommandWithUsage(target, "codex debug app-server [OPTIONS] <COMMAND>")
+
+    if hasPrefix(sub, "-"):
+        return debugUnexpectedArgWithUsage(sub, "codex debug app-server [OPTIONS] <COMMAND>", "")
+
+    if sub == "send-message-v2":
+        return runDebugAppServerSendMessage(args, start + 1)
+
+    return debugUnrecognizedSubcommandWithUsage(sub, "codex debug app-server [OPTIONS] <COMMAND>")
+
+fn runDebugCommand(args: seq[str], start: int32): int32 =
+    if start >= len(args):
+        printDebugUsageShort(true)
+        return 2
+
+    let sub = argAt(args, start)
+    if sub == "--":
+        if start + 1 >= len(args):
+            printDebugUsageShort(true)
+            return 2
+        let next = argAt(args, start + 1)
+        if debugKnownRootSubcommand(next):
+            let tip = "subcommand '" + next + "' exists; to use it, remove the '--' before it"
+            return debugUnexpectedArgWithUsage(next, "codex debug [OPTIONS] <COMMAND>", tip)
+        return debugUnrecognizedSubcommandWithUsage(next, "codex debug [OPTIONS] <COMMAND>")
+
+    if sub == "--help":
+        return printDebugUsageLong()
+    if sub == "-h":
+        return printDebugUsageShort(false)
+
+    if sub == "help":
+        if start + 1 >= len(args):
+            return printDebugUsageLong()
+        let target = argAt(args, start + 1)
+        if target == "app-server":
+            if start + 2 < len(args):
+                return debugUnrecognizedSubcommandWithUsage(argAt(args, start + 2), "codex debug app-server [OPTIONS] <COMMAND>")
+            return printDebugAppServerUsageLong()
+        return debugUnrecognizedSubcommandWithUsage(target, "codex debug [OPTIONS] <COMMAND>")
+
+    if hasPrefix(sub, "-"):
+        return debugUnexpectedArgWithUsage(sub, "codex debug [OPTIONS] <COMMAND>", "")
+
+    if sub == "app-server":
+        return runDebugAppServerCommand(args, start + 1)
+
+    return debugUnrecognizedSubcommandWithUsage(sub, "codex debug [OPTIONS] <COMMAND>")
+
+fn dispatchCommand(args: seq[str]): int32 =
+    var msg: str = "dispatch.begin argc="
+    msg = msg + intToStr(len(args))
+    traceMainLocal(msg)
+    let root = parseRootCli(args)
+    var msg2: str = "dispatch.parsedRoot cmd="
+    msg2 = msg2 + root.cmd
+    msg2 = msg2 + " idx="
+    msg2 = msg2 + intToStr(root.cmdIndex)
+    traceMainLocal(msg2)
+    if len(root.errArg) > 0:
+        return printRootUnexpectedArg(root.errArg, root.errTip)
+    if root.showVersion:
+        printVersionNamed("codex-cli")
+        return 0
+    if root.showHelp:
+        if wantsLongHelp(args, 0):
+            printUsage()
+        else:
+            printUsageShort()
+        return 0
+    var rootOpts = root.opts
+    if root.cmdIndex < 0 || len(root.cmd) == 0:
+        if len(rootOpts.cwd) == 0:
+            rootOpts.cwd = currentDirSafe()
+        return runInteractiveWithOpts(rootOpts, "")
+    let cmd = root.cmd
+    let start = root.cmdIndex + 1
+    if cmd == "help":
+        # Minimal help routing: `codex help <cmd>` -> `<cmd> --help`.
+        if start >= len(args):
+            printUsage()
+            return 0
+        let target = argAt(args, start)
+        if target == "exec" || target == "e":
+            return runExec(seqStr1("--help"), 0)
+        if target == "review":
+            printLine("Run a code review non-interactively")
+            printLine("")
+            printLine("Usage: codex review [OPTIONS] [PROMPT]")
+            return 0
+        if target == "resume":
+            return printResumeUsage()
+        if target == "fork":
+            return printForkUsage()
+        if target == "completion":
+            return runCompletion(seqStr1("--help"), 0)
+        if target == "features":
+            return runFeatures(seqStr1("--help"), 0)
+        if target == "apply" || target == "a":
+            return runApply(seqStr1("--help"), 0)
+        printUsage()
+        return 0
+    if cmd == "exec" || cmd == "e":
+        return runExec(args, start)
+    if cmd == "review":
+        return runReviewRoot(args, start)
+    if cmd == "resume":
+        return runResumeInteractive(rootOpts, args, start)
+    if cmd == "fork":
+        return runForkInteractive(rootOpts, args, start)
+    if cmd == "app-server":
+        if len(args) > start:
+            let sub = argAt(args, start)
+            if sub == "generate-ts":
+                return runAppServerGenerateTs(args, start + 1)
+            if sub == "generate-json-schema" || sub == "generate-json":
+                return runAppServerGenerateJson(args, start + 1)
+        return runAppServer(args, start)
+    if cmd == "app":
+        return runAppCommand(args, start)
+    if cmd == "completion":
+        return runCompletion(args, start)
+    if cmd == "sandbox":
+        return runSandbox(args, start)
+    if cmd == "debug":
+        return runDebugCommand(args, start)
+    if cmd == "execpolicy":
+        return runExecpolicy(args, start)
+    if cmd == "apply" || cmd == "a":
+        return runApply(args, start)
+    if cmd == "cloud" || cmd == "cloud-tasks":
+        var msg3: str = "dispatch.cloud start="
+        msg3 = msg3 + intToStr(start)
+        traceMainLocal(msg3)
+        return runCloud(args, start)
+    if cmd == "responses-api-proxy":
+        return runResponsesApiProxy(args, start)
+    if cmd == "stdio-to-uds":
+        return runStdioToUds(args, start)
+    if cmd == "features":
+        # `codex -p <profile> features ...` is supported in codex-rs via root TUI flags.
+        if len(rootOpts.profile) > 0:
+            addConfigOverride("config_profile", rootOpts.profile)
+        return runFeatures(args, start)
+    if cmd == "login":
+        return runLogin(args, start)
+    if cmd == "logout":
+        return runLogout(args, start)
+    if cmd == "mcp":
+        return runMcp(args, start)
+    if cmd == "mcp-server":
+        return runMcpServer(args, start)
+    printUsage()
+    return 2
+
+fn main(argc: int32, argv: str*): int32 =
+    traceMainLocal("main.begin")
+    cmdline.__cheng_setCmdLine(argc, void*(argv))
+    traceMainLocal("main.cmdline.set")
+    let rawArgs = collectArgsFromArgv(argc, argv)
+    traceMainLocal("main.args.collected=" + intToStr(len(rawArgs)))
+    let parsed = parseGlobalOverrides(rawArgs)
+    traceMainLocal("main.overrides.parsed")
+    if len(parsed.err) > 0:
+        printErr(parsed.err)
+        return 2
+    setConfigOverrides(parsed.overrides)
+    traceMainLocal("main.dispatch")
+    let code = dispatchCommand(parsed.args)
+    traceMainLocal("main.end code=" + intToStr(code))
+    if len(parsed.args) < 0:
+        printLine("")
+    return code

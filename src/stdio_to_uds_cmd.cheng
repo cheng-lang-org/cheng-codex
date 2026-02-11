@@ -1,0 +1,138 @@
+# stdio-to-uds relay (Unix-only)
+
+import system
+import seqs
+
+fn printStdioToUdsHelpShort(): int32 =
+    printLine("Internal: relay stdio to a Unix domain socket")
+    printLine("")
+    printLine("Usage: codex stdio-to-uds [OPTIONS] <SOCKET_PATH>")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  <SOCKET_PATH>  Path to the Unix domain socket to connect to")
+    printLine("")
+    printLine("Options:")
+    printLine("  -c, --config <key=value>  Override a configuration value that would otherwise be loaded from")
+    printLine("                            `~/.codex/config.toml`. Use a dotted path (`foo.bar.baz`) to override")
+    printLine("                            nested values. The `value` portion is parsed as TOML. If it fails to")
+    printLine("                            parse as TOML, the raw string is used as a literal")
+    printLine("      --enable <FEATURE>    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`")
+    printLine("      --disable <FEATURE>   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`")
+    printLine("  -h, --help                Print help (see more with '--help')")
+    return 0
+
+fn printStdioToUdsHelpLong(): int32 =
+    printLine("Internal: relay stdio to a Unix domain socket")
+    printLine("")
+    printLine("Usage: codex stdio-to-uds [OPTIONS] <SOCKET_PATH>")
+    printLine("")
+    printLine("Arguments:")
+    printLine("  <SOCKET_PATH>")
+    printLine("          Path to the Unix domain socket to connect to")
+    printLine("")
+    printLine("Options:")
+    printConfigFlagHelp()
+    printEnableFlagHelp()
+    printDisableFlagHelp()
+    printLine("  -h, --help")
+    printLine("          Print help (see a summary with '-h')")
+    return 0
+
+fn stdioToUdsMissingSocketPath(): int32 =
+    printErr("error: the following required arguments were not provided:")
+    printErr("  <SOCKET_PATH>")
+    printErr("")
+    printErr("Usage: codex stdio-to-uds <SOCKET_PATH>")
+    printErr("")
+    printErr("For more information, try '--help'.")
+    return 2
+
+fn stdioToUdsUnexpectedArgWithUsage(arg: str, usageText: str, tip: str): int32 =
+    var msg = "error: unexpected argument '"
+    msg = msg + arg
+    msg = msg + "' found"
+    printErr(msg)
+    printErr("")
+    if len(tip) > 0:
+        printErr("  tip: " + tip)
+        printErr("")
+    printErr("Usage: " + usageText)
+    printErr("")
+    printErr("For more information, try '--help'.")
+    return 2
+fn relayFd(srcFd: int32, dstFd: int32) =
+    var chunk = readChunk(srcFd, 4096)
+    while len(chunk) > 0:
+        writeAll(dstFd, chunk)
+        chunk = readChunk(srcFd, 4096)
+
+fn runStdioToUdsLocal(args: seq[str], start: int32): int32 =
+    # Help flags are accepted anywhere before `--` (matches clap behavior).
+    var delim: int32 = -1
+    var i: int32 = start
+    while i < len(args):
+        if argAt(args, i) == "--":
+            delim = i
+            break
+        i = i + 1
+    var helpEnd: int32 = len(args)
+    if delim >= 0:
+        helpEnd = delim
+    var sawLong = false
+    var sawShort = false
+    i = start
+    while i < helpEnd:
+        let arg = argAt(args, i)
+        if arg == "--help":
+            sawLong = true
+        elif arg == "-h":
+            sawShort = true
+        i = i + 1
+    if sawLong:
+        return printStdioToUdsHelpLong()
+    if sawShort:
+        return printStdioToUdsHelpShort()
+
+    var socketPath = ""
+    if delim >= 0:
+        if delim + 1 >= len(args):
+            return stdioToUdsMissingSocketPath()
+        socketPath = argAt(args, delim + 1)
+        if delim + 2 < len(args):
+            return stdioToUdsUnexpectedArgWithUsage(argAt(args, delim + 2), "codex stdio-to-uds [OPTIONS] <SOCKET_PATH>", "")
+    else:
+        if start >= len(args):
+            return stdioToUdsMissingSocketPath()
+        let first = argAt(args, start)
+        if hasPrefix(first, "-"):
+            var tip = "to pass '"
+            tip = tip + first
+            tip = tip + "' as a value, use '-- "
+            tip = tip + first
+            tip = tip + "'"
+            return stdioToUdsUnexpectedArgWithUsage(first, "codex stdio-to-uds [OPTIONS] <SOCKET_PATH>", tip)
+        socketPath = first
+        if start + 1 < len(args):
+            let extra = argAt(args, start + 1)
+            if hasPrefix(extra, "-"):
+                var tip = "to pass '"
+                tip = tip + extra
+                tip = tip + "' as a value, use '-- "
+                tip = tip + extra
+                tip = tip + "'"
+                return stdioToUdsUnexpectedArgWithUsage(extra, "codex stdio-to-uds <SOCKET_PATH>", tip)
+            return stdioToUdsUnexpectedArgWithUsage(extra, "codex stdio-to-uds [OPTIONS] <SOCKET_PATH>", "")
+
+    let fd = connectUnixSocket(socketPath)
+    if fd < 0:
+        return 1
+    let pid = forkProcess()
+    if pid == 0:
+        relayFd(fd, 1)
+        closeFd(fd)
+        exitProcess(0)
+    relayFd(0, fd)
+    shutdownWrite(fd)
+    waitChild(pid)
+    closeFd(fd)
+    return 0

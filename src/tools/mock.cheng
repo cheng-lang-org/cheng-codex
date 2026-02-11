@@ -1,0 +1,7 @@
+# Mock tool (placeholder)
+
+import system
+import seqs
+import cheng/codex/common
+fn runMockTool(): ToolResult =
+    return makeToolResult(true, "mock tool ok", 0)
