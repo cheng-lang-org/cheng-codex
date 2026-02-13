@@ -2,3 +2,5 @@ aa
 bb
 .codex
 protocol/
+.DS_Store
+build

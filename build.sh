@@ -6,8 +6,8 @@ SRC="$ROOT/src/main.cheng"
 OUT_DIR="$ROOT/build"
 if [ ! -f "$SRC" ]; then
   ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-  SRC="$ROOT/codex-cheng/src/main.cheng"
-  OUT_DIR="$ROOT/codex-cheng/build"
+  SRC="$ROOT/cheng-codex/src/main.cheng"
+  OUT_DIR="$ROOT/cheng-codex/build"
 fi
 if [ -z "${CHENG_ROOT:-}" ]; then
   if [ -d "$ROOT/../cheng-lang" ]; then
@@ -21,13 +21,13 @@ if [ -z "${CHENG_ROOT:-}" ]; then
   fi
 fi
 CHENG_ROOT="$(cd "$CHENG_ROOT" && pwd)"
-NAME="codex-cheng-bin"
-OUT_NAME="codex-cheng"
+NAME="cheng-codex-bin"
+OUT_NAME="cheng-codex"
 WORKSPACE_ROOT="$CHENG_ROOT/chengcache/workspace"
 mkdir -p "$WORKSPACE_ROOT"
 
 if [ "${CODEX_BUILD_VERBOSE:-1}" != "0" ]; then
-  echo "[codex-cheng] build: stage1 -> backend driver (obj/exe) -> link (this can take a few minutes)"
+  echo "[cheng-codex] build: stage1 -> backend driver (obj/exe) -> link (this can take a few minutes)"
 fi
 export CHENG_BACKEND_LINKER="${CHENG_BACKEND_LINKER:-self}"
 if [ "${CODEX_BUILD_FAST:-0}" = "1" ]; then
@@ -146,8 +146,8 @@ elif [ -x "$CHENG_ROOT/src/tooling/chengc.sh" ]; then
 fi
 
 if [ -z "$CHENGC_SCRIPT" ]; then
-  echo "[codex-cheng] missing cheng toolchain at: $CHENG_ROOT" 1>&2
-  echo "[codex-cheng] expected chengc at: cheng/tooling/chengc.sh or src/tooling/chengc.sh" 1>&2
+  echo "[cheng-codex] missing cheng toolchain at: $CHENG_ROOT" 1>&2
+  echo "[cheng-codex] expected chengc at: cheng/tooling/chengc.sh or src/tooling/chengc.sh" 1>&2
   exit 1
 fi
 
@@ -172,12 +172,12 @@ if [ -z "${CHENG_BACKEND_DRIVER:-}" ]; then
   done
 fi
 if [ -z "${CHENG_BACKEND_DRIVER:-}" ]; then
-  echo "[codex-cheng] no usable backend driver found under $CHENG_ROOT" 1>&2
-  echo "[codex-cheng] hint: rebuild driver and ensure it can compile src/std/system_helpers_backend.cheng" 1>&2
+  echo "[cheng-codex] no usable backend driver found under $CHENG_ROOT" 1>&2
+  echo "[cheng-codex] hint: rebuild driver and ensure it can compile src/std/system_helpers_backend.cheng" 1>&2
   exit 1
 fi
 if [ ! -f "$SRC" ]; then
-  echo "[codex-cheng] source not found: $SRC" 1>&2
+  echo "[cheng-codex] source not found: $SRC" 1>&2
   exit 1
 fi
 
@@ -214,7 +214,7 @@ run_chengc() {
             objs_count="$(find "$objs_dir" -type f -name '*.o' 2>/dev/null | wc -l | tr -d ' ')"
           fi
           elapsed="$((now_ts - start_ts))"
-          echo "[codex-cheng] build stage: $stage (t+${elapsed}s, stamp=${stamp_size}B, objs=${objs_count})"
+          echo "[cheng-codex] build stage: $stage (t+${elapsed}s, stamp=${stamp_size}B, objs=${objs_count})"
           last_stage="$stage"
           last_log_ts="$now_ts"
         fi
@@ -281,5 +281,5 @@ if [ -f "$CHENG_ROOT/$NAME" ]; then
   if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
     codesign --force --sign - "$OUT_DIR/$OUT_NAME" >/dev/null 2>&1 || true
   fi
-  echo "[codex-cheng] built: $OUT_DIR/$OUT_NAME"
+  echo "[cheng-codex] built: $OUT_DIR/$OUT_NAME"
 fi
