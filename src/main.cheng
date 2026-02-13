@@ -37,16 +37,25 @@ import cheng/codex/app_server
 import cheng/codex/app_server_test_client
 import cheng/codex/app_cmd
 
-fn collectArgsFromArgv(argc: int32, argv: str*): seq[str] =
+const
+    ARG0_LINUX_SANDBOX = "codex-linux-sandbox"
+    ARG0_APPLY_PATCH = "apply_patch"
+    ARG0_APPLYPATCH = "applypatch"
+    ARG0_APPLY_PATCH_ARG1 = "--codex-run-as-apply-patch"
+    ARG0_LOCK_FILENAME = ".lock"
+
+var arg0PathEntryDir: str = ""
+
+fn collectArgsFromArgv(argc: int32, argv: str*): str[] =
     argc
     argv
-    var out: seq[str] = newSeq[str]()
+    var out: str[] = newSeq[str]()
     let total: int32 = cmdline.paramCount()
     if total <= 0:
         return out
     var i: int32 = 1
     while i <= total:
-        seqAdd(out, "" + cmdline.paramStr(i))
+        seqAdd(out, $ cmdline.paramStr(i))
         i = i + 1
     return out
 
@@ -58,9 +67,10 @@ fn traceMainLocal(msg: str) =
 fn printVersionNamed(name: str) =
     # codex-rs prints `codex-cli[-<cmd>] <version>`.
     var out = name
-    if len(CODEX_VERSION) > 0:
+    let version = codexVersion()
+    if len(version) > 0:
         out = out + " "
-        out = out + CODEX_VERSION
+        out = out + version
     printLine(out)
 
 fn normalizeSandboxModeLocal(mode: str): str =
@@ -158,13 +168,14 @@ fn printUsage() =
     printLine("          - untrusted:  Only run \"trusted\" commands (e.g. ls, cat, sed) without asking for user")
     printLine("            approval. Will escalate to the user if the model proposes a command that is not in the")
     printLine("            \"trusted\" set")
-    printLine("          - on-failure: Run all commands without asking for user approval. Only asks for approval if")
+    printLine("          - on-failure: Run commands first, ask approval only on failure")
     printLine("            a command fails to execute, in which case it will escalate to the user to ask for")
     printLine("            un-sandboxed execution")
     printLine("          - on-request: The model decides when to ask the user for approval")
     printLine("          - never:      Never ask for user approval Execution failures are immediately returned to")
     printLine("            the model")
-    printLine("")
+    # keep spacing while avoiding parser edge-case on empty literal call
+    printLine(" ")
     printLine("      --full-auto")
     printLine("          Convenience alias for low-friction sandboxed automatic execution (-a on-request, --sandbox")
     printLine("          workspace-write)")
@@ -278,8 +289,8 @@ fn printUsageShort() =
 
 type
     ParsedArgs =
-        args: seq[str]
-        overrides: seq[str]
+        args: str[]
+        overrides: str[]
         err: str
 
     ClosedLoopStep =
@@ -317,7 +328,7 @@ fn featureOverride(name: str, enabled: bool, err: var str): str =
 fn ownedStr(s: str): str =
     if s == nil:
         return ""
-    return "" + s
+    return s
 
 fn streqSafe(a: str, b: str): bool =
     if a == nil || b == nil:
@@ -331,10 +342,10 @@ fn streqSafe(a: str, b: str): bool =
         i = i + 1
     return true
 
-fn parseGlobalOverrides(args: seq[str]): ParsedArgs =
+fn parseGlobalOverrides(args: str[]): ParsedArgs =
     var res: ParsedArgs
-    var outArgs: seq[str] = newSeq[str]()
-    var overrides: seq[str] = newSeq[str]()
+    var outArgs: str[] = newSeq[str]()
+    var overrides: str[] = newSeq[str]()
     var err = ""
     var i: int32 = 0
     while i < len(args):
@@ -380,7 +391,7 @@ fn parseGlobalOverrides(args: seq[str]): ParsedArgs =
     res.err = err
     return res
 
-fn joinShellArgs(args: seq[str], start: int32): str =
+fn joinShellArgs(args: str[], start: int32): str =
     var out = ""
     var i: int32 = start
     while i < len(args):
@@ -397,7 +408,7 @@ fn completionCommands(): str =
         return "exec e review login logout mcp mcp-server app-server app completion sandbox debug apply a resume fork cloud cloud-tasks features help"
     return "exec e review login logout mcp mcp-server app-server completion sandbox debug apply a resume fork cloud cloud-tasks features help"
 
-fn runCompletion(args: seq[str], start: int32): int32 =
+fn runCompletion(args: str[], start: int32): int32 =
     var shell = "bash"
     var sawShell = false
     var showHelp = false
@@ -587,8 +598,8 @@ fn printFeaturesDisableHelp(): int32 =
     printLine("          Print help (see a summary with '-h')")
     return 0
 
-fn parseFeatureSetCommandArgs(args: seq[str], start: int32): FeatureSetCommandArgs =
-    var parsed = FeatureSetCommandArgs(feature: "", showHelp: false, err: "")
+fn parseFeatureSetCommandArgs(args: str[], start: int32): FeatureSetCommandArgs =
+    var parsed: FeatureSetCommandArgs = FeatureSetCommandArgs(feature: "", showHelp: false, err: "")
     var i: int32 = start
     while i < len(args):
         let arg = argAt(args, i)
@@ -606,7 +617,7 @@ fn parseFeatureSetCommandArgs(args: seq[str], start: int32): FeatureSetCommandAr
         i = i + 1
     return parsed
 
-fn runFeaturesSet(args: seq[str], start: int32, enabled: bool): int32 =
+fn runFeaturesSet(args: str[], start: int32, enabled: bool): int32 =
     let parsed = parseFeatureSetCommandArgs(args, start)
     if parsed.showHelp:
         if enabled:
@@ -636,7 +647,7 @@ fn runFeaturesSet(args: seq[str], start: int32, enabled: bool): int32 =
         printLine("Disabled feature `" + feature + "` in config.toml.")
     return 0
 
-fn runFeatures(args: seq[str], start: int32): int32 =
+fn runFeatures(args: str[], start: int32): int32 =
     if start >= len(args):
         printFeaturesUsage()
         return 2
@@ -875,10 +886,10 @@ fn sandboxExecUsageToErr(): int32 =
 fn sandboxKnownRootSubcommand(name: str): bool =
     return name == "macos" || name == "seatbelt" || name == "linux" || name == "landlock" || name == "windows" || name == "help"
 
-fn runSandboxPlatform(platform: str, args: seq[str], start: int32): int32 =
+fn runSandboxPlatform(platform: str, args: str[], start: int32): int32 =
     var fullAuto = false
     var logDenials = false
-    var cmdParts: seq[str] = newSeq[str]()
+    var cmdParts: str[] = newSeq[str]()
     var optionsEnded = false
     var i: int32 = start
     while i < len(args):
@@ -966,12 +977,13 @@ fn runSandboxPlatform(platform: str, args: seq[str], start: int32): int32 =
         wrapped = wrapped + "rm -f $LOG_FILE; exit $STATUS"
         cmdText = wrapped
 
-    let res = runShellCommand(cmdText, cmdParts, os.getCurrentDir(), sandboxMode, "use_default", false, newSeq[str](), -1, false)
-    if len(res.output) > 0:
-        os.write(os.get_stdout(), res.output)
-    return res.exitCode
+    var res: ToolResult = runShellCommand(cmdText, cmdParts, os.getCurrentDir(), sandboxMode, "use_default", false, newSeq[str](), -1, false)
+    let output = toolResultOutput(res)
+    if len(output) > 0:
+        os.write(os.get_stdout(), output)
+    return toolResultExitCode(res)
 
-fn runSandbox(args: seq[str], start: int32): int32 =
+fn runSandbox(args: str[], start: int32): int32 =
     if start >= len(args):
         printSandboxUsageShort(true)
         return 2
@@ -1021,7 +1033,7 @@ fn runSandbox(args: seq[str], start: int32): int32 =
 
     return sandboxUnrecognizedSubcommandWithUsage(sub, "codex sandbox [OPTIONS] <COMMAND>")
 
-fn runCloud(args: seq[str], start: int32): int32 =
+fn runCloud(args: str[], start: int32): int32 =
     var msg: str = "runCloud.enter start="
     msg = msg + intToStr(start)
     msg = msg + " argc="
@@ -1029,13 +1041,13 @@ fn runCloud(args: seq[str], start: int32): int32 =
     traceMainLocal(msg)
     return runCloudLocal(args, start)
 
-fn runResponsesApiProxy(args: seq[str], start: int32): int32 =
+fn runResponsesApiProxy(args: str[], start: int32): int32 =
     let res = runResponsesApiProxyLocal(args, start)
     if res == 2:
         return res
     return res
 
-fn runStdioToUds(args: seq[str], start: int32): int32 =
+fn runStdioToUds(args: str[], start: int32): int32 =
     return runStdioToUdsLocal(args, start)
 
 fn shipDefaultPrompt(): str =
@@ -1075,7 +1087,7 @@ fn closedLoopReportDir(workDir: str): str =
     closedLoopEnsureDir(reportDir)
     return reportDir
 
-fn closedLoopJoin(items: seq[str], sep: str): str =
+fn closedLoopJoin(items: str[], sep: str): str =
     var out = ""
     var i: int32 = 0
     while i < len(items):
@@ -1098,6 +1110,9 @@ fn closedLoopResolveBin(workDir: str): str =
     let envBin = os.getEnv("CODEX_CHENG_BIN")
     if len(envBin) > 0 && os.fileExists(envBin):
         return envBin
+    let buildBinNew = os.joinPath(workDir, "build/cheng-codex")
+    if os.fileExists(buildBinNew):
+        return buildBinNew
     let buildBin = os.joinPath(workDir, "build/codex-cheng")
     if os.fileExists(buildBin):
         return buildBin
@@ -1108,15 +1123,15 @@ fn closedLoopResolveBin(workDir: str): str =
             return repoBin
     return ""
 
-fn closedLoopRecordStep(steps: var seq[ClosedLoopStep], name: str, status: str, exitCode: int32, detail: str) =
+fn closedLoopRecordStep(steps: var ClosedLoopStep[], name: str, status: str, exitCode: int32, detail: str) =
     seqAdd(steps, ClosedLoopStep(name: name, status: status, exitCode: exitCode, detail: detail))
 
-fn closedLoopWriteReports(steps: seq[ClosedLoopStep], reportDir: str) =
+fn closedLoopWriteReports(steps: ClosedLoopStep[], reportDir: str) =
     let tsvPath = os.joinPath(reportDir, "report.tsv")
     let jsonPath = os.joinPath(reportDir, "report.json")
     let txtPath = os.joinPath(reportDir, "report.txt")
-    var tsvParts: seq[str] = newSeq[str]()
-    var stepObjs: seq[str] = newSeq[str]()
+    var tsvParts: str[] = newSeq[str]()
+    var stepObjs: str[] = newSeq[str]()
     var anyFail = false
     var i: int32 = 0
     while i < len(steps):
@@ -1163,7 +1178,7 @@ fn closedLoopWriteReports(steps: seq[ClosedLoopStep], reportDir: str) =
     os.writeFile(txtPath, summary)
 
 fn closedLoopCheckPreflight(workDir: str, detail: var str): int32 =
-    var missing: seq[str] = newSeq[str]()
+    var missing: str[] = newSeq[str]()
     var files = seqStr4("SPEC.md", "CONTRACT.md", "ACCEPTANCE.md", "TASK_MATRIX.yaml")
     var i: int32 = 0
     while i < len(files):
@@ -1184,8 +1199,8 @@ fn closedLoopCheckPreflight(workDir: str, detail: var str): int32 =
 fn closedLoopCheckBuild(workDir: str, detail: var str): int32 =
     let res = runShellCommand("./build.sh", newSeq[str](), workDir, readConfigValue("sandbox_mode"), "use_default", false, newSeq[str](), -1, true)
     detail = "./build.sh"
-    if res.exitCode != 0:
-        detail = res.output
+    if toolResultExitCode(res) != 0:
+        detail = toolResultOutput(res)
         return 1
     return 0
 
@@ -1194,7 +1209,7 @@ fn closedLoopCheckExecpolicy(workDir: str, detail: var str): int32 =
     let rulesPath = os.joinPath(tmpDir, "policy.rules")
     let rulesText = "prefix_rule(\\n    pattern = [\\\"git\\\", \\\"push\\\"],\\n    decision = \\\"forbidden\\\",\\n)\\n"
     os.writeFile(rulesPath, rulesText)
-    var args: seq[str] = newSeq[str]()
+    var args: str[] = newSeq[str]()
     seqAdd(args, "check")
     seqAdd(args, "--rules")
     seqAdd(args, rulesPath)
@@ -1213,8 +1228,8 @@ fn closedLoopCheckCompletion(workDir: str, detail: var str): int32 =
     let cmd = shellQuote(bin) + " completion bash"
     let res = runShellCommand(cmd, newSeq[str](), workDir, readConfigValue("sandbox_mode"), "use_default", false, newSeq[str](), -1, true)
     detail = cmd
-    if res.exitCode != 0:
-        detail = res.output
+    if toolResultExitCode(res) != 0:
+        detail = toolResultOutput(res)
         return 1
     return 0
 
@@ -1225,19 +1240,17 @@ fn closedLoopCheckLogin(detail: var str): int32 =
 fn closedLoopCheckExecSmoke(workDir: str, detail: var str): int32 =
     let tmpDir = closedLoopTempDir()
     let lastMsg = os.joinPath(tmpDir, "last_message.txt")
-    var opts = defaultExecOptions()
-    opts.prompt = "Say OK."
-    opts.jsonMode = true
-    opts.cwd = workDir
-    opts.lastMessagePath = lastMsg
-    if len(opts.approvalPolicy) == 0:
-        let cfgApproval = readConfigValue("approval_policy")
-        if len(cfgApproval) > 0:
-            opts.approvalPolicy = cfgApproval
-        else:
-            opts.approvalPolicy = "never"
+    var args: str[] = newSeq[str]()
+    seqAdd(args, "--json")
+    seqAdd(args, "--cd")
+    seqAdd(args, workDir)
+    seqAdd(args, "--output-last-message")
+    seqAdd(args, lastMsg)
+    seqAdd(args, "--ask-for-approval")
+    seqAdd(args, "never")
+    seqAdd(args, "Say OK.")
     detail = "exec smoke"
-    let code = runExecFlow(opts, "exec")
+    let code = runExec(args, 0)
     if code != 0:
         return code
     if ! os.fileExists(lastMsg):
@@ -1252,7 +1265,7 @@ fn closedLoopCheckExecSmoke(workDir: str, detail: var str): int32 =
 fn runClosedLoop(opts: ClosedLoopOptions): int32 =
     let workDir = closedLoopWorkDir(opts.workDir)
     let reportDir = closedLoopReportDir(workDir)
-    var steps: seq[ClosedLoopStep] = newSeq[ClosedLoopStep]()
+    var steps: ClosedLoopStep[] = newSeq[ClosedLoopStep]()
     var failures = false
     var detail = ""
     var code = 0
@@ -1347,120 +1360,14 @@ fn runClosedLoop(opts: ClosedLoopOptions): int32 =
         return 1
     return 0
 
-fn runShip(args: seq[str], start: int32): int32 =
-    var i: int32 = start
-    var runClosedLoopAfter = true
-    var filtered: seq[str] = newSeq[str]()
-    var j: int32 = 0
-    while j < start && j < len(args):
-        seqAdd(filtered, argAt(args, j))
-        j = j + 1
-    while i < len(args):
-        let arg = argAt(args, i)
-        if arg == "--help" || arg == "-h":
-            printLine("usage: codex-cheng ship [options] [prompt]")
-            printLine("options: same as `codex-cheng exec`")
-            return 0
-        if arg == "--no-closed-loop" || arg == "--skip-closed-loop":
-            runClosedLoopAfter = false
-        else:
-            seqAdd(filtered, arg)
-        i = i + 1
-    var opts = parseExecArgs(filtered, start)
-    opts.outputSchemaJson = loadOutputSchemaJson(opts.outputSchemaPath)
-    if len(opts.approvalPolicy) == 0:
-        let cfgApproval = readConfigValue("approval_policy")
-        if len(cfgApproval) > 0:
-            opts.approvalPolicy = cfgApproval
-        else:
-            opts.approvalPolicy = "never"
-    var userPrompt = opts.prompt
-    if userPrompt == "-":
-        userPrompt = readPromptFromStdin()
-    if len(userPrompt) == 0:
-        let stdinText = readPromptFromStdin()
-        if len(stdinText) > 0:
-            userPrompt = stdinText
-    let basePrompt = shipDefaultPrompt()
-    var prompt = basePrompt
-    if len(userPrompt) > 0:
-        prompt = basePrompt
-        prompt = prompt + "\n\n<requirement>\n"
-        prompt = prompt + userPrompt
-        prompt = prompt + "\n</requirement>"
-    if len(trimLine(prompt)) == 0:
-        printErr("missing prompt")
-        return 2
-    var err = ""
-    if ! applyExecOverrides(opts, err):
-        if len(err) == 0:
-            err = "failed to apply exec overrides"
-        printErr(err)
-        return 1
-    var approvalPolicy = opts.approvalPolicy
-    if opts.fullAuto:
-        approvalPolicy = "on-request"
-    if opts.bypass:
-        approvalPolicy = "never"
-    var workDir: str = os.getCurrentDir()
-    if len(opts.cwd) > 0:
-        workDir = opts.cwd
-    let spawnArgs = jstrObject(seqStr2(
-        jstrPair("message", jstrString(prompt)),
-        jstrPair("agent_type", jstrString("orchestrator"))
-    ))
-    let spawnRes = collabSpawnAgent(spawnArgs, opts.baseInstructions, opts.developerInstructions, opts.model, approvalPolicy, workDir)
-    if ! spawnRes.ok:
-        printErr(spawnRes.output)
-        return 1
-    let agentId = jsonExtractString(spawnRes.output, "agent_id")
-    if len(agentId) == 0:
-        printErr("failed to read agent id")
-        return 1
-    let idsJson = jstrArray(seqStr1(jstrString(agentId)))
-    let waitArgs = jstrObject(seqStr2(
-        jstrPair("ids", idsJson),
-        jstrPair("timeout_ms", jstrNumber(int64(60000)))
-    ))
-    while true:
-        let waitRes = collabWaitAgents(waitArgs)
-        if ! waitRes.ok:
-            printErr(waitRes.output)
-            return 1
-        let waitOut = waitRes.output
-        if indexOfSubstr(waitOut, "\"timed_out\":true", 0) >= 0:
-            continue
-        let completedMsg = jsonExtractString(waitOut, "completed")
-        if indexOfSubstr(waitOut, "\"completed\"", 0) >= 0:
-            if len(completedMsg) > 0:
-                printLine(completedMsg)
-            if ! runClosedLoopAfter:
-                return 0
-            let online = os.getEnv("CODEX_CHENG_ONLINE")
-            let closedOpts = ClosedLoopOptions(
-                workDir: workDir,
-                online: len(online) > 0,
-                checkOnly: ""
-            )
-            return runClosedLoop(closedOpts)
-        let erroredMsg = jsonExtractString(waitOut, "errored")
-        if indexOfSubstr(waitOut, "\"errored\"", 0) >= 0:
-            if len(erroredMsg) > 0:
-                printErr(erroredMsg)
-            else:
-                printErr("orchestrator errored")
-            return 1
-        if indexOfSubstr(waitOut, "\"not_found\"", 0) >= 0:
-            printErr("orchestrator not found")
-            return 1
-        if indexOfSubstr(waitOut, "\"shutdown\"", 0) >= 0:
-            printErr("orchestrator shutdown")
-            return 1
-        printErr("unexpected wait response")
-        return 1
+fn runShip(args: str[], start: int32): int32 =
+    args
+    start
+    printErr("ship is experimental and currently disabled")
+    return 2
 
-fn appServerMethodNames(): seq[str] =
-    var names: seq[str] = newSeq[str]()
+fn appServerMethodNames(): str[] =
+    var names: str[] = newSeq[str]()
     seqAdd(names, "initialize")
     seqAdd(names, "initialized")
     seqAdd(names, "thread/start")
@@ -1493,7 +1400,7 @@ fn appServerMethodNames(): seq[str] =
     seqAdd(names, "mcpServer/oauth/login")
     return names
 
-fn tsStringUnion(items: seq[str]): str =
+fn tsStringUnion(items: str[]): str =
     var out = ""
     var i: int32 = 0
     while i < len(items):
@@ -1507,7 +1414,7 @@ fn tsStringUnion(items: seq[str]): str =
         return "str"
     return out
 
-fn jsonEnumList(items: seq[str]): str =
+fn jsonEnumList(items: str[]): str =
     var out = ""
     var i: int32 = 0
     while i < len(items):
@@ -1550,8 +1457,7 @@ fn ensureDirPath(path: str) =
     if os.dirExists(path):
         return
     let cmd = "mkdir -p " + shellQuote(path)
-    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
-    os.execCmdEx(cmd, opts, os.getCurrentDir())
+    os.execCmd(cmd)
 
 fn protocolResourceDir(): str =
     let envDir = os.getEnv("CODEX_APP_SERVER_SCHEMA_DIR")
@@ -1586,8 +1492,8 @@ fn copyProtocolFiles(srcDir: str, destDir: str, extFilter: str): bool =
             destPath = ownedStr(os.joinPath(destDir, rel))
         else:
             destPath = ownedStr(os.joinPath(destDir, extractFilename(srcPath)))
-        let parts = os.splitFile(destPath)
-        ensureDirPath(parts.dir)
+        let dir = os.parentDir(destPath)
+        ensureDirPath(dir)
         let content = os.readFile(srcPath)
         var contentText: str = ""
         if content != nil:
@@ -1597,7 +1503,7 @@ fn copyProtocolFiles(srcDir: str, destDir: str, extFilter: str): bool =
         idx = idx + 1
     return wrote
 
-fn runAppServerGenerateTs(args: seq[str], start: int32): int32 =
+fn runAppServerGenerateTs(args: str[], start: int32): int32 =
     var outDir = ""
     var prettierBin = ""
     var experimental = false
@@ -1660,15 +1566,13 @@ fn runAppServerGenerateTs(args: seq[str], start: int32): int32 =
         return 1
     if len(prettierBin) > 0:
         let fmtCmd = shellQuote(prettierBin) + " --write " + shellQuote(outDir)
-        let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
-        let res = os.execCmdEx(fmtCmd, opts, os.getCurrentDir())
-        if res.exitCode != 0:
-            if len(res.output) > 0:
-                printErr(res.output)
-            return res.exitCode
+        let exitCode = os.execCmd(fmtCmd)
+        if exitCode != 0:
+            printErr("prettier format failed")
+            return exitCode
     return 0
 
-fn runAppServerGenerateJson(args: seq[str], start: int32): int32 =
+fn runAppServerGenerateJson(args: str[], start: int32): int32 =
     var outDir = ""
     var experimental = false
     var i: int32 = start
@@ -1755,7 +1659,7 @@ fn printApplyHelpShort(): int32 =
     printLine("  -h, --help                Print help (see more with '--help')")
     return 0
 
-fn runApply(args: seq[str], start: int32): int32 =
+fn runApply(args: str[], start: int32): int32 =
     var taskIdArg = ""
     var i: int32 = start
     while i < len(args):
@@ -1785,7 +1689,342 @@ fn runApply(args: seq[str], start: int32): int32 =
         return 2
     return applyCloudTaskDiff(taskId, 1)
 
-fn runConfig(args: seq[str], start: int32): int32 =
+fn runApplyPatchTextCompat(patchText: str): int32 =
+    if len(trimLine(patchText)) == 0:
+        printErr("Error: apply_patch requires patch input.")
+        return 1
+    let root = currentDirSafe()
+    let result = runPatchTool(patchText, root)
+    if len(result.output) > 0:
+        if result.ok:
+            printLine(result.output)
+        else:
+            printErr(result.output)
+    elif ! result.ok:
+        printErr("apply_patch failed")
+    if result.ok:
+        return 0
+    if result.exitCode > 0:
+        return result.exitCode
+    return 1
+
+fn printApplyPatchStandaloneUsage(): int32 =
+    printErr("Usage: apply_patch 'PATCH'")
+    printErr("       echo 'PATCH' | apply_patch")
+    return 2
+
+fn runApplyPatchCompat(args: str[], start: int32): int32 =
+    # Arg0-compat path for apply_patch/applypatch helper executable aliases.
+    # Align with codex-rs standalone behavior:
+    # - 0 args => read stdin, empty => usage+exit(2)
+    # - 1 arg  => patch payload
+    # - >1 arg => error+exit(2)
+    let argc = len(args) - start
+    if argc > 1:
+        printErr("Error: apply_patch accepts exactly one argument.")
+        return 2
+    if argc == 1:
+        return runApplyPatchTextCompat(argAt(args, start))
+    let stdinText = os.readAll(os.get_stdin())
+    if stdinText == nil:
+        printErr("Error: Failed to read PATCH from stdin.")
+        return 1
+    if len(stdinText) == 0:
+        return printApplyPatchStandaloneUsage()
+    return runApplyPatchTextCompat(stdinText)
+
+fn runApplyPatchArg1Compat(args: str[]): int32 =
+    # Hidden compatibility mode used by arg0 shims.
+    if len(args) == 0 || argAt(args, 0) != ARG0_APPLY_PATCH_ARG1:
+        return -1
+    if len(args) < 2:
+        printErr("Error: " + ARG0_APPLY_PATCH_ARG1 + " requires a UTF-8 PATCH argument.")
+        return 1
+    return runApplyPatchTextCompat(argAt(args, 1))
+
+fn arg0LowerAscii(text: str): str =
+    if text == nil:
+        return ""
+    var out = ""
+    var i: int32 = 0
+    while i < len(text):
+        let ch = text[i]
+        if ch >= 'A' && ch <= 'Z':
+            out = out + $ char(ord(ch) + 32)
+        else:
+            out = out + $ ch
+        i = i + 1
+    return out
+
+fn arg0UpperAscii(text: str): str =
+    if text == nil:
+        return ""
+    var out = ""
+    var i: int32 = 0
+    while i < len(text):
+        let ch = text[i]
+        if ch >= 'a' && ch <= 'z':
+            out = out + $ char(ord(ch) - 32)
+        else:
+            out = out + $ ch
+        i = i + 1
+    return out
+
+fn arg0NormalizeExeName(name: str): str =
+    let lowered = arg0LowerAscii(trimLine(name))
+    if len(lowered) > 4 && endsWithSuffix(lowered, ".exe"):
+        return __cheng_slice_string(lowered, 0, len(lowered) - 5, false)
+    if len(lowered) > 4 && endsWithSuffix(lowered, ".bat"):
+        return __cheng_slice_string(lowered, 0, len(lowered) - 5, false)
+    if len(lowered) > 4 && endsWithSuffix(lowered, ".cmd"):
+        return __cheng_slice_string(lowered, 0, len(lowered) - 5, false)
+    return lowered
+
+fn arg0CurrentExePath(): str =
+    let raw = trimLine(cmdline.paramStr(0))
+    if len(raw) == 0:
+        return ""
+    if os.isAbsolute(raw):
+        return raw
+    let found = os.findExe(raw)
+    if len(found) > 0:
+        return found
+    return os.absolutePath(raw)
+
+fn arg0CurrentExeName(): str =
+    let exePath = arg0CurrentExePath()
+    if len(exePath) == 0:
+        return ""
+    return arg0NormalizeExeName(os.extractFilename(exePath))
+
+fn arg0SetEnv(key: str, value: str) =
+    if len(key) == 0:
+        return
+    cSetEnv(key, value, 1)
+
+fn arg0EnsureDir(path: str) =
+    if len(path) == 0 || os.dirExists(path):
+        return
+    let parent = os.parentDir(path)
+    if len(parent) > 0 && parent != path && ! os.dirExists(parent):
+        arg0EnsureDir(parent)
+    if ! os.dirExists(path):
+        os.createDir(path)
+
+fn arg0IsValidEnvKey(key: str): bool =
+    if len(key) == 0:
+        return false
+    let first = key[0]
+    if ! ((first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z') || first == '_'):
+        return false
+    var i: int32 = 1
+    while i < len(key):
+        let ch = key[i]
+        if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_':
+            i = i + 1
+            continue
+        return false
+    return true
+
+fn arg0ShouldFilterEnvKey(key: str): bool =
+    return hasPrefix(arg0UpperAscii(key), "CODEX_")
+
+fn arg0TrimOuterQuotes(value: str): str =
+    if len(value) < 2:
+        return value
+    let first = value[0]
+    let last = value[len(value) - 1]
+    if (first == '"' && last == '"') || (first == '\'' && last == '\''):
+        return __cheng_slice_string(value, 1, len(value) - 2, false)
+    return value
+
+fn arg0ApplyDotenvFile(path: str) =
+    if len(path) == 0 || ! os.fileExists(path):
+        return
+    let content = os.readFile(path)
+    if content == nil || len(content) == 0:
+        return
+    let lines = splitLinesSimple(content)
+    var idx: int32 = 0
+    while idx < len(lines):
+        var line = trimLine(lines[idx])
+        if len(line) == 0 || line[0] == '#':
+            idx = idx + 1
+            continue
+        if hasPrefix(line, "export "):
+            if len(line) > 7:
+                line = trimLine(__cheng_slice_string(line, 7, len(line) - 1, false))
+            else:
+                line = ""
+        if len(line) == 0:
+            idx = idx + 1
+            continue
+        let eq = indexOfSubstr(line, "=", 0)
+        if eq <= 0:
+            idx = idx + 1
+            continue
+        let key = trimLine(__cheng_slice_string(line, 0, eq - 1, false))
+        var value = trimLine(__cheng_slice_string(line, eq + 1, len(line) - 1, false))
+        if ! arg0IsValidEnvKey(key) || arg0ShouldFilterEnvKey(key):
+            idx = idx + 1
+            continue
+        value = arg0TrimOuterQuotes(value)
+        arg0SetEnv(key, value)
+        idx = idx + 1
+
+fn arg0LoadDotenvFiltered() =
+    let dotenvPath = os.joinPath(codexHomeDir(), ".env")
+    if len(dotenvPath) > 0:
+        arg0ApplyDotenvFile(dotenvPath)
+
+fn arg0ReadLockPid(lockPath: str): int32 =
+    if len(lockPath) == 0 || ! os.fileExists(lockPath):
+        return -1
+    let raw = trimLine(os.readFile(lockPath))
+    if len(raw) == 0:
+        return -1
+    let parsed = parseInt64Simple(raw, -1)
+    if parsed <= 0:
+        return -1
+    return int32(parsed)
+
+fn arg0PidSeemsAlive(pid: int32): bool =
+    if pid <= 0:
+        return false
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    if detectOsKind() == "windows":
+        let filter = "PID eq " + intToStr(pid)
+        let cmd = "tasklist /FI " + shellQuote(filter) + " /NH"
+        let res = os.execCmdEx(cmd, opts, os.getCurrentDir())
+        if int32(res.exitCode) != 0:
+            return false
+        let out = normalizePolicy(trimLine(res.output))
+        if len(out) == 0:
+            return false
+        return indexOfSubstr(out, "no tasks are running", 0) < 0
+    let probe = os.execCmdEx("kill -0 " + intToStr(pid), opts, os.getCurrentDir())
+    return int32(probe.exitCode) == 0
+
+fn arg0ShellDeleteDir(path: str) =
+    if len(path) == 0:
+        return
+    let osKind = detectOsKind()
+    if osKind == "windows":
+        os.execCmd("rmdir /S /Q " + shellQuote(path))
+    else:
+        os.execCmd("rm -rf " + shellQuote(path))
+
+fn arg0JanitorCleanup(tempRoot: str, keepPath: str) =
+    if len(tempRoot) == 0 || ! os.dirExists(tempRoot):
+        return
+    let entries: seq_WalkDirEntry = os.walkDir(tempRoot)
+    var idx: int32 = 0
+    while idx < entries.len:
+        let entry: WalkDirEntry = get_WalkDirEntry(entries, idx)
+        if entry.kind == pcDir || entry.kind == pcLinkToDir:
+            let path = entry.path
+            if len(path) > 0 && path != keepPath:
+                if os.parentDir(path) != tempRoot:
+                    idx = idx + 1
+                    continue
+                let base = os.extractFilename(path)
+                if hasPrefix(base, "codex-arg0"):
+                    let lockPath = os.joinPath(path, ARG0_LOCK_FILENAME)
+                    if ! os.fileExists(lockPath):
+                        idx = idx + 1
+                        continue
+                    let lockPid = arg0ReadLockPid(lockPath)
+                    if arg0PidSeemsAlive(lockPid):
+                        idx = idx + 1
+                        continue
+                    arg0ShellDeleteDir(path)
+        idx = idx + 1
+
+fn arg0WriteAliasScript(path: str, exePath: str, commandMode: str) =
+    if len(path) == 0 || len(exePath) == 0:
+        return
+    let osKind = detectOsKind()
+    if osKind == "windows":
+        var body = "@echo off\r\n"
+        if commandMode == ARG0_APPLY_PATCH || commandMode == ARG0_APPLYPATCH:
+            body = body + "\"" + exePath + "\" " + ARG0_APPLY_PATCH_ARG1 + " %*\r\n"
+        else:
+            body = body + "\"" + exePath + "\" "
+            body = body + commandMode
+            body = body + " %*\r\n"
+        os.writeFile(path + ".bat", body)
+        return
+    var body = "#!/bin/sh\n"
+    body = body + "exec "
+    body = body + shellQuote(exePath)
+    body = body + " "
+    body = body + commandMode
+    body = body + " \"$@\"\n"
+    os.writeFile(path, body)
+    os.execCmd("chmod 700 " + shellQuote(path))
+
+fn arg0CreateAliasPath(entryDir: str, aliasName: str, exePath: str, commandMode: str) =
+    if len(entryDir) == 0 || len(aliasName) == 0 || len(exePath) == 0:
+        return
+    let osKind = detectOsKind()
+    let aliasPath = os.joinPath(entryDir, aliasName)
+    if osKind == "windows":
+        arg0WriteAliasScript(aliasPath, exePath, commandMode)
+        return
+    if os.fileExists(aliasPath):
+        os.removeFile(aliasPath)
+    os.execCmd("ln -sf " + shellQuote(exePath) + " " + shellQuote(aliasPath))
+    if ! os.fileExists(aliasPath):
+        arg0WriteAliasScript(aliasPath, exePath, commandMode)
+
+fn arg0PathSeparator(): str =
+    if detectOsKind() == "windows":
+        return ";"
+    return ":"
+
+fn arg0PrependPathEntryForAliases() =
+    let home = codexHomeDir()
+    if len(home) == 0:
+        return
+    arg0EnsureDir(home)
+    let tempRoot = os.joinPath(os.joinPath(home, "tmp"), "arg0")
+    arg0EnsureDir(tempRoot)
+    if detectOsKind() != "windows":
+        os.execCmd("chmod 700 " + shellQuote(tempRoot))
+    let entryName = "codex-arg0-" + int64ToStr(times.toUnix(times.now())) + "-" + intToStr(c_getpid())
+    let entryDir = os.joinPath(tempRoot, entryName)
+    arg0EnsureDir(entryDir)
+    os.writeFile(os.joinPath(entryDir, ARG0_LOCK_FILENAME), intToStr(c_getpid()) + "\n")
+    arg0JanitorCleanup(tempRoot, entryDir)
+    let exePath = arg0CurrentExePath()
+    if len(exePath) == 0:
+        return
+    # Keep three entry points aligned:
+    # 1) argv0 alias (`apply_patch`/`applypatch`)
+    # 2) hidden argument (`--codex-run-as-apply-patch`)
+    # 3) explicit root command (`apply_patch`).
+    arg0CreateAliasPath(entryDir, ARG0_APPLY_PATCH, exePath, "apply_patch")
+    arg0CreateAliasPath(entryDir, ARG0_APPLYPATCH, exePath, "applypatch")
+    if detectOsKind() == "linux":
+        arg0CreateAliasPath(entryDir, ARG0_LINUX_SANDBOX, exePath, "sandbox linux")
+    let oldPath = os.getEnv("PATH")
+    if len(oldPath) == 0:
+        arg0SetEnv("PATH", entryDir)
+    else:
+        arg0SetEnv("PATH", entryDir + arg0PathSeparator() + oldPath)
+    arg0PathEntryDir = entryDir
+
+fn runArg0CompatAliasDispatch(args: str[]): int32 =
+    let exeName = arg0CurrentExeName()
+    if exeName == ARG0_LINUX_SANDBOX:
+        # Match codex-rs arg0 behavior: argv0 `codex-linux-sandbox` bypasses root parser.
+        return runSandboxPlatform("linux", args, 0)
+    if exeName == ARG0_APPLY_PATCH || exeName == ARG0_APPLYPATCH:
+        # Match codex-rs arg0 behavior: argv0 `apply_patch` / `applypatch` goes straight to patch entry.
+        return runApplyPatchCompat(args, 0)
+    return -1
+
+fn runConfig(args: str[], start: int32): int32 =
     if start >= len(args):
         printLine("home: " + codexHomeDir())
         printLine("config: " + codexConfigPath())
@@ -1855,22 +2094,47 @@ fn maskApiKey(key: str): str =
     let suffix = __cheng_slice_string(key, (len(key) - 5), (len(key) - 1), false)
     return prefix + "***" + suffix
 
+fn loginStdinIsTerminalLocal(): bool =
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let osEnv = normalizePolicy(trimLine(os.getEnv("OS")))
+    if osEnv == "windows_nt" || indexOfSubstr(detectPlatform(), "windows", 0) >= 0:
+        let res = os.execCmdEx("powershell -NoProfile -Command \"[Console]::IsInputRedirected\"", opts, os.getCurrentDir())
+        let text = normalizePolicy(trimLine(res.output))
+        if text == "false":
+            return true
+        if text == "true":
+            return false
+        return false
+    let res = os.execCmdEx("test -t 0", opts, os.getCurrentDir())
+    return res.exitCode == 0
+
+fn loginHasStoredCredentialsLocal(): bool =
+    var apiKey = ""
+    if readAuthJsonApiKey(apiKey) && len(apiKey) > 0 && ! isChatgptPlaceholderToken(apiKey):
+        return true
+    var tokens: AuthTokens
+    if readChatgptTokens(tokens) && (len(tokens.accessToken) > 0 || len(tokens.idToken) > 0):
+        return true
+    return false
+
 fn runLoginStatusLocal(): int32 =
     let debug = normalizePolicy(trimLine(os.getEnv("CODEX_DEBUG_LOGIN_STATUS")))
     if debug == "1" || debug == "true" || debug == "yes":
         printErr("[debug] runLoginStatusLocal entered")
-    var tokens: AuthTokens
-    let cfgToken = readConfigValue("auth.token")
-    if len(cfgToken) > 0 && ! isChatgptPlaceholderToken(cfgToken) && looksLikeJwt(cfgToken):
+    var authMode = ""
+    if readAuthJsonMode(authMode):
         if debug == "1" || debug == "true" || debug == "yes":
-            printErr("[debug] login status via config jwt")
-        printErr("Logged in using ChatGPT")
-        return 0
-    if len(cfgToken) > 0 && ! isChatgptPlaceholderToken(cfgToken):
-        if debug == "1" || debug == "true" || debug == "yes":
-            printErr("[debug] login status via config api key")
-        printErr("Logged in using an API key - " + maskApiKey(cfgToken))
-        return 0
+            printErr("[debug] login status via auth_mode=" + authMode)
+        if authMode == "chatgpt" || authMode == "chatgptauthtokens" || authMode == "chatgpt_auth_tokens":
+            printErr("Logged in using ChatGPT")
+            return 0
+        if authMode == "api" || authMode == "apikey" || authMode == "api_key":
+            var apiByMode = ""
+            if readAuthJsonApiKey(apiByMode) && len(apiByMode) > 0 && ! isChatgptPlaceholderToken(apiByMode):
+                printErr("Logged in using an API key - " + maskApiKey(apiByMode))
+                return 0
+            printErr("Error checking login status: malformed API key credentials")
+            return 1
     var apiKey = ""
     if debug == "1" || debug == "true" || debug == "yes":
         printErr("[debug] login status before auth.json api key")
@@ -1879,21 +2143,10 @@ fn runLoginStatusLocal(): int32 =
             printErr("[debug] login status via auth.json api key")
         printErr("Logged in using an API key - " + maskApiKey(apiKey))
         return 0
-    let env1 = os.getEnv("CODEX_API_KEY")
-    if len(env1) > 0 && ! isChatgptPlaceholderToken(env1):
-        if debug == "1" || debug == "true" || debug == "yes":
-            printErr("[debug] login status via env CODEX_API_KEY")
-        printErr("Logged in using an API key - " + maskApiKey(env1))
-        return 0
-    let env2 = os.getEnv("OPENAI_API_KEY")
-    if len(env2) > 0 && ! isChatgptPlaceholderToken(env2):
-        if debug == "1" || debug == "true" || debug == "yes":
-            printErr("[debug] login status via env OPENAI_API_KEY")
-        printErr("Logged in using an API key - " + maskApiKey(env2))
-        return 0
+    var tokens: AuthTokens
     if debug == "1" || debug == "true" || debug == "yes":
         printErr("[debug] login status before auth.json chatgpt tokens")
-    if readChatgptTokens(tokens) && len(tokens.accessToken) > 0:
+    if readChatgptTokens(tokens) && (len(tokens.accessToken) > 0 || len(tokens.idToken) > 0):
         if debug == "1" || debug == "true" || debug == "yes":
             printErr("[debug] login status via auth.json chatgpt tokens")
         printErr("Logged in using ChatGPT")
@@ -1983,7 +2236,7 @@ fn loginUnrecognizedSubcommandWithUsage(sub: str, usage: str): int32 =
     printErr("For more information, try '--help'.")
     return 2
 
-fn runLogin(args: seq[str], start: int32): int32 =
+fn runLogin(args: str[], start: int32): int32 =
     var withApiKey = false
     var useDevice = false
     var deprecatedApiKey = ""
@@ -2055,6 +2308,9 @@ fn runLogin(args: seq[str], start: int32): int32 =
         if forcedLogin == "chatgpt":
             printErr("API key login is disabled. Use ChatGPT login instead.")
             return 1
+        if loginStdinIsTerminalLocal():
+            printErr("--with-api-key expects the API key on stdin. Try piping it, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`.")
+            return 1
         printErr("Reading API key from stdin...")
         var token = ""
         let stdinText = os.readAll(os.get_stdin())
@@ -2063,12 +2319,10 @@ fn runLogin(args: seq[str], start: int32): int32 =
         if len(token) == 0 || isChatgptPlaceholderToken(token):
             printErr("No API key provided via stdin.")
             return 1
-        if writeConfigValue("auth.token", token):
-            if ! looksLikeJwt(token):
-                writeAuthJsonApiKey(token)
+        if writeAuthJsonApiKey(token):
             printErr("Successfully logged in")
             return 0
-        printErr("login failed")
+        printErr("Error logging in: persist failed")
         return 1
 
     if useDevice:
@@ -2103,7 +2357,7 @@ fn runLogin(args: seq[str], start: int32): int32 =
     if runBrowserLogin(issuer, clientId, workspaceId, true, err):
         printErr("Successfully logged in")
         return 0
-    printErr("Error logging in with ChatGPT: " + err)
+    printErr("Error logging in: " + err)
     return 1
 
 fn printLogoutHelp(): int32 =
@@ -2119,41 +2373,23 @@ fn printLogoutHelp(): int32 =
     printLine("          Print help (see a summary with '-h')")
     return 0
 
-fn runLogout(args: seq[str], start: int32): int32 =
+fn runLogout(args: str[], start: int32): int32 =
     var i: int32 = start
     while i < len(args):
         let arg = argAt(args, i)
         if arg == "--help" || arg == "-h":
             return printLogoutHelp()
         return loginUnexpectedArgWithUsage(arg, "codex logout [OPTIONS]")
-    var ok = clearConfigValue("auth.token")
-    clearAuthJson()
-    if ok:
-        printLine("ok")
+    let hadCredentials = loginHasStoredCredentialsLocal()
+    if ! clearAuthJson():
+        printErr("Error logging out: failed to clear credentials")
+        return 1
+    clearConfigValue("auth.token")
+    if hadCredentials:
+        printErr("Successfully logged out")
         return 0
-    printErr("logout failed")
-    return 1
-
-type
-    RootCliParse =
-        opts: ExecOptions
-        cmd: str
-        cmdIndex: int32
-        showHelp: bool
-        showVersion: bool
-        errArg: str
-        errTip: str
-
-    TuiSessionParse =
-        opts: ExecOptions
-        sessionId: str
-        prompt: str
-        last: bool
-        showAll: bool
-        showHelp: bool
-        showVersion: bool
-        errArg: str
-        errTip: str
+    printErr("Not logged in")
+    return 0
 
 fn isOptionLikeLocal(arg: str): bool =
     if arg == nil || len(arg) == 0:
@@ -2199,10 +2435,12 @@ fn isRootCommandTokenLocal(tok: str): bool =
         return true
     if tok == "stdio-to-uds":
         return true
+    if tok == "apply_patch" || tok == "applypatch":
+        return true
     return false
 
-fn splitByCharLocal(text: str, sep: char): seq[str] =
-    var outVal: seq[str] = newSeq[str]()
+fn splitByCharLocal(text: str, sep: char): str[] =
+    var outVal: str[] = newSeq[str]()
     if text == nil:
         return outVal
     var start: int32 = 0
@@ -2221,7 +2459,7 @@ fn splitByCharLocal(text: str, sep: char): seq[str] =
         seqAdd(outVal, "")
     return outVal
 
-fn appendCommaSeparatedLocal(outList: var seq[str], raw: str) =
+fn appendCommaSeparatedLocal(outList: var str[], raw: str) =
     let parts = splitByCharLocal(raw, ',')
     var i: int32 = 0
     while i < len(parts):
@@ -2246,7 +2484,53 @@ fn printRootUnexpectedArg(arg: str, tip: str): int32 =
     printErr("For more information, try '--help'.")
     return 2
 
-fn parseRootCli(args: seq[str]): RootCliParse =
+type
+    ExecOptions =
+        prompt: str
+        jsonMode: bool
+        images: str[]
+        model: str
+        oss: bool
+        ossProvider: str
+        sandboxMode: str
+        profile: str
+        fullAuto: bool
+        bypass: bool
+        cwd: str
+        skipGitRepoCheck: bool
+        addDirs: str[]
+        ephemeral: bool
+        outputSchemaPath: str
+        outputSchemaJson: str
+        lastMessagePath: str
+        color: str
+        approvalPolicy: str
+        webSearch: bool
+        noAltScreen: bool
+        baseInstructions: str
+        developerInstructions: str
+
+    RootCliParse =
+        opts: ExecOptions
+        cmd: str
+        cmdIndex: int32
+        showHelp: bool
+        showVersion: bool
+        errArg: str
+        errTip: str
+
+    TuiSessionParse =
+        opts: ExecOptions
+        sessionId: str
+        prompt: str
+        last: bool
+        showAll: bool
+        showHelp: bool
+        showVersion: bool
+        errArg: str
+        errTip: str
+
+fn parseRootCli(args: str[]): RootCliParse =
     var parsed: RootCliParse
     parsed.opts = defaultExecOptions()
     parsed.cmd = ""
@@ -2408,7 +2692,7 @@ fn mergeTuiOpts(base: ExecOptions, sub: ExecOptions): ExecOptions =
         out.prompt = sub.prompt
     return out
 
-fn parseTuiSessionArgs(args: seq[str], start: int32, allowLastWithId: bool): TuiSessionParse =
+fn parseTuiSessionArgs(args: str[], start: int32, allowLastWithId: bool): TuiSessionParse =
     var parsed: TuiSessionParse
     parsed.opts = defaultExecOptions()
     parsed.sessionId = ""
@@ -2842,7 +3126,7 @@ fn printForkUsageShort(): int32 =
     printLine("          Print version")
     return 0
 
-fn runResumeInteractive(rootOpts: ExecOptions, args: seq[str], start: int32): int32 =
+fn runResumeInteractive(rootOpts: ExecOptions, args: str[], start: int32): int32 =
     traceMainLocal("resume.begin")
     let parsed = parseTuiSessionArgs(args, start, true)
     if parsed.showVersion:
@@ -2867,7 +3151,7 @@ fn runResumeInteractive(rootOpts: ExecOptions, args: seq[str], start: int32): in
     if parsed.last && len(threadId) == 0:
         let infos = listThreadInfos(filterCwd, parsed.showAll)
         if len(infos) > 0:
-            threadId = threadInfoAtLocal(infos, 0).id
+            threadId = threadInfoId(threadInfoAtLocal(infos, 0))
     if len(threadId) == 0 && (! parsed.last):
         threadId = selectThreadIdLocal(filterCwd, parsed.showAll)
     if len(threadId) == 0:
@@ -2875,7 +3159,7 @@ fn runResumeInteractive(rootOpts: ExecOptions, args: seq[str], start: int32): in
         return 2
     return runInteractiveWithOpts(opts, threadId)
 
-fn runForkInteractive(rootOpts: ExecOptions, args: seq[str], start: int32): int32 =
+fn runForkInteractive(rootOpts: ExecOptions, args: str[], start: int32): int32 =
     let parsed = parseTuiSessionArgs(args, start, false)
     if parsed.showVersion:
         printVersionNamed("codex-cli-fork")
@@ -2898,7 +3182,7 @@ fn runForkInteractive(rootOpts: ExecOptions, args: seq[str], start: int32): int3
     if parsed.last && len(sourceId) == 0:
         let infos = listThreadInfos(filterCwd, parsed.showAll)
         if len(infos) > 0:
-            sourceId = threadInfoAtLocal(infos, 0).id
+            sourceId = threadInfoId(threadInfoAtLocal(infos, 0))
     if len(sourceId) == 0 && (! parsed.last):
         sourceId = selectThreadIdLocal(filterCwd, parsed.showAll)
     if len(sourceId) == 0:
@@ -2910,10 +3194,10 @@ fn runForkInteractive(rootOpts: ExecOptions, args: seq[str], start: int32): int3
         return 1
     return runInteractiveWithOpts(opts, newId)
 
-fn runMcp(args: seq[str], start: int32): int32 =
+fn runMcp(args: str[], start: int32): int32 =
     return runMcpCommand(args, start)
 
-fn runMcpServer(args: seq[str], start: int32): int32 =
+fn runMcpServer(args: str[], start: int32): int32 =
     return runMcpServerCommand(args, start)
 
 fn debugPrint(toErr: bool, text: str) =
@@ -3056,7 +3340,7 @@ fn debugKnownRootSubcommand(name: str): bool =
 fn debugKnownAppServerSubcommand(name: str): bool =
     return name == "send-message-v2" || name == "help"
 
-fn debugHasFlagBeforeDelim(args: seq[str], start: int32, flag: str): bool =
+fn debugHasFlagBeforeDelim(args: str[], start: int32, flag: str): bool =
     var i: int32 = start
     while i < len(args):
         let tok = argAt(args, i)
@@ -3067,7 +3351,7 @@ fn debugHasFlagBeforeDelim(args: seq[str], start: int32, flag: str): bool =
         i = i + 1
     return false
 
-fn runDebugAppServerSendMessage(args: seq[str], start: int32): int32 =
+fn runDebugAppServerSendMessage(args: str[], start: int32): int32 =
     if debugHasFlagBeforeDelim(args, start, "--help"):
         return printDebugAppServerSendMessageUsageLong()
     if debugHasFlagBeforeDelim(args, start, "-h"):
@@ -3113,13 +3397,13 @@ fn runDebugAppServerSendMessage(args: seq[str], start: int32): int32 =
         let tip = "to pass '" + message + "' as a value, use '-- " + message + "'"
         return debugUnexpectedArgWithUsage(message, "codex debug app-server send-message-v2 [OPTIONS] <USER_MESSAGE>", tip)
 
-    var localArgs: seq[str] = newSeq[str]()
+    var localArgs: str[] = newSeq[str]()
     seqAdd(localArgs, "app-server-test")
     seqAdd(localArgs, "send-message-v2")
     seqAdd(localArgs, message)
     return runAppServerTest(localArgs, 1)
 
-fn runDebugAppServerCommand(args: seq[str], start: int32): int32 =
+fn runDebugAppServerCommand(args: str[], start: int32): int32 =
     if start >= len(args):
         printDebugAppServerUsageShort(true)
         return 2
@@ -3158,7 +3442,7 @@ fn runDebugAppServerCommand(args: seq[str], start: int32): int32 =
 
     return debugUnrecognizedSubcommandWithUsage(sub, "codex debug app-server [OPTIONS] <COMMAND>")
 
-fn runDebugCommand(args: seq[str], start: int32): int32 =
+fn runDebugCommand(args: str[], start: int32): int32 =
     if start >= len(args):
         printDebugUsageShort(true)
         return 2
@@ -3197,7 +3481,7 @@ fn runDebugCommand(args: seq[str], start: int32): int32 =
 
     return debugUnrecognizedSubcommandWithUsage(sub, "codex debug [OPTIONS] <COMMAND>")
 
-fn dispatchCommand(args: seq[str]): int32 =
+fn dispatchCommand(args: str[]): int32 =
     var msg: str = "dispatch.begin argc="
     msg = msg + intToStr(len(args))
     traceMainLocal(msg)
@@ -3278,6 +3562,8 @@ fn dispatchCommand(args: seq[str]): int32 =
         return runExecpolicy(args, start)
     if cmd == "apply" || cmd == "a":
         return runApply(args, start)
+    if cmd == "apply_patch" || cmd == "applypatch":
+        return runApplyPatchCompat(args, start)
     if cmd == "cloud" || cmd == "cloud-tasks":
         var msg3: str = "dispatch.cloud start="
         msg3 = msg3 + intToStr(start)
@@ -3309,6 +3595,15 @@ fn main(argc: int32, argv: str*): int32 =
     traceMainLocal("main.cmdline.set")
     let rawArgs = collectArgsFromArgv(argc, argv)
     traceMainLocal("main.args.collected=" + intToStr(len(rawArgs)))
+    let arg0AliasDispatch = runArg0CompatAliasDispatch(rawArgs)
+    if arg0AliasDispatch >= 0:
+        return arg0AliasDispatch
+    let applyPatchArg0 = runApplyPatchArg1Compat(rawArgs)
+    if applyPatchArg0 >= 0:
+        return applyPatchArg0
+    # Keep codex-rs ordering: load dotenv and prepend helper PATH before runtime work.
+    arg0LoadDotenvFiltered()
+    arg0PrependPathEntryForAliases()
     let parsed = parseGlobalOverrides(rawArgs)
     traceMainLocal("main.overrides.parsed")
     if len(parsed.err) > 0:

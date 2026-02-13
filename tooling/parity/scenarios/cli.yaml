@@ -1,0 +1,81 @@
+{
+  "suite": "cli",
+  "cases": [
+    {
+      "id": "root-help-long",
+      "description": "Top-level --help should expose canonical codex usage",
+      "args": ["--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex", "Commands:"],
+        "stderr_not_contains": ["error:"]
+      }
+    },
+    {
+      "id": "root-help-short",
+      "description": "Top-level -h should print short help",
+      "args": ["-h"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex", "Options:"],
+        "stderr_not_contains": ["error:"]
+      }
+    },
+    {
+      "id": "version",
+      "description": "Version flag should succeed and print codex-cli name",
+      "args": ["--version"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["codex-cli"],
+        "stderr_not_contains": ["error:"]
+      }
+    },
+    {
+      "id": "help-subcommand-exec",
+      "description": "help <subcommand> should route to subcommand help surface",
+      "args": ["help", "exec"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex exec"]
+      }
+    },
+    {
+      "id": "help-subcommand-unknown-fallback",
+      "description": "help <unknown> should fall back to root usage",
+      "args": ["help", "definitely-unknown-subcommand"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex"]
+      }
+    },
+    {
+      "id": "unknown-root-flag",
+      "description": "Unknown root flag should fail",
+      "args": ["--definitely-unknown-flag"],
+      "expect": {
+        "both_nonzero": true,
+        "stderr_regex": ["unexpected argument|Found argument|unknown"],
+        "stderr_contains": ["--help"]
+      }
+    },
+    {
+      "id": "hidden-execpolicy-help",
+      "description": "Hidden execpolicy command should still be reachable",
+      "args": ["execpolicy", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["execpolicy", "check"]
+      }
+    },
+    {
+      "id": "hidden-arg0-apply-patch-arg1",
+      "description": "Arg0 hidden apply_patch arg should fail with guidance when patch text is missing",
+      "args": ["--codex-run-as-apply-patch"],
+      "expect": {
+        "both_nonzero": true,
+        "stderr_contains": ["--codex-run-as-apply-patch requires a UTF-8 PATCH argument."]
+      }
+    }
+  ]
+}

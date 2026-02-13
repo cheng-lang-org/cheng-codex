@@ -7,6 +7,31 @@
 - 全局配置覆盖: `-c/--config <key=value>` (可重复)。
 - 特性开关: `--enable <feature>` / `--disable <feature>` (可重复)。
 - 退出码: 成功为 0; 失败为非 0 (保留具体错误提示)。
+- 基线冻结: `codex-rs@ebe359b8` 作为对齐目标。
+- 语义 1:1: 命令行为、参数冲突、退出码、协议字段、副作用一致；非关键排版差异可接受。
+- 差分验收: 离线门禁必须包含 codex-rs vs cheng-codex 双实现场景对比 (`tooling/parity/run_parity.py`)。
+- parity 覆盖契约: 同时维护 crate 级 `tooling/parity/parity_manifest.yaml` 与行为级 `tooling/parity/behavior_manifest.yaml`。
+
+## arg0 / argv0 兼容
+- `argv0` 分发必须与 codex-rs 对齐:
+  - `apply_patch` / `applypatch` 作为 argv0 时直接进入 patch 执行路径，不进入 interactive/root parser。
+  - `codex-linux-sandbox` 作为 argv0 时直接进入 `sandbox linux` 执行路径。
+- `--codex-run-as-apply-patch` 作为隐藏入口保留，缺少 PATCH 参数时必须返回非 0，并输出:
+  - `--codex-run-as-apply-patch requires a UTF-8 PATCH argument.`
+- 隐藏根命令 `apply_patch` / `applypatch` 可达，并与 argv0/隐藏参数共享同一 patch 语义与退出码约束。
+- 启动阶段加载 `.env` 时必须过滤所有 `CODEX_*` 键，避免注入覆盖运行时受保护环境。
+- 启动阶段必须将 `CODEX_HOME/tmp/arg0` helper 目录 prepend 到 `PATH`，并生成 `apply_patch`/`applypatch`（Linux 额外 `codex-linux-sandbox`）helper 入口。
+
+## hooks (legacy notify)
+- 配置 `notify = ["<program>", "<arg1>", ...]` 时，agent turn 完成后必须触发一次通知命令。
+- 行为与 codex-rs legacy notify 对齐:
+  - 以 argv 方式执行配置命令，并在末尾追加一个 JSON 参数。
+  - JSON payload 使用 kebab-case 字段，`type` 为 `agent-turn-complete`。
+  - payload 字段至少包含: `thread-id`、`turn-id`、`cwd`、`input-messages`、`last-assistant-message`。
+- `notify` 未配置时不得触发外部命令。
+- tool 生命周期内部事件 `after_tool_use` 必须记录并保持字段语义稳定:
+  - 顶层字段: `session_id`、`cwd`、`triggered_at`、`hook_event`
+  - `hook_event` 字段至少包含: `event_type`、`turn_id`、`call_id`、`tool_name`、`tool_kind`、`tool_input`、`executed`、`success`、`duration_ms`、`mutating`、`sandbox`、`sandbox_policy`、`output_preview`
 
 ## exec
 `codex exec [OPTIONS] [PROMPT]`
@@ -65,6 +90,19 @@
 子命令:
 - `generate-ts --out <DIR> [--prettier <PRETTIER_BIN>]`
 - `generate-json-schema --out <DIR>`
+
+### Plan mode / collaboration mode (app-server v2)
+- `turn/start` 支持 `collaborationMode`，并按 mode 覆盖 model/reasoning/developer instructions 语义。
+- `collaborationMode/list` 返回至少 `plan` 与 `default` 预设。
+- Plan mode 下:
+  - `request_user_input` 走 `item/tool/requestUserInput` request/response 往返。
+  - `update_plan` 返回错误: `update_plan is a TODO/checklist tool and is not allowed in Plan mode`。
+  - 解析 `<proposed_plan>...</proposed_plan>`，发出 plan item 生命周期与 `item/plan/delta`。
+- 协议产物必须包含:
+  - `protocol/ServerRequest.ts` 中 `item/tool/requestUserInput`
+  - `protocol/ServerNotification.ts` 中 `item/plan/delta`
+  - `protocol/v2/TurnStartParams.ts` 中 `collaborationMode`
+  - `protocol/v2/ThreadItem.ts` 中 `plan` variant
 
 ## app (macOS)
 `codex app [PATH] [--download-url <URL>]`
@@ -127,6 +165,7 @@
 ## 兼容策略
 - 全量路径使用 Cheng 原生实现。
 - 不依赖 codex-rs 二进制委托。
+- cheng 专有能力可保留，但必须标记实验/隐藏，不污染 `codex` 主帮助面。
 
 ## cheng-codex 专有: ship
 `codex-cheng ship [options] [PROMPT]`

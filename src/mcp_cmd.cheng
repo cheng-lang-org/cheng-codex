@@ -43,23 +43,23 @@ type
     McpServerEntry =
         name: str
         command: str
-        args: seq[str]
-        env: seq[McpStringPair]
+        args: str[]
+        env: McpStringPair[]
         hasEnv: bool
-        envVars: seq[str]
+        envVars: str[]
         cwd: str
         url: str
         bearerTokenEnvVar: str
-        httpHeaders: seq[McpStringPair]
+        httpHeaders: McpStringPair[]
         hasHttpHeaders: bool
-        envHttpHeaders: seq[McpStringPair]
+        envHttpHeaders: McpStringPair[]
         hasEnvHttpHeaders: bool
         enabled: bool
         disabledReason: str
         hasEnabledTools: bool
-        enabledTools: seq[str]
+        enabledTools: str[]
         hasDisabledTools: bool
-        disabledTools: seq[str]
+        disabledTools: str[]
         hasStartupTimeout: bool
         startupTimeoutSec: str
         hasToolTimeout: bool
@@ -98,7 +98,7 @@ fn mcpEmptyServer(name: str): McpServerEntry =
         toolTimeoutSec: ""
     )
 
-fn mcpFindServerIndex(servers: var seq[McpServerEntry], name: str): int32 =
+fn mcpFindServerIndex(servers: var McpServerEntry[], name: str): int32 =
     var idx: int32 = 0
     while idx < len(servers):
         if servers[idx].name == name:
@@ -106,7 +106,7 @@ fn mcpFindServerIndex(servers: var seq[McpServerEntry], name: str): int32 =
         idx = idx + 1
     return -1
 
-fn mcpGetServerIndex(servers: var seq[McpServerEntry], name: str): int32 =
+fn mcpGetServerIndex(servers: var McpServerEntry[], name: str): int32 =
     let existing = mcpFindServerIndex(servers, name)
     if existing >= 0:
         return existing
@@ -114,7 +114,7 @@ fn mcpGetServerIndex(servers: var seq[McpServerEntry], name: str): int32 =
     seqAdd(servers, entry)
     return len(servers) - 1
 
-fn mcpSetPair(pairs: var seq[McpStringPair], key: str, value: str) =
+fn mcpSetPair(pairs: var McpStringPair[], key: str, value: str) =
     let keyCopy = "" + key
     let valueCopy = "" + value
     var idx: int32 = 0
@@ -148,7 +148,7 @@ fn mcpStrLess(a: str, b: str): bool =
         idx = idx + 1
     return lenA < lenB
 
-fn mcpSortPairsByKey(pairs: var seq[McpStringPair]) =
+fn mcpSortPairsByKey(pairs: var McpStringPair[]) =
     var i: int32 = 0
     while i < len(pairs):
         var j: int32 = i + 1
@@ -160,7 +160,7 @@ fn mcpSortPairsByKey(pairs: var seq[McpStringPair]) =
             j = j + 1
         i = i + 1
 
-fn mcpSortServersByName(servers: var seq[McpServerEntry]) =
+fn mcpSortServersByName(servers: var McpServerEntry[]) =
     var i: int32 = 0
     while i < len(servers):
         var j: int32 = i + 1
@@ -172,8 +172,8 @@ fn mcpSortServersByName(servers: var seq[McpServerEntry]) =
             j = j + 1
         i = i + 1
 
-fn mcpSplitKeyPath(text: str): seq[str] =
-    var outVal: seq[str] = newSeq[str]()
+fn mcpSplitKeyPath(text: str): str[] =
+    var outVal: str[] = newSeq[str]()
     if text == nil:
         return outVal
     var start: int32 = 0
@@ -192,7 +192,7 @@ fn mcpSplitKeyPath(text: str): seq[str] =
         seqAdd(outVal, "")
     return outVal
 
-fn mcpJoinParts(parts: seq[str], start: int32): str =
+fn mcpJoinParts(parts: str[], start: int32): str =
     var out = ""
     var idx: int32 = start
     while idx < len(parts):
@@ -314,8 +314,8 @@ fn mcpParseStringValueSimple(raw: str): str =
         idx = idx + 1
     return out
 
-fn mcpParseStringArraySimple(raw: str): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn mcpParseStringArraySimple(raw: str): str[] =
+    var out: str[] = newSeq[str]()
     let trimmed = mcpTrimCopy(raw)
     if len(trimmed) == 0:
         return out
@@ -375,8 +375,8 @@ fn mcpParseStringArraySimple(raw: str): seq[str] =
             idx = idx + 1
     return out
 
-fn mcpSplitCommaList(text: str): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn mcpSplitCommaList(text: str): str[] =
+    var out: str[] = newSeq[str]()
     if text == nil || len(text) == 0:
         return out
     var start: int32 = 0
@@ -437,10 +437,10 @@ fn mcpSplitInlineEntry(entry: str, outKey: var str, outValue: var str, err: var 
     err = "invalid inline table entry"
     return false
 
-fn mcpParseInlineTableEntries(raw: str, outPairs: var seq[McpStringPair], err: var str): bool =
+fn mcpParseInlineTableEntries(raw: str, outPairs: var McpStringPair[], err: var str): bool =
     err = ""
     let trimmed = trimLine(raw)
-    var pairs: seq[McpStringPair] = newSeq[McpStringPair]()
+    var pairs: McpStringPair[] = newSeq[McpStringPair]()
     if len(trimmed) == 0:
         outPairs = pairs
         return true
@@ -450,7 +450,7 @@ fn mcpParseInlineTableEntries(raw: str, outPairs: var seq[McpStringPair], err: v
     var inner: str = ""
     if len(trimmed) > 2:
         inner = __cheng_slice_string(trimmed, 1, len(trimmed) - 2, false)
-    var entries: seq[str] = newSeq[str]()
+    var entries: str[] = newSeq[str]()
     var start: int32 = 0
     var idx: int32 = 0
     var inString = false
@@ -505,12 +505,12 @@ fn mcpParseInlineTableEntries(raw: str, outPairs: var seq[McpStringPair], err: v
     outPairs = pairs
     return true
 
-fn mcpInlineTableToStringPairs(raw: str, outPairs: var seq[McpStringPair]): bool =
-    var entries: seq[McpStringPair]
+fn mcpInlineTableToStringPairs(raw: str, outPairs: var McpStringPair[]): bool =
+    var entries: McpStringPair[]
     var err = ""
     if ! mcpParseInlineTableEntries(raw, entries, err):
         return false
-    var pairs: seq[McpStringPair] = newSeq[McpStringPair]()
+    var pairs: McpStringPair[] = newSeq[McpStringPair]()
     var idx: int32 = 0
     while idx < len(entries):
         let keyText = trimLine(entries[idx].key)
@@ -578,7 +578,7 @@ fn mcpSecondsFromMillis(ms: int64): str =
             frac = __cheng_slice_string(frac, 0, len(frac) - 2, false)
     return int64ToStr(secs) + "." + frac
 
-fn mcpApplyEnvPairs(entry: var McpServerEntry, pairs: seq[McpStringPair]) =
+fn mcpApplyEnvPairs(entry: var McpServerEntry, pairs: McpStringPair[]) =
     var envPairs = entry.env
     var idx: int32 = 0
     while idx < len(pairs):
@@ -587,7 +587,7 @@ fn mcpApplyEnvPairs(entry: var McpServerEntry, pairs: seq[McpStringPair]) =
     entry.env = envPairs
     entry.hasEnv = true
 
-fn mcpApplyHttpHeaderPairs(entry: var McpServerEntry, pairs: seq[McpStringPair]) =
+fn mcpApplyHttpHeaderPairs(entry: var McpServerEntry, pairs: McpStringPair[]) =
     var headerPairs = entry.httpHeaders
     var idx: int32 = 0
     while idx < len(pairs):
@@ -596,7 +596,7 @@ fn mcpApplyHttpHeaderPairs(entry: var McpServerEntry, pairs: seq[McpStringPair])
     entry.httpHeaders = headerPairs
     entry.hasHttpHeaders = true
 
-fn mcpApplyEnvHttpHeaderPairs(entry: var McpServerEntry, pairs: seq[McpStringPair]) =
+fn mcpApplyEnvHttpHeaderPairs(entry: var McpServerEntry, pairs: McpStringPair[]) =
     var headerPairs = entry.envHttpHeaders
     var idx: int32 = 0
     while idx < len(pairs):
@@ -605,11 +605,11 @@ fn mcpApplyEnvHttpHeaderPairs(entry: var McpServerEntry, pairs: seq[McpStringPai
     entry.envHttpHeaders = headerPairs
     entry.hasEnvHttpHeaders = true
 
-fn mcpApplyField(servers: var seq[McpServerEntry], name: str, key: str, rawValue: str) =
+fn mcpApplyField(servers: var McpServerEntry[], name: str, key: str, rawValue: str) =
     let idx = mcpGetServerIndex(servers, name)
     var entry = servers[idx]
     let keyNorm = normalizePolicy(trimLine(key))
-    var pairs: seq[McpStringPair] = newSeq[McpStringPair]()
+    var pairs: McpStringPair[] = newSeq[McpStringPair]()
     var enabled = false
     var startupText = ""
     var toolText = ""
@@ -668,8 +668,8 @@ fn mcpApplyField(servers: var seq[McpServerEntry], name: str, key: str, rawValue
             entry.hasToolTimeout = true
     servers[idx] = entry
 
-fn mcpApplyInlineTable(servers: var seq[McpServerEntry], name: str, rawValue: str) =
-    var entries: seq[McpStringPair]
+fn mcpApplyInlineTable(servers: var McpServerEntry[], name: str, rawValue: str) =
+    var entries: McpStringPair[]
     var err = ""
     if ! mcpParseInlineTableEntries(rawValue, entries, err):
         return
@@ -678,7 +678,7 @@ fn mcpApplyInlineTable(servers: var seq[McpServerEntry], name: str, rawValue: st
         mcpApplyField(servers, name, entries[idx].key, entries[idx].value)
         idx = idx + 1
 
-fn mcpHandleRootEntry(servers: var seq[McpServerEntry], keyText: str, valueText: str) =
+fn mcpHandleRootEntry(servers: var McpServerEntry[], keyText: str, valueText: str) =
     let parts = mcpSplitKeyPath(keyText)
     if len(parts) == 0:
         return
@@ -715,7 +715,7 @@ fn mcpHandleRootEntry(servers: var seq[McpServerEntry], keyText: str, valueText:
         return
     mcpApplyField(servers, name, field, valueText)
 
-fn mcpHandleServerSection(servers: var seq[McpServerEntry], section: str, keyText: str, valueText: str) =
+fn mcpHandleServerSection(servers: var McpServerEntry[], section: str, keyText: str, valueText: str) =
     let parts = mcpSplitKeyPath(section)
     if len(parts) < 2:
         return
@@ -750,7 +750,7 @@ fn mcpHandleServerSection(servers: var seq[McpServerEntry], section: str, keyTex
             servers[idx] = entry
         return
 
-fn mcpHandleGlobalEntry(servers: var seq[McpServerEntry], keyText: str, valueText: str) =
+fn mcpHandleGlobalEntry(servers: var McpServerEntry[], keyText: str, valueText: str) =
     if ! hasPrefix(keyText, "mcp_servers."):
         return
     let suffix = dropPrefix(keyText, "mcp_servers.")
@@ -790,7 +790,7 @@ fn mcpHandleGlobalEntry(servers: var seq[McpServerEntry], keyText: str, valueTex
         return
     mcpApplyField(servers, name, field, valueText)
 
-fn mcpFindServerIndexSimple(servers: var seq[McpServerEntry], name: str): int32 =
+fn mcpFindServerIndexSimple(servers: var McpServerEntry[], name: str): int32 =
     var idx: int32 = 0
     while idx < len(servers):
         if servers[idx].name == name:
@@ -798,7 +798,7 @@ fn mcpFindServerIndexSimple(servers: var seq[McpServerEntry], name: str): int32 
         idx = idx + 1
     return -1
 
-fn mcpEnsureServerIndexSimple(servers: var seq[McpServerEntry], name: str): int32 =
+fn mcpEnsureServerIndexSimple(servers: var McpServerEntry[], name: str): int32 =
     let found = mcpFindServerIndexSimple(servers, name)
     if found >= 0:
         return found
@@ -821,7 +821,7 @@ fn mcpLiteEmpty(name: str): McpLiteEntry =
         toolTimeoutSec: ""
     )
 
-fn mcpLiteFindIndex(items: var seq[McpLiteEntry], name: str): int32 =
+fn mcpLiteFindIndex(items: var McpLiteEntry[], name: str): int32 =
     var i: int32 = 0
     while i < len(items):
         if items[i].name == name:
@@ -829,14 +829,14 @@ fn mcpLiteFindIndex(items: var seq[McpLiteEntry], name: str): int32 =
         i = i + 1
     return -1
 
-fn mcpLiteEnsureIndex(items: var seq[McpLiteEntry], name: str): int32 =
+fn mcpLiteEnsureIndex(items: var McpLiteEntry[], name: str): int32 =
     let found = mcpLiteFindIndex(items, name)
     if found >= 0:
         return found
     seqAdd(items, mcpLiteEmpty(name))
     return len(items) - 1
 
-fn mcpLiteSortByName(items: var seq[McpLiteEntry]) =
+fn mcpLiteSortByName(items: var McpLiteEntry[]) =
     var i: int32 = 0
     while i < len(items):
         var j: int32 = i + 1
@@ -864,8 +864,8 @@ fn mcpLiteAuthStatus(entry: McpLiteEntry): str =
         return "bearer_token"
     return "not_logged_in"
 
-fn mcpLoadServersLiteFromConfig(): seq[McpLiteEntry] =
-    var out: seq[McpLiteEntry] = newSeq[McpLiteEntry]()
+fn mcpLoadServersLiteFromConfig(): McpLiteEntry[] =
+    var out: McpLiteEntry[] = newSeq[McpLiteEntry]()
     let path = codexConfigPath()
     if len(path) == 0 || ! os.fileExists(path):
         return out
@@ -999,8 +999,8 @@ fn mcpApplySimpleFieldValue(entryIn: McpServerEntry, keyText: str, valueText: st
             entry.hasToolTimeout = true
     return entry
 
-fn mcpLoadServersFromConfig(): seq[McpServerEntry] =
-    var servers: seq[McpServerEntry] = newSeq[McpServerEntry]()
+fn mcpLoadServersFromConfig(): McpServerEntry[] =
+    var servers: McpServerEntry[] = newSeq[McpServerEntry]()
     let path = codexConfigPath()
     if len(path) == 0 || ! os.fileExists(path):
         return servers
@@ -1108,8 +1108,8 @@ fn mcpLoadServersFromConfig(): seq[McpServerEntry] =
         i = i + 1
     return servers
 
-fn mcpFormatEnvDisplay(envPairs: seq[McpStringPair], envVars: seq[str]): str =
-    var parts: seq[str] = newSeq[str]()
+fn mcpFormatEnvDisplay(envPairs: McpStringPair[], envVars: str[]): str =
+    var parts: str[] = newSeq[str]()
     var idx: int32 = 0
     if len(envPairs) > 0:
         var sorted = envPairs
@@ -1135,7 +1135,7 @@ fn mcpFormatEnvDisplay(envPairs: seq[McpStringPair], envVars: seq[str]): str =
         idx = idx + 1
     return out
 
-fn mcpFormatHeadersDisplay(headers: seq[McpStringPair], maskValues: bool): str =
+fn mcpFormatHeadersDisplay(headers: McpStringPair[], maskValues: bool): str =
     if len(headers) == 0:
         return "-"
     var sorted = headers
@@ -1196,8 +1196,8 @@ fn mcpFormatStatus(entry: McpServerEntry): str =
 fn mcpHasTransport(entry: McpServerEntry): bool =
     return len(entry.command) > 0 || len(entry.url) > 0
 
-fn mcpHeadersFromEntry(entry: McpServerEntry): seq[str] =
-    var headers: seq[str] = newSeq[str]()
+fn mcpHeadersFromEntry(entry: McpServerEntry): str[] =
+    var headers: str[] = newSeq[str]()
     if entry.hasHttpHeaders:
         var idx: int32 = 0
         while idx < len(entry.httpHeaders):
@@ -1214,16 +1214,16 @@ fn mcpHeadersFromEntry(entry: McpServerEntry): seq[str] =
             idx = idx + 1
     return headers
 
-fn mcpJsonArrayFromStrings(items: seq[str]): str =
-    var jsonItems: seq[str] = newSeq[str]()
+fn mcpJsonArrayFromStrings(items: str[]): str =
+    var jsonItems: str[] = newSeq[str]()
     var idx: int32 = 0
     while idx < len(items):
         seqAdd(jsonItems, jstrString(items[idx]))
         idx = idx + 1
     return jstrArray(jsonItems)
 
-fn mcpJsonObjectFromPairs(pairs: seq[McpStringPair]): str =
-    var items: seq[str] = newSeq[str]()
+fn mcpJsonObjectFromPairs(pairs: McpStringPair[]): str =
+    var items: str[] = newSeq[str]()
     var idx: int32 = 0
     while idx < len(pairs):
         seqAdd(items, jstrPair(pairs[idx].key, jstrString(pairs[idx].value)))
@@ -1241,7 +1241,7 @@ fn padRight(text: str, width: int32): str =
         return text
     return text + repeatChar(' ', width - len(text))
 
-fn joinComma(items: seq[str]): str =
+fn joinComma(items: str[]): str =
     var out = ""
     var idx: int32 = 0
     while idx < len(items):
@@ -1253,7 +1253,7 @@ fn joinComma(items: seq[str]): str =
     return out
 
 fn mcpTransportJson(entry: McpServerEntry): str =
-    var pairs: seq[str] = newSeq[str]()
+    var pairs: str[] = newSeq[str]()
     if len(entry.command) > 0:
         seqAdd(pairs, jstrPair("type", jstrString("stdio")))
         seqAdd(pairs, jstrPair("command", jstrString(entry.command)))
@@ -1279,7 +1279,7 @@ fn mcpTransportJson(entry: McpServerEntry): str =
 fn mcpFormatTomlString(value: str): str =
     return "\"" + escapeConfigValue(value) + "\""
 
-fn mcpFormatTomlStringArray(items: seq[str]): str =
+fn mcpFormatTomlStringArray(items: str[]): str =
     var out = "["
     var idx: int32 = 0
     while idx < len(items):
@@ -1290,8 +1290,8 @@ fn mcpFormatTomlStringArray(items: seq[str]): str =
     out = out + "]"
     return out
 
-fn mcpBuildStdioConfigLines(name: str, command: str, args: seq[str], envPairs: seq[McpStringPair]): seq[str] =
-    var lines: seq[str] = newSeq[str]()
+fn mcpBuildStdioConfigLines(name: str, command: str, args: str[], envPairs: McpStringPair[]): str[] =
+    var lines: str[] = newSeq[str]()
     seqAdd(lines, "[mcp_servers." + name + "]")
     seqAdd(lines, "command = " + mcpFormatTomlString(command))
     if len(args) > 0:
@@ -1307,15 +1307,15 @@ fn mcpBuildStdioConfigLines(name: str, command: str, args: seq[str], envPairs: s
             idx = idx + 1
     return lines
 
-fn mcpBuildHttpConfigLines(name: str, url: str, bearerTokenEnvVar: str): seq[str] =
-    var lines: seq[str] = newSeq[str]()
+fn mcpBuildHttpConfigLines(name: str, url: str, bearerTokenEnvVar: str): str[] =
+    var lines: str[] = newSeq[str]()
     seqAdd(lines, "[mcp_servers." + name + "]")
     seqAdd(lines, "url = " + mcpFormatTomlString(url))
     if len(bearerTokenEnvVar) > 0:
         seqAdd(lines, "bearer_token_env_var = " + mcpFormatTomlString(bearerTokenEnvVar))
     return lines
 
-fn mcpJoinLines(lines: seq[str]): str =
+fn mcpJoinLines(lines: str[]): str =
     var out = ""
     var idx: int32 = 0
     while idx < len(lines):
@@ -1328,9 +1328,9 @@ fn mcpJoinLines(lines: seq[str]): str =
         out = out + "\n"
     return out
 
-fn mcpRemoveServerFromLines(lines: seq[str], name: str, removed: var bool): seq[str] =
+fn mcpRemoveServerFromLines(lines: str[], name: str, removed: var bool): str[] =
     removed = false
-    var out: seq[str] = newSeq[str]()
+    var out: str[] = newSeq[str]()
     var section = ""
     var skipPrefix = ""
     var idx: int32 = 0
@@ -1408,8 +1408,8 @@ fn mcpIsTargetSection(section: str, name: str): bool =
         return true
     return false
 
-fn mcpRemoveServerFromLinesSafe(lines: seq[str], name: str): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn mcpRemoveServerFromLinesSafe(lines: str[], name: str): str[] =
+    var out: str[] = newSeq[str]()
     var skipSection = false
     var idx: int32 = 0
     while idx < len(lines):
@@ -1431,7 +1431,7 @@ fn mcpRemoveServerFromLinesSafe(lines: seq[str], name: str): seq[str] =
         idx = idx + 1
     return out
 
-fn mcpWriteConfigLines(lines: seq[str]): bool =
+fn mcpWriteConfigLines(lines: str[]): bool =
     let home = codexHomeDir()
     if len(home) == 0:
         return false
@@ -1467,7 +1467,7 @@ fn mcpValidServerName(name: str): bool =
         return false
     return true
 
-fn mcpJoinSpace(items: seq[str]): str =
+fn mcpJoinSpace(items: str[]): str =
     var out = ""
     var idx: int32 = 0
     while idx < len(items):
@@ -1478,14 +1478,14 @@ fn mcpJoinSpace(items: seq[str]): str =
         idx = idx + 1
     return out
 
-fn mcpToolListDisplay(hasTools: bool, tools: seq[str]): str =
+fn mcpToolListDisplay(hasTools: bool, tools: str[]): str =
     if ! hasTools:
         return "-"
     if len(tools) == 0:
         return "[]"
     return joinComma(tools)
 
-fn mcpToolListJson(hasTools: bool, tools: seq[str]): str =
+fn mcpToolListJson(hasTools: bool, tools: str[]): str =
     if ! hasTools:
         return jstrNull()
     return mcpJsonArrayFromStrings(tools)
@@ -1496,7 +1496,7 @@ fn mcpTimeoutJson(hasTimeout: bool, raw: str): str =
     return mcpJsonNumberOrString(raw)
 
 fn mcpServerJson(entry: McpServerEntry, includeToolFilters: bool, includeAuthStatus: bool): str =
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     let authStatus = mcpDetermineAuthStatus(entry)
     seqAdd(fields, jstrPair("name", jstrString(entry.name)))
     seqAdd(fields, jstrPair("enabled", jstrBool(entry.enabled)))
@@ -1512,7 +1512,7 @@ fn mcpServerJson(entry: McpServerEntry, includeToolFilters: bool, includeAuthSta
         seqAdd(fields, jstrPair("auth_status", jstrString(mcpAuthJson(authStatus))))
     return jstrObject(fields)
 
-fn mcpPrintStdioRows(rows: seq[McpStdioRow]) =
+fn mcpPrintStdioRows(rows: McpStdioRow[]) =
     if len(rows) == 0:
         return
     printLine("Name  Command  Args  Env  Cwd  Status  Auth")
@@ -1536,7 +1536,7 @@ fn mcpPrintStdioRows(rows: seq[McpStdioRow]) =
         printLine(line)
         idx = idx + 1
 
-fn mcpPrintHttpRows(rows: seq[McpHttpRow]) =
+fn mcpPrintHttpRows(rows: McpHttpRow[]) =
     if len(rows) == 0:
         return
     printLine("Name  URL  Bearer Token Var  Status  Auth")
@@ -1556,7 +1556,7 @@ fn mcpPrintHttpRows(rows: seq[McpHttpRow]) =
         printLine(line)
         idx = idx + 1
 
-fn runMcpList(args: seq[str], start: int32): int32 =
+fn runMcpList(args: str[], start: int32): int32 =
     var json = false
     var i: int32 = start
     while i < len(args):
@@ -1573,13 +1573,13 @@ fn runMcpList(args: seq[str], start: int32): int32 =
     var servers = mcpLoadServersLiteFromConfig()
     mcpLiteSortByName(servers)
     if json:
-        var entries: seq[str] = newSeq[str]()
+        var entries: str[] = newSeq[str]()
         var idx: int32 = 0
         while idx < len(servers):
             let entry = servers[idx]
             let transportType = mcpLiteTransportType(entry)
-            var fields: seq[str] = newSeq[str]()
-            var transportFields: seq[str] = newSeq[str]()
+            var fields: str[] = newSeq[str]()
+            var transportFields: str[] = newSeq[str]()
             seqAdd(transportFields, jstrPair("type", jstrString(transportType)))
             if len(entry.command) > 0:
                 seqAdd(transportFields, jstrPair("command", jstrString(entry.command)))
@@ -1604,7 +1604,7 @@ fn runMcpList(args: seq[str], start: int32): int32 =
         idx = idx + 1
     return 0
 
-fn runMcpGet(args: seq[str], start: int32): int32 =
+fn runMcpGet(args: str[], start: int32): int32 =
     var json = false
     var name = ""
     var i: int32 = start
@@ -1632,8 +1632,8 @@ fn runMcpGet(args: seq[str], start: int32): int32 =
     let entry = servers[idx]
     if json:
         let transportType = mcpLiteTransportType(entry)
-        var fields: seq[str] = newSeq[str]()
-        var transportFields: seq[str] = newSeq[str]()
+        var fields: str[] = newSeq[str]()
+        var transportFields: str[] = newSeq[str]()
         seqAdd(transportFields, jstrPair("type", jstrString(transportType)))
         if len(entry.command) > 0:
             seqAdd(transportFields, jstrPair("command", jstrString(entry.command)))
@@ -1667,7 +1667,7 @@ fn runMcpGet(args: seq[str], start: int32): int32 =
     printLine(entry.name)
     return 0
 
-fn runMcpAdd(args: seq[str], start: int32): int32 =
+fn runMcpAdd(args: str[], start: int32): int32 =
     if start >= len(args):
         printLine("usage: codex mcp add [OPTIONS] <NAME> (--url <URL> | -- <COMMAND>...)")
         return 2
@@ -1684,8 +1684,8 @@ fn runMcpAdd(args: seq[str], start: int32): int32 =
         return 2
     var url = ""
     var bearerTokenEnvVar = ""
-    var commandParts: seq[str] = newSeq[str]()
-    var envPairs: seq[McpStringPair] = newSeq[McpStringPair]()
+    var commandParts: str[] = newSeq[str]()
+    var envPairs: McpStringPair[] = newSeq[McpStringPair]()
     var i: int32 = start + 1
     while i < len(args):
         let arg = argAt(args, i)
@@ -1746,7 +1746,7 @@ fn runMcpAdd(args: seq[str], start: int32): int32 =
         printErr("--bearer-token-env-var is only supported with streamable_http servers")
         return 2
     let path = codexConfigPath()
-    var lines: seq[str] = newSeq[str]()
+    var lines: str[] = newSeq[str]()
     if len(path) > 0 && os.fileExists(path):
         let content = os.readFile(path)
         if len(content) > 0:
@@ -1756,12 +1756,12 @@ fn runMcpAdd(args: seq[str], start: int32): int32 =
     if len(lines) > 0:
         if len(trimLine(lines[(len(lines) - 1)])) > 0:
             seqAdd(lines, "")
-    var blockLines: seq[str] = newSeq[str]()
+    var blockLines: str[] = newSeq[str]()
     if len(url) > 0:
         blockLines = mcpBuildHttpConfigLines(name, url, bearerTokenEnvVar)
     else:
         let command = "" + commandParts[0]
-        var argsList: seq[str] = newSeq[str]()
+        var argsList: str[] = newSeq[str]()
         var idx: int32 = 1
         while idx < len(commandParts):
             seqAdd(argsList, "" + commandParts[idx])
@@ -1779,7 +1779,7 @@ fn runMcpAdd(args: seq[str], start: int32): int32 =
         printLine("MCP server may or may not require login. Run `codex mcp login " + name + "` to login.")
     return 0
 
-fn runMcpRemove(args: seq[str], start: int32): int32 =
+fn runMcpRemove(args: str[], start: int32): int32 =
     if start >= len(args):
         printLine("usage: codex mcp remove <name>")
         return 2
@@ -1795,7 +1795,7 @@ fn runMcpRemove(args: seq[str], start: int32): int32 =
         printLine("No MCP server named '" + name + "' found.")
         return 0
     let content = os.readFile(path)
-    var lines: seq[str] = newSeq[str]()
+    var lines: str[] = newSeq[str]()
     if len(content) > 0:
         lines = splitLinesSimple(content)
     let originalLen = len(lines)
@@ -1810,8 +1810,8 @@ fn runMcpRemove(args: seq[str], start: int32): int32 =
         printLine("No MCP server named '" + name + "' found.")
     return 0
 
-fn mcpSplitScopesCsv(raw: str): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn mcpSplitScopesCsv(raw: str): str[] =
+    var out: str[] = newSeq[str]()
     let trimmed = trimLine(raw)
     if len(trimmed) == 0:
         return out
@@ -1827,19 +1827,19 @@ fn mcpSplitScopesCsv(raw: str): seq[str] =
         i = i + 1
     return out
 
-fn mcpAppendScopes(scopes: var seq[str], raw: str) =
+fn mcpAppendScopes(scopes: var str[], raw: str) =
     let parts = mcpSplitScopesCsv(raw)
     var i: int32 = 0
     while i < len(parts):
         seqAdd(scopes, parts[i])
         i = i + 1
 
-fn runMcpLogin(args: seq[str], start: int32): int32 =
+fn runMcpLogin(args: str[], start: int32): int32 =
     if start >= len(args):
         printLine("usage: codex mcp login <name> [--scopes SCOPE,SCOPE]")
         return 2
     var name = ""
-    var scopes: seq[str] = newSeq[str]()
+    var scopes: str[] = newSeq[str]()
     var i: int32 = start
     while i < len(args):
         let arg = argAt(args, i)
@@ -1880,7 +1880,7 @@ fn runMcpLogin(args: seq[str], start: int32): int32 =
     printLine("Successfully logged in to MCP server '" + name + "'.")
     return 0
 
-fn runMcpLogout(args: seq[str], start: int32): int32 =
+fn runMcpLogout(args: str[], start: int32): int32 =
     if start >= len(args):
         printLine("usage: codex mcp logout <name>")
         return 2
@@ -1907,7 +1907,7 @@ fn runMcpLogout(args: seq[str], start: int32): int32 =
         printLine("No OAuth credentials stored for '" + name + "'.")
     return 0
 
-fn runMcpCommand(args: seq[str], start: int32): int32 =
+fn runMcpCommand(args: str[], start: int32): int32 =
     if start >= len(args):
         # `<COMMAND>` is required in codex-rs; print help-like output and exit 2.
         printLine("[experimental] Run Codex as an MCP server and manage MCP servers")

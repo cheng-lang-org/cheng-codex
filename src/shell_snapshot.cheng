@@ -24,8 +24,8 @@ fn isValidEnvKey(key: str): bool =
         i = i + 1
     return true
 
-fn splitLinesSnapshot(text: str): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn splitLinesSnapshot(text: str): str[] =
+    var out: str[] = newSeq[str]()
     if text == nil:
         return out
     var start: int32 = 0
@@ -48,8 +48,8 @@ fn splitLinesSnapshot(text: str): seq[str] =
     return out
 
 fn buildSnapshotScript(envText: str): str =
-    var lines: seq[str] = splitLinesSnapshot(envText)
-    var exportsParts: seq[str] = newSeq[str]()
+    var lines: str[] = splitLinesSnapshot(envText)
+    var exportsParts: str[] = newSeq[str]()
     var exportsCount: int32 = 0
     var idx: int32 = 0
     while idx < len(lines):

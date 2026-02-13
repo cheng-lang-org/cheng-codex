@@ -14,8 +14,20 @@ type
 
 const CODEX_VERSION = "0.98.0"
 
+fn codexVersion(): str =
+    return CODEX_VERSION
+
 fn makeToolResult(ok: bool, output: str, exitCode: int32): ToolResult =
     ToolResult(ok: ok, output: output, exitCode: exitCode)
+
+fn toolResultOk(result: ToolResult): bool =
+    return result.ok
+
+fn toolResultOutput(result: ToolResult): str =
+    return result.output
+
+fn toolResultExitCode(result: ToolResult): int32 =
+    return result.exitCode
 
 var stdinPushback: int32 = -1
 
@@ -47,26 +59,26 @@ fn stdinReadLine(): StdinLineRead =
         return StdinLineRead(ok: false, line: "")
     return StdinLineRead(ok: true, line: buf)
 
-fn seqStr1(a: str): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn seqStr1(a: str): str[] =
+    var out: str[] = newSeq[str]()
     seqAdd(out, a)
     return out
 
-fn seqStr2(a: str, b: str): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn seqStr2(a: str, b: str): str[] =
+    var out: str[] = newSeq[str]()
     seqAdd(out, a)
     seqAdd(out, b)
     return out
 
-fn seqStr3(a: str, b: str, c: str): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn seqStr3(a: str, b: str, c: str): str[] =
+    var out: str[] = newSeq[str]()
     seqAdd(out, a)
     seqAdd(out, b)
     seqAdd(out, c)
     return out
 
-fn seqStr4(a: str, b: str, c: str, d: str): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn seqStr4(a: str, b: str, c: str, d: str): str[] =
+    var out: str[] = newSeq[str]()
     seqAdd(out, a)
     seqAdd(out, b)
     seqAdd(out, c)
@@ -164,7 +176,7 @@ fn endsWithSuffix(s: str, suffix: str): bool =
         i = i + 1
     return true
 
-fn joinPartsBalanced(parts: seq[str]): str =
+fn joinPartsBalanced(parts: str[]): str =
     # Balanced join avoids O(n^2) growth when concatenating many pieces.
     if len(parts) == 0:
         return ""
@@ -173,7 +185,7 @@ fn joinPartsBalanced(parts: seq[str]): str =
         if only == nil:
             return ""
         return "" + only
-    var work: seq[str] = newSeq[str]()
+    var work: str[] = newSeq[str]()
     var i: int32 = 0
     while i < len(parts):
         let part: str = get[str](parts, i)
@@ -183,7 +195,7 @@ fn joinPartsBalanced(parts: seq[str]): str =
             seqAdd(work, part)
         i = i + 1
     while len(work) > 1:
-        var next: seq[str] = newSeq[str]()
+        var next: str[] = newSeq[str]()
         var j: int32 = 0
         while j < len(work):
             if j + 1 < len(work):
@@ -200,7 +212,7 @@ fn joinPartsBalanced(parts: seq[str]): str =
         return ""
     return "" + out
 
-fn joinArgs(args: seq[str], start: int32): str =
+fn joinArgs(args: str[], start: int32): str =
     var out = ""
     var i: int32 = start
     while i < len(args):
@@ -211,7 +223,7 @@ fn joinArgs(args: seq[str], start: int32): str =
         i = i + 1
     return out
 
-fn argAt(args: seq[str], idx: int32): str =
+fn argAt(args: str[], idx: int32): str =
     if idx < 0 || idx >= len(args):
         return ""
     let value = get[str](args, idx)
@@ -219,7 +231,7 @@ fn argAt(args: seq[str], idx: int32): str =
         return ""
     return "" + value
 
-fn argListContains(args: seq[str], start: int32, needle: str): bool =
+fn argListContains(args: str[], start: int32, needle: str): bool =
     if len(needle) == 0:
         return false
     var i: int32 = start
@@ -229,7 +241,7 @@ fn argListContains(args: seq[str], start: int32, needle: str): bool =
         i = i + 1
     return false
 
-fn wantsLongHelp(args: seq[str], start: int32): bool =
+fn wantsLongHelp(args: str[], start: int32): bool =
     # Clap: `-h` prints short help, `--help` prints long help.
     return argListContains(args, start, "--help")
 
@@ -243,7 +255,7 @@ fn shellQuote(value: str): str =
     if value == nil || len(value) == 0:
         return "''"
     # Use slices + parts join to avoid O(n^2) growth for long strings.
-    var parts: seq[str] = newSeq[str]()
+    var parts: str[] = newSeq[str]()
     seqAdd(parts, "'")
     var last: int32 = 0
     var i: int32 = 0

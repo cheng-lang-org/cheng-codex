@@ -13,7 +13,7 @@ type
     ExecOptions =
         prompt: str
         jsonMode: bool
-        images: seq[str]
+        images: str[]
         model: str
         oss: bool
         ossProvider: str
@@ -23,7 +23,7 @@ type
         bypass: bool
         cwd: str
         skipGitRepoCheck: bool
-        addDirs: seq[str]
+        addDirs: str[]
         ephemeral: bool
         outputSchemaPath: str
         outputSchemaJson: str
@@ -79,14 +79,34 @@ type
         errArg: str
         errTip: str
 
+    RootCliParse =
+        opts: ExecOptions
+        cmd: str
+        cmdIndex: int32
+        showHelp: bool
+        showVersion: bool
+        errArg: str
+        errTip: str
+
+    TuiSessionParse =
+        opts: ExecOptions
+        sessionId: str
+        prompt: str
+        last: bool
+        showAll: bool
+        showHelp: bool
+        showVersion: bool
+        errArg: str
+        errTip: str
+
     ParsedResumeArgs =
         threadId: str
         last: bool
         showAll: bool
         prompt: str
 
-fn splitByChar(text: str, sep: char): seq[str] =
-    var outVal: seq[str] = newSeq[str]()
+fn splitByChar(text: str, sep: char): str[] =
+    var outVal: str[] = newSeq[str]()
     if text == nil:
         return outVal
     var start: int32 = 0
@@ -105,7 +125,7 @@ fn splitByChar(text: str, sep: char): seq[str] =
         seqAdd(outVal, "")
     return outVal
 
-fn appendCommaSeparatedLocal(outList: var seq[str], raw: str) =
+fn appendCommaSeparatedLocal(outList: var str[], raw: str) =
     let parts = splitByChar(raw, ',')
     var i: int32 = 0
     while i < len(parts):
@@ -125,7 +145,7 @@ fn traceExecLocal(msg: str) =
     if enabled == "1" || enabled == "true" || enabled == "yes":
         printErr("[exec] " + msg)
 
-fn execOptionSkipCountLocal(args: seq[str], idx: int32): int32 =
+fn execOptionSkipCountLocal(args: str[], idx: int32): int32 =
     let arg = argAt(args, idx)
     if arg == "--json" || arg == "--experimental-json":
         return 0
@@ -271,7 +291,7 @@ fn printReviewHelpRootShort(): int32 =
     printLine("  -h, --help                Print help (see more with '--help')")
     return 0
 
-fn parseReviewRootCli(args: seq[str], start: int32): ReviewRootCli =
+fn parseReviewRootCli(args: str[], start: int32): ReviewRootCli =
     var cli: ReviewRootCli
     cli.uncommitted = false
     cli.baseBranch = ""
@@ -349,7 +369,7 @@ fn parseReviewRootCli(args: seq[str], start: int32): ReviewRootCli =
         return cli
     return cli
 
-fn runReviewRoot(args: seq[str], start: int32): int32 =
+fn runReviewRoot(args: str[], start: int32): int32 =
     let cli = parseReviewRootCli(args, start)
     if cli.showHelp:
         if wantsLongHelp(args, start):
@@ -400,9 +420,9 @@ fn runReviewRoot(args: seq[str], start: int32): int32 =
             execOpts.approvalPolicy = "never"
     return runExecFlow(execOpts, "review")
 
-fn parseResumeArgsLocal(args: seq[str], start: int32): ParsedResumeArgs =
+fn parseResumeArgsLocal(args: str[], start: int32): ParsedResumeArgs =
     var res: ParsedResumeArgs = ParsedResumeArgs(threadId: "", last: false, showAll: false, prompt: "")
-    var promptParts: seq[str] = newSeq[str]()
+    var promptParts: str[] = newSeq[str]()
     var i: int32 = start
     while i < len(args):
         let arg = argAt(args, i)
@@ -435,7 +455,7 @@ fn parseResumeArgsLocal(args: seq[str], start: int32): ParsedResumeArgs =
         res.prompt = joinArgs(promptParts, 0)
     return res
 
-fn parseResumeCwdLocal(args: seq[str], start: int32): str =
+fn parseResumeCwdLocal(args: str[], start: int32): str =
     var i: int32 = start
     while i < len(args):
         let arg = argAt(args, i)
@@ -533,9 +553,9 @@ fn defaultExecOptions(): ExecOptions =
         developerInstructions: ""
     )
 
-fn parseExecArgs(args: seq[str], start: int32): ExecOptions =
+fn parseExecArgs(args: str[], start: int32): ExecOptions =
     var opts = defaultExecOptions()
-    var promptParts: seq[str] = newSeq[str]()
+    var promptParts: str[] = newSeq[str]()
     var i: int32 = start
     while i < len(args):
         let arg = argAt(args, i)
@@ -745,8 +765,8 @@ fn applyExecOverrides(opts: ExecOptions, err: var str): bool =
         addConfigOverride("tui.alternate_screen", "never")
     return true
 
-fn execEvent(eventType: str, pairs: seq[str]): str =
-    var fields: seq[str] = newSeq[str]()
+fn execEvent(eventType: str, pairs: str[]): str =
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("type", jstrString(eventType)))
     var idx: int32 = 0
     while idx < len(pairs):
@@ -754,13 +774,13 @@ fn execEvent(eventType: str, pairs: seq[str]): str =
         idx = idx + 1
     return jstrObject(fields)
 
-fn emitExecEvent(jsonMode: bool, eventType: str, pairs: seq[str]) =
+fn emitExecEvent(jsonMode: bool, eventType: str, pairs: str[]) =
     if ! jsonMode:
         return
     printLine(execEvent(eventType, pairs))
 
 fn execUsageZero(): str =
-    let usageFields: seq[str] = seqStr3(
+    let usageFields: str[] = seqStr3(
         jstrPair("input_tokens", "0"),
         jstrPair("cached_input_tokens", "0"),
         jstrPair("output_tokens", "0")
@@ -768,14 +788,14 @@ fn execUsageZero(): str =
     return jstrObject(usageFields)
 
 fn execItemAgentMessage(itemId: str, text: str): str =
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("id", jstrString(itemId)))
     seqAdd(fields, jstrPair("type", jstrString("agent_message")))
     seqAdd(fields, jstrPair("text", jstrString(text)))
     return jstrObject(fields)
 
 fn execItemCommand(itemId: str, command: str, output: str, status: str, exitCode: int32): str =
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("id", jstrString(itemId)))
     seqAdd(fields, jstrPair("type", jstrString("command_execution")))
     seqAdd(fields, jstrPair("command", jstrString(command)))
@@ -785,8 +805,8 @@ fn execItemCommand(itemId: str, command: str, output: str, status: str, exitCode
         seqAdd(fields, jstrPair("exit_code", intToStr(exitCode)))
     return jstrObject(fields)
 
-fn execItemFileChange(itemId: str, changes: seq[str], status: str): str =
-    var fields: seq[str] = newSeq[str]()
+fn execItemFileChange(itemId: str, changes: str[], status: str): str =
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("id", jstrString(itemId)))
     seqAdd(fields, jstrPair("type", jstrString("file_change")))
     seqAdd(fields, jstrPair("changes", jstrArray(changes)))
@@ -794,7 +814,7 @@ fn execItemFileChange(itemId: str, changes: seq[str], status: str): str =
     return jstrObject(fields)
 
 fn execItemWebSearch(itemId: str, query: str, status: str): str =
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("id", jstrString(itemId)))
     seqAdd(fields, jstrPair("type", jstrString("web_search")))
     if len(query) > 0:
@@ -802,15 +822,15 @@ fn execItemWebSearch(itemId: str, query: str, status: str): str =
     seqAdd(fields, jstrPair("status", jstrString(status)))
     return jstrObject(fields)
 
-fn execItemTodoList(itemId: str, items: seq[str]): str =
-    var fields: seq[str] = newSeq[str]()
+fn execItemTodoList(itemId: str, items: str[]): str =
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("id", jstrString(itemId)))
     seqAdd(fields, jstrPair("type", jstrString("todo_list")))
     seqAdd(fields, jstrPair("items", jstrArray(items)))
     return jstrObject(fields)
 
-fn todoItemsFromPlanArgs(payload: str): seq[str] =
-    var items: seq[str] = newSeq[str]()
+fn todoItemsFromPlanArgs(payload: str): str[] =
+    var items: str[] = newSeq[str]()
     var idx: int32 = 0
     while idx < len(payload):
         let stepIdx = jsonFindKeyAfter(payload, "step", idx)
@@ -827,8 +847,8 @@ fn todoItemsFromPlanArgs(payload: str): seq[str] =
         idx = stepIdx + 4
     return items
 
-fn parseDiffChanges(diffText: str): seq[str] =
-    var changes: seq[str] = newSeq[str]()
+fn parseDiffChanges(diffText: str): str[] =
+    var changes: str[] = newSeq[str]()
     if len(diffText) == 0:
         return changes
     let lines = splitLinesSimple(diffText)
@@ -874,8 +894,8 @@ fn wantsNoSandboxApprovalLocal(policy: str): bool =
         return false
     return true
 
-fn approvalKeyForCommandLocal(commandTokens: seq[str], commandText: str, cwd: str, sandboxPermissions: str): str =
-    var cmdItems: seq[str] = newSeq[str]()
+fn approvalKeyForCommandLocal(commandTokens: str[], commandText: str, cwd: str, sandboxPermissions: str): str =
+    var cmdItems: str[] = newSeq[str]()
     if len(commandTokens) > 0:
         var i: int32 = 0
         while i < len(commandTokens):
@@ -883,13 +903,13 @@ fn approvalKeyForCommandLocal(commandTokens: seq[str], commandText: str, cwd: st
             i = i + 1
     else:
         seqAdd(cmdItems, jstrString(commandText))
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("command", jstrArray(cmdItems)))
     seqAdd(fields, jstrPair("cwd", jstrString(cwd)))
     seqAdd(fields, jstrPair("sandboxPermissions", jstrString(sandboxPermissions)))
     return jstrObject(fields)
 
-fn approvalCacheHasLocal(keys: seq[str], key: str): bool =
+fn approvalCacheHasLocal(keys: str[], key: str): bool =
     var i: int32 = 0
     while i < len(keys):
         if keys[i] == key:
@@ -897,7 +917,7 @@ fn approvalCacheHasLocal(keys: seq[str], key: str): bool =
         i = i + 1
     return false
 
-fn approvalCacheAddLocal(keys: var seq[str], key: str) =
+fn approvalCacheAddLocal(keys: var str[], key: str) =
     if len(key) == 0:
         return
     var i: int32 = 0
@@ -928,7 +948,7 @@ fn minInt32Local(a: int32, b: int32): int32 =
         return a
     return b
 
-fn threadInfoAtLocal(infos: seq[ThreadInfo], idx: int32): ThreadInfo =
+fn threadInfoAtLocal(infos: ThreadInfo[], idx: int32): ThreadInfo =
     if idx < 0 || idx >= len(infos):
         return ThreadInfo(id: "", preview: "", createdAt: 0, cwd: "")
     return get[ThreadInfo](infos, idx)
@@ -980,11 +1000,11 @@ fn tuiExitAltScreenLocal(useAlt: bool) =
         return
     printUi("\x1b[?25h\x1b[?1049l")
 
-fn renderThreadListTui(header: str, infos: seq[ThreadInfo], showCwd: bool) =
+fn renderThreadListTui(header: str, infos: ThreadInfo[], showCwd: bool) =
     let total = len(infos)
     renderThreadListTuiRange(header, infos, showCwd, 0, total, total, "")
 
-fn renderThreadListTuiRange(header: str, infos: seq[ThreadInfo], showCwd: bool, start: int32, endIdx: int32, total: int32, filter: str) =
+fn renderThreadListTuiRange(header: str, infos: ThreadInfo[], showCwd: bool, start: int32, endIdx: int32, total: int32, filter: str) =
     traceExecLocal("renderThreadListTuiRange.begin")
     printUi("\x1b[2J\x1b[H")
     traceExecLocal("renderThreadListTuiRange.beforeHeader")
@@ -1040,10 +1060,10 @@ fn threadMatchesFilterLocal(info: ThreadInfo, filter: str): bool =
         return true
     return false
 
-fn filterThreadInfosLocal(infos: seq[ThreadInfo], filter: str): seq[ThreadInfo] =
+fn filterThreadInfosLocal(infos: ThreadInfo[], filter: str): ThreadInfo[] =
     if len(filter) == 0:
         return infos
-    var outVal: seq[ThreadInfo] = newSeq[ThreadInfo]()
+    var outVal: ThreadInfo[] = newSeq[ThreadInfo]()
     var idx: int32 = 0
     while idx < len(infos):
         let info = threadInfoAtLocal(infos, idx)
@@ -1052,7 +1072,7 @@ fn filterThreadInfosLocal(infos: seq[ThreadInfo], filter: str): seq[ThreadInfo] 
         idx = idx + 1
     return outVal
 
-fn appendImageContextItems(contextItems: var seq[str], images: seq[str]): bool =
+fn appendImageContextItems(contextItems: var str[], images: str[]): bool =
     var idx: int32 = 0
     while idx < len(images):
         let msg = buildInputImageMessage(images[idx])
@@ -1073,7 +1093,7 @@ fn threadLabelLocal(info: ThreadInfo, showCwd: bool): str =
         line = line + " | " + info.cwd
     return line
 
-fn selectThreadIdTui(infos: seq[ThreadInfo], showCwd: bool): str =
+fn selectThreadIdTui(infos: ThreadInfo[], showCwd: bool): str =
     if len(infos) == 0:
         printUi("resume: no sessions")
         return ""
@@ -1216,7 +1236,7 @@ fn nextExecItemId(turnId: str, itemSeq: var int32): str =
     itemSeq = itemSeq + 1
     return newItemId()
 
-fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[str], mode: str): TurnResult =
+fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: str[], mode: str): TurnResult =
     traceExecLocal("runExecTurn.begin mode=" + mode)
     var approvalPolicy = opts.approvalPolicy
     if opts.fullAuto:
@@ -1248,9 +1268,9 @@ fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[
     traceExecLocal("runExecTurn.agentTranscript.len=" + intToStr(len(agentTranscript)))
     var itemSeq: int32 = 0
     var todoItemId = ""
-    var todoItems: seq[str] = newSeq[str]()
+    var todoItems: str[] = newSeq[str]()
     var turnId = newTurnId()
-    var approvalKeys: seq[str] = newSeq[str]()
+    var approvalKeys: str[] = newSeq[str]()
     traceExecLocal("runExecTurn.before.turn.started")
     if opts.jsonMode:
         emitExecEvent(true, "turn.started", newSeq[str]())
@@ -1285,7 +1305,7 @@ fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[
                 if opts.jsonMode:
                     emitExecEvent(true, "item.updated", seqStr1(jstrPair("item", execItemCommand(itemId, command, reason, "in_progress", -1))))
                     emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemCommand(itemId, command, reason, "failed", -1))))
-                appendToolEvent(threadId, "shell", command, reason, -1, "", "", false)
+                appendToolEventWithContext(threadId, turnId, result.pendingCallId, "shell", command, reason, -1, "", "", false)
                 result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, reason, false, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
                 if len(result.agentOutput) > 0:
                     agentTranscript = agentTranscript + result.agentOutput
@@ -1301,7 +1321,7 @@ fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[
                 if opts.jsonMode:
                     emitExecEvent(true, "item.updated", seqStr1(jstrPair("item", execItemCommand(itemId, command, reason, "in_progress", -1))))
                     emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemCommand(itemId, command, reason, "failed", -1))))
-                appendToolEvent(threadId, "shell", command, reason, -1, "", "", false)
+                appendToolEventWithContext(threadId, turnId, result.pendingCallId, "shell", command, reason, -1, "", "", false)
                 result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, reason, false, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
                 if len(result.agentOutput) > 0:
                     agentTranscript = agentTranscript + result.agentOutput
@@ -1334,7 +1354,7 @@ fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[
             if ! approved:
                 if opts.jsonMode:
                     emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemCommand(itemId, command, "", "declined", -1))))
-                appendToolEvent(threadId, "shell", command, "", -1, "", "declined", false)
+                appendToolEventWithContext(threadId, turnId, result.pendingCallId, "shell", command, "", -1, "", "declined", false)
                 result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, "declined", false, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
                 if len(result.agentOutput) > 0:
                     agentTranscript = agentTranscript + result.agentOutput
@@ -1371,7 +1391,7 @@ fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[
                 finalStatus = "failed"
             if opts.jsonMode:
                 emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemCommand(itemId, command, finalRes.output, finalStatus, finalRes.exitCode))))
-            appendToolEvent(threadId, "shell", command, finalRes.output, finalRes.exitCode, "", "", finalRes.ok)
+            appendToolEventWithContext(threadId, turnId, result.pendingCallId, "shell", command, finalRes.output, finalRes.exitCode, "", "", finalRes.ok)
             traceExecLocal("runExecTurn.loop.shell.before.resume")
             result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, finalRes.output, finalRes.ok, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
             traceExecLocal("runExecTurn.loop.shell.after.resume")
@@ -1388,9 +1408,9 @@ fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[
             if opts.jsonMode:
                 let itemId = nextExecItemId(turnId, itemSeq)
                 emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemAgentMessage(itemId, text))))
-            appendToolEvent(threadId, "view_image", "", "", -1, "", text, ok)
+            appendToolEventWithContext(threadId, turnId, result.pendingCallId, "view_image", "", "", -1, "", text, ok)
             if ok:
-                var nextItems: seq[str] = newSeq[str]()
+                var nextItems: str[] = newSeq[str]()
                 var ii: int32 = 0
                 while ii < len(result.pendingInputItems):
                     seqAdd(nextItems, result.pendingInputItems[ii])
@@ -1403,9 +1423,9 @@ fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[
                 agentTranscript = agentTranscript + result.agentOutput
             continue
         if result.pendingToolName == "apply_patch":
-            let patchText = jsonExtractString(result.pendingArguments, "patch")
+            let patchText = toolPatchTextFromArguments(result.pendingArguments)
             var itemId = ""
-            var changes: seq[str] = newSeq[str]()
+            var changes: str[] = newSeq[str]()
             if opts.jsonMode:
                 itemId = nextExecItemId(turnId, itemSeq)
                 changes = parseDiffChanges(patchText)
@@ -1416,7 +1436,7 @@ fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[
             if ! approved:
                 if opts.jsonMode:
                     emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemFileChange(itemId, changes, "failed"))))
-                appendToolEvent(threadId, "apply_patch", "", "", -1, patchText, "declined", false)
+                appendToolEventWithContext(threadId, turnId, result.pendingCallId, "apply_patch", "", "", -1, patchText, "declined", false)
                 result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, "declined", false, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
                 if len(result.agentOutput) > 0:
                     agentTranscript = agentTranscript + result.agentOutput
@@ -1427,7 +1447,7 @@ fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[
                 patchStatus = "failed"
             if opts.jsonMode:
                 emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemFileChange(itemId, changes, patchStatus))))
-            appendToolEvent(threadId, "apply_patch", "", "", -1, patchText, res.output, res.ok)
+            appendToolEventWithContext(threadId, turnId, result.pendingCallId, "apply_patch", "", "", -1, patchText, res.output, res.ok)
             var toolText = res.output
             if len(toolText) == 0:
                 if res.ok:
@@ -1435,6 +1455,20 @@ fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[
                 else:
                     toolText = "patch failed"
             result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolText, res.ok, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
+            if len(result.agentOutput) > 0:
+                agentTranscript = agentTranscript + result.agentOutput
+            continue
+        if result.pendingToolName == "request_user_input":
+            var collabMode = "default"
+            let modeNorm = normalizePolicy(trimLine(mode))
+            if modeNorm == "exec" || modeNorm == "execute":
+                collabMode = "execute"
+            let unavailable = requestUserInputUnavailableMessage(collabMode)
+            if opts.jsonMode:
+                let itemId = nextExecItemId(turnId, itemSeq)
+                emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemAgentMessage(itemId, unavailable))))
+            appendToolEventWithContext(threadId, turnId, result.pendingCallId, "request_user_input", "", "", -1, "", unavailable, false)
+            result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, unavailable, false, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
             if len(result.agentOutput) > 0:
                 agentTranscript = agentTranscript + result.agentOutput
             continue
@@ -1456,7 +1490,7 @@ fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[
             if opts.jsonMode:
                 let itemId = nextExecItemId(turnId, itemSeq)
                 emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemAgentMessage(itemId, toolRes.output))))
-            appendToolEvent(threadId, "spawn_agent", "", "", -1, "", toolRes.output, toolRes.ok)
+            appendToolEventWithContext(threadId, turnId, result.pendingCallId, "spawn_agent", "", "", -1, "", toolRes.output, toolRes.ok)
             result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolRes.output, toolRes.ok, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
             if len(result.agentOutput) > 0:
                 agentTranscript = agentTranscript + result.agentOutput
@@ -1466,7 +1500,7 @@ fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[
             if opts.jsonMode:
                 let itemId = nextExecItemId(turnId, itemSeq)
                 emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemAgentMessage(itemId, toolRes.output))))
-            appendToolEvent(threadId, "send_input", "", "", -1, "", toolRes.output, toolRes.ok)
+            appendToolEventWithContext(threadId, turnId, result.pendingCallId, "send_input", "", "", -1, "", toolRes.output, toolRes.ok)
             result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolRes.output, toolRes.ok, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
             if len(result.agentOutput) > 0:
                 agentTranscript = agentTranscript + result.agentOutput
@@ -1476,7 +1510,7 @@ fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[
             if opts.jsonMode:
                 let itemId = nextExecItemId(turnId, itemSeq)
                 emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemAgentMessage(itemId, toolRes.output))))
-            appendToolEvent(threadId, "wait", "", "", -1, "", toolRes.output, toolRes.ok)
+            appendToolEventWithContext(threadId, turnId, result.pendingCallId, "wait", "", "", -1, "", toolRes.output, toolRes.ok)
             result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolRes.output, toolRes.ok, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
             if len(result.agentOutput) > 0:
                 agentTranscript = agentTranscript + result.agentOutput
@@ -1486,7 +1520,7 @@ fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[
             if opts.jsonMode:
                 let itemId = nextExecItemId(turnId, itemSeq)
                 emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemAgentMessage(itemId, toolRes.output))))
-            appendToolEvent(threadId, "close_agent", "", "", -1, "", toolRes.output, toolRes.ok)
+            appendToolEventWithContext(threadId, turnId, result.pendingCallId, "close_agent", "", "", -1, "", toolRes.output, toolRes.ok)
             result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolRes.output, toolRes.ok, workDir, approvalPolicy, result.pendingModel, result.pendingInstructions, opts.outputSchemaJson, true, disableWebSearch, disableViewImage)
             if len(result.agentOutput) > 0:
                 agentTranscript = agentTranscript + result.agentOutput
@@ -1504,7 +1538,7 @@ fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[
                 let itemId = nextExecItemId(turnId, itemSeq)
                 emitExecEvent(true, "item.started", seqStr1(jstrPair("item", execItemWebSearch(itemId, query, "in_progress"))))
                 emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", execItemWebSearch(itemId, query, "completed"))))
-            appendToolEvent(threadId, "web_search", "", "", -1, "", query, true)
+            appendToolEventWithContext(threadId, turnId, "", "web_search", "", "", -1, "", query, true)
             widx = widx + 1
     traceExecLocal("runExecTurn.after.webSearch")
     if opts.jsonMode:
@@ -1516,7 +1550,7 @@ fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[
             emitExecEvent(true, "item.completed", seqStr1(jstrPair("item", agentItem)))
     traceExecLocal("runExecTurn.before.turn.completed")
     if opts.jsonMode:
-        var turnPairs: seq[str] = newSeq[str]()
+        var turnPairs: str[] = newSeq[str]()
         seqAdd(turnPairs, jstrPair("usage", execUsageZero()))
         if len(agentTranscript) > 0:
             seqAdd(turnPairs, jstrPair("output", jstrString(agentTranscript)))
@@ -1524,7 +1558,7 @@ fn runExecTurn(opts: ExecOptions, threadId: str, prompt: str, contextItems: seq[
     traceExecLocal("runExecTurn.after.turn.completed")
     traceExecLocal("runExecTurn.before.appendTurnEvent")
     let inputItems = seqStr1(inputTokenText(prompt))
-    appendTurnEvent(threadId, prompt, inputItems, "codex-cheng", agentTranscript, "", "", -1, "", "")
+    appendTurnEvent(threadId, turnId, prompt, inputItems, "codex-cheng", agentTranscript, "", "", -1, "", "")
     traceExecLocal("runExecTurn.after.appendTurnEvent")
     result.agentOutput = agentTranscript
     traceExecLocal("runExecTurn.return")
@@ -1554,7 +1588,7 @@ fn runExecFlow(opts: ExecOptions, mode: str): int32 =
     if len(opts.cwd) > 0:
         cwd = opts.cwd
     traceExecLocal("runExecFlow.thread.create")
-    var contextItems: seq[str] = newSeq[str]()
+    var contextItems: str[] = newSeq[str]()
     if ! appendImageContextItems(contextItems, opts.images):
         return 1
     let preview = buildPreview(prompt)
@@ -1572,9 +1606,9 @@ fn runExecFlow(opts: ExecOptions, mode: str): int32 =
         return 0
     return 1
 
-fn parseReviewArgs(args: seq[str], start: int32): ReviewOptions =
+fn parseReviewArgs(args: str[], start: int32): ReviewOptions =
     var opts: ReviewOptions = ReviewOptions(uncommitted: false, baseBranch: "", commitSha: "", commitTitle: "", prompt: "")
-    var promptParts: seq[str] = newSeq[str]()
+    var promptParts: str[] = newSeq[str]()
     var i: int32 = start
     while i < len(args):
         let arg = argAt(args, i)
@@ -1760,7 +1794,7 @@ fn buildReviewPrompt(review: ReviewOptions, cwd: str): str =
         return out
     return ""
 
-fn runReview(args: seq[str], start: int32, baseExec: ExecOptions): int32 =
+fn runReview(args: str[], start: int32, baseExec: ExecOptions): int32 =
     var execOpts = baseExec
     let reviewOpts = parseReviewArgs(args, start)
     let prompt = buildReviewPrompt(reviewOpts, execOpts.cwd)
@@ -1771,7 +1805,7 @@ fn runReview(args: seq[str], start: int32, baseExec: ExecOptions): int32 =
     execOpts.outputSchemaJson = ""
     return runExecFlow(execOpts, "review")
 
-fn runExecResume(args: seq[str], start: int32, baseExec: ExecOptions): int32 =
+fn runExecResume(args: str[], start: int32, baseExec: ExecOptions): int32 =
     var execOpts = baseExec
     traceExecLocal("runExecResume.begin")
     let resumeCwdRaw = parseResumeCwdLocal(args, start)
@@ -2107,7 +2141,7 @@ fn execThreadExistsLocal(threadId: str): bool =
     let path = execThreadFilePathLocal(threadId)
     return len(path) > 0 && os.fileExists(path)
 
-fn parseExecCli(args: seq[str], start: int32): ExecCliParse =
+fn parseExecCli(args: str[], start: int32): ExecCliParse =
     var parsed: ExecCliParse
     parsed.opts = defaultExecOptions()
     parsed.cmd = ""
@@ -2256,7 +2290,7 @@ fn parseExecCli(args: seq[str], start: int32): ExecCliParse =
         i = i + 1
     return parsed
 
-fn parseExecResumeCli(args: seq[str], start: int32): ExecResumeCli =
+fn parseExecResumeCli(args: str[], start: int32): ExecResumeCli =
     var parsed: ExecResumeCli
     parsed.opts = defaultExecOptions()
     parsed.sessionId = ""
@@ -2330,7 +2364,7 @@ fn parseExecResumeCli(args: seq[str], start: int32): ExecResumeCli =
         parsed.sessionId = ""
     return parsed
 
-fn parseExecReviewCli(args: seq[str], start: int32): ExecReviewCli =
+fn parseExecReviewCli(args: str[], start: int32): ExecReviewCli =
     var parsed: ExecReviewCli
     parsed.opts = defaultExecOptions()
     parsed.review = ReviewOptions(uncommitted: false, baseBranch: "", commitSha: "", commitTitle: "", prompt: "")
@@ -2422,7 +2456,7 @@ fn parseExecReviewCli(args: seq[str], start: int32): ExecReviewCli =
         return parsed
     return parsed
 
-fn runExecResumeCommand(args: seq[str], start: int32, baseExec: ExecOptions, rootPrompt: str): int32 =
+fn runExecResumeCommand(args: str[], start: int32, baseExec: ExecOptions, rootPrompt: str): int32 =
     let cli = parseExecResumeCli(args, start)
     if cli.showHelp:
         return printExecResumeHelp()
@@ -2485,7 +2519,7 @@ fn runExecResumeCommand(args: seq[str], start: int32, baseExec: ExecOptions, roo
         if len(trimLine(promptText)) == 0:
             printErr("No prompt provided via stdin.")
             return 1
-    var contextItems: seq[str] = newSeq[str]()
+    var contextItems: str[] = newSeq[str]()
     if len(threadId) > 0:
         contextItems = threadContextItems(threadId)
     if ! appendImageContextItems(contextItems, opts.images):
@@ -2503,7 +2537,7 @@ fn runExecResumeCommand(args: seq[str], start: int32, baseExec: ExecOptions, roo
         return 0
     return 1
 
-fn runExecReviewCommand(args: seq[str], start: int32, baseExec: ExecOptions): int32 =
+fn runExecReviewCommand(args: str[], start: int32, baseExec: ExecOptions): int32 =
     let cli = parseExecReviewCli(args, start)
     if cli.showHelp:
         return printExecReviewHelp()
@@ -2560,7 +2594,7 @@ fn runExecReviewCommand(args: seq[str], start: int32, baseExec: ExecOptions): in
     opts.prompt = promptText
     return runExecFlow(opts, "review")
 
-fn runExec(args: seq[str], start: int32): int32 =
+fn runExec(args: str[], start: int32): int32 =
     traceExecLocal("runExec.begin")
     let parsed = parseExecCli(args, start)
     if parsed.showVersion:

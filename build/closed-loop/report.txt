@@ -1,4 +1,4 @@
 Closed loop report
-- result: pass
+- result: fail
 - report.tsv: /Users/lbcheng/.cheng-packages/cheng-codex/build/closed-loop/report.tsv
 - report.json: /Users/lbcheng/.cheng-packages/cheng-codex/build/closed-loop/report.json

@@ -4,6 +4,7 @@ import system
 import std/os
 import std/times
 import seqs
+import cheng/codex/hooks
 
 fn ord(ch: char): int32 =
     return int32(ch)
@@ -81,12 +82,12 @@ fn inputTokenImageUrl(url: str): str =
     return "image_url:" + url
 
 fn inputTokenSkill(name: str, path: str): str =
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("name", jstrString(name)))
     seqAdd(fields, jstrPair("path", jstrString(path)))
     return "skill:" + jstrObject(fields)
 
-fn inputTokensHasText(tokens: seq[str]): bool =
+fn inputTokensHasText(tokens: str[]): bool =
     var idx: int32 = 0
     while idx < len(tokens):
         if hasPrefix(tokens[idx], "text:"):
@@ -94,7 +95,7 @@ fn inputTokensHasText(tokens: seq[str]): bool =
         idx = idx + 1
     return false
 
-fn inputTokensToText(tokens: seq[str]): str =
+fn inputTokensToText(tokens: str[]): str =
     var out = ""
     var idx: int32 = 0
     while idx < len(tokens):
@@ -108,7 +109,7 @@ fn inputTokensToText(tokens: seq[str]): str =
         idx = idx + 1
     return out
 
-fn inputTokensSummary(tokens: seq[str]): str =
+fn inputTokensSummary(tokens: str[]): str =
     let text = inputTokensToText(tokens)
     if len(text) > 0:
         return text
@@ -127,8 +128,8 @@ fn inputTokensSummary(tokens: seq[str]): str =
         idx = idx + 1
     return ""
 
-fn inputTokensToMessages(tokens: seq[str], cwd: str): seq[str] =
-    var outVal: seq[str] = newSeq[str]()
+fn inputTokensToMessages(tokens: str[], cwd: str): str[] =
+    var outVal: str[] = newSeq[str]()
     var idx: int32 = 0
     while idx < len(tokens):
         let token = tokens[idx]
@@ -157,8 +158,8 @@ fn inputTokensToMessages(tokens: seq[str], cwd: str): seq[str] =
         idx = idx + 1
     return outVal
 
-fn inputTokensToHistoryLines(tokens: seq[str]): seq[str] =
-    var outVal: seq[str] = newSeq[str]()
+fn inputTokensToHistoryLines(tokens: str[]): str[] =
+    var outVal: str[] = newSeq[str]()
     var idx: int32 = 0
     while idx < len(tokens):
         let token = tokens[idx]
@@ -329,7 +330,7 @@ fn readThreadHeader(threadId: str): str =
         return ""
     if len(content) == 0:
         return ""
-    let lines: seq[str] = splitLinesSimple(content)
+    let lines: str[] = splitLinesSimple(content)
     if len(lines) == 0:
         return ""
     return argAt(lines, 0)
@@ -340,15 +341,17 @@ fn threadCwd(threadId: str): str =
         return ""
     return jsonExtractString(header, "cwd")
 
-fn appendTurnEvent(threadId: str, input: str, inputItems: seq[str], agentPrefix: str, agentOutput: str, command: str, commandOutput: str, commandExit: int32, diff: str, mock: str) =
+fn appendTurnEvent(threadId: str, turnId: str, input: str, inputItems: str[], agentPrefix: str, agentOutput: str, command: str, commandOutput: str, commandExit: int32, diff: str, mock: str) =
     if len(threadId) == 0:
         return
-    var pairs: seq[str] = newSeq[str]()
+    var pairs: str[] = newSeq[str]()
     seqAdd(pairs, jstrPair("type", jstrString("turn")))
+    if len(turnId) > 0:
+        seqAdd(pairs, jstrPair("turnId", jstrString(turnId)))
     if len(input) > 0:
         seqAdd(pairs, jstrPair("input", jstrString(input)))
     if len(inputItems) > 0:
-        var itemJson: seq[str] = newSeq[str]()
+        var itemJson: str[] = newSeq[str]()
         var idx: int32 = 0
         while idx < len(inputItems):
             seqAdd(itemJson, jstrString(inputItems[idx]))
@@ -370,12 +373,31 @@ fn appendTurnEvent(threadId: str, input: str, inputItems: seq[str], agentPrefix:
         seqAdd(pairs, jstrPair("mock", jstrString(mock)))
     let eventJson = jstrObject(pairs)
     appendThreadEvent(threadId, eventJson)
+    var cwd = threadCwd(threadId)
+    if len(cwd) == 0:
+        cwd = currentDirSafe()
+    dispatchLegacyNotifyAfterAgent(threadId, turnId, cwd, input, inputItems, agentOutput)
 
-fn appendToolEvent(threadId: str, toolName: str, command: str, commandOutput: str, commandExit: int32, diff: str, toolOutput: str, ok: bool) =
+fn appendToolEventWithContext(
+    threadId: str,
+    turnId: str,
+    callId: str,
+    toolName: str,
+    command: str,
+    commandOutput: str,
+    commandExit: int32,
+    diff: str,
+    toolOutput: str,
+    ok: bool
+) =
     if len(threadId) == 0:
         return
-    var pairs: seq[str] = newSeq[str]()
+    var pairs: str[] = newSeq[str]()
     seqAdd(pairs, jstrPair("type", jstrString("tool")))
+    if len(turnId) > 0:
+        seqAdd(pairs, jstrPair("turnId", jstrString(turnId)))
+    if len(callId) > 0:
+        seqAdd(pairs, jstrPair("callId", jstrString(callId)))
     if len(toolName) > 0:
         seqAdd(pairs, jstrPair("tool", jstrString(toolName)))
     if len(command) > 0:
@@ -391,6 +413,13 @@ fn appendToolEvent(threadId: str, toolName: str, command: str, commandOutput: st
     seqAdd(pairs, jstrPair("ok", jstrBool(ok)))
     let eventJson = jstrObject(pairs)
     appendThreadEvent(threadId, eventJson)
+    var cwd = threadCwd(threadId)
+    if len(cwd) == 0:
+        cwd = currentDirSafe()
+    dispatchAfterToolUseInternal(threadId, turnId, callId, cwd, toolName, command, commandOutput, diff, toolOutput, ok)
+
+fn appendToolEvent(threadId: str, toolName: str, command: str, commandOutput: str, commandExit: int32, diff: str, toolOutput: str, ok: bool) =
+    appendToolEventWithContext(threadId, "", "", toolName, command, commandOutput, commandExit, diff, toolOutput, ok)
 
 fn buildUserInputFromToken(token: str): str =
     if hasPrefix(token, "text:"):
@@ -420,30 +449,30 @@ fn buildUserInputFromToken(token: str): str =
             ))
     return ""
 
-fn buildThreadItemUserMessage(itemId: str, content: seq[str]): str =
-    var fields: seq[str] = newSeq[str]()
+fn buildThreadItemUserMessage(itemId: str, content: str[]): str =
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("type", jstrString("userMessage")))
     seqAdd(fields, jstrPair("id", jstrString(itemId)))
     seqAdd(fields, jstrPair("content", jstrArray(content)))
     return jstrObject(fields)
 
 fn buildThreadItemAgentMessage(itemId: str, text: str): str =
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("type", jstrString("agentMessage")))
     seqAdd(fields, jstrPair("id", jstrString(itemId)))
     seqAdd(fields, jstrPair("text", jstrString(text)))
     return jstrObject(fields)
 
-fn buildThreadTurn(turnId: str, items: seq[str], status: str): str =
-    var fields: seq[str] = newSeq[str]()
+fn buildThreadTurn(turnId: str, items: str[], status: str): str =
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("id", jstrString(turnId)))
     seqAdd(fields, jstrPair("items", jstrArray(items)))
     seqAdd(fields, jstrPair("status", jstrString(status)))
     seqAdd(fields, jstrPair("error", jstrNull()))
     return jstrObject(fields)
 
-fn threadTurns(threadId: str): seq[str] =
-    var outVal: seq[str] = newSeq[str]()
+fn threadTurns(threadId: str): str[] =
+    var outVal: str[] = newSeq[str]()
     if len(threadId) == 0:
         return outVal
     let path = threadFilePath(threadId)
@@ -463,14 +492,14 @@ fn threadTurns(threadId: str): seq[str] =
                 let inputText = jsonExtractString(line, "input")
                 if len(inputText) > 0:
                     tokens = seqStr1(inputTokenText(inputText))
-            var inputs: seq[str] = newSeq[str]()
+            var inputs: str[] = newSeq[str]()
             var ti: int32 = 0
             while ti < len(tokens):
                 let inputJson = buildUserInputFromToken(tokens[ti])
                 if len(inputJson) > 0:
                     seqAdd(inputs, inputJson)
                 ti = ti + 1
-            var items: seq[str] = newSeq[str]()
+            var items: str[] = newSeq[str]()
             let turnId = "turn-" + intToStr(turnIdx + 1)
             if len(inputs) > 0:
                 seqAdd(items, buildThreadItemUserMessage(turnId + "-user", inputs))
@@ -494,7 +523,7 @@ fn rollbackThreadTurns(threadId: str, numTurns: int32): bool =
     let lines = splitLinesSimple(content)
     if len(lines) <= 1:
         return true
-    var turnIdxs: seq[int32] = newSeq[int32]()
+    var turnIdxs: int32[] = newSeq[int32]()
     var idx: int32 = 1
     while idx < len(lines):
         if jsonExtractString(lines[idx], "type") == "turn":
@@ -527,7 +556,7 @@ fn forkThread(threadId: str, preview: str, cwd: str, source: str): str =
     if len(sourcePath) == 0 || ! os.fileExists(sourcePath):
         return ""
     let content: str = os.readFile(sourcePath)
-    let lines: seq[str] = splitLinesSimple(content)
+    let lines: str[] = splitLinesSimple(content)
     var header = ""
     if len(lines) > 0:
         header = argAt(lines, 0)
@@ -563,7 +592,7 @@ fn threadLineFromFile(path: str): str =
     let content: str = os.readFile(path)
     if len(content) == 0:
         return ""
-    let lines: seq[str] = splitLinesSimple(content)
+    let lines: str[] = splitLinesSimple(content)
     if len(lines) == 0:
         return ""
     let first = argAt(lines, 0)
@@ -586,7 +615,7 @@ fn threadInfoFromFile(path: str): ThreadInfo =
     let content: str = os.readFile(path)
     if len(content) == 0:
         return info
-    let lines: seq[str] = splitLinesSimple(content)
+    let lines: str[] = splitLinesSimple(content)
     if len(lines) == 0:
         return info
     let first = argAt(lines, 0)
@@ -598,6 +627,9 @@ fn threadInfoFromFile(path: str): ThreadInfo =
     info.createdAt = jsonExtractInt(first, "createdAt", 0)
     info.cwd = jsonExtractString(first, "cwd")
     return info
+
+fn threadInfoId(info: ThreadInfo): str =
+    return info.id
 
 fn normalizePathForMatch(path: str): str =
     if path == nil || len(path) == 0:
@@ -621,7 +653,7 @@ fn pathsMatchLocal(a: str, b: str): bool =
         return false
     return na == nb
 
-fn sortThreadInfosByCreatedAtDesc(infos: var seq[ThreadInfo]) =
+fn sortThreadInfosByCreatedAtDesc(infos: var ThreadInfo[]) =
     var i: int32 = 0
     while i < len(infos):
         var j: int32 = i + 1
@@ -633,15 +665,15 @@ fn sortThreadInfosByCreatedAtDesc(infos: var seq[ThreadInfo]) =
             j = j + 1
         i = i + 1
 
-fn listThreadInfos(filterCwd: str, showAll: bool): seq[ThreadInfo] =
+fn listThreadInfos(filterCwd: str, showAll: bool): ThreadInfo[] =
     traceStorageLocal("listThreadInfos.begin")
-    var outVal: seq[ThreadInfo] = newSeq[ThreadInfo]()
+    var outVal: ThreadInfo[] = newSeq[ThreadInfo]()
     let dir = codexThreadsDir()
     traceStorageLocal("listThreadInfos.dir=" + dir)
     if len(dir) == 0 || ! os.dirExists(dir):
         traceStorageLocal("listThreadInfos.empty_dir")
         return outVal
-    let files: seq[str] = os.walkDirRec(dir)
+    let files: str[] = os.walkDirRec(dir)
     traceStorageLocal("listThreadInfos.files=" + intToStr(len(files)))
     let normalizedFilter = normalizePathForMatch(filterCwd)
     traceStorageLocal("listThreadInfos.filter=" + normalizedFilter)
@@ -681,12 +713,12 @@ fn archiveThread(threadId: str): bool =
     os.removeFile(sourcePath)
     return true
 
-fn listThreadLines(): seq[str] =
-    var outVal: seq[str] = newSeq[str]()
+fn listThreadLines(): str[] =
+    var outVal: str[] = newSeq[str]()
     let dir = codexThreadsDir()
     if len(dir) == 0 || ! os.dirExists(dir):
         return outVal
-    let files: seq[str] = os.walkDirRec(dir)
+    let files: str[] = os.walkDirRec(dir)
     var idx: int32 = 0
     while idx < len(files):
         let path = files[idx]
@@ -697,8 +729,8 @@ fn listThreadLines(): seq[str] =
         idx = idx + 1
     return outVal
 
-fn threadHistoryLines(threadId: str): seq[str] =
-    var outVal: seq[str] = newSeq[str]()
+fn threadHistoryLines(threadId: str): str[] =
+    var outVal: str[] = newSeq[str]()
     if len(threadId) == 0:
         return outVal
     let path: str = threadFilePath(threadId)
@@ -710,7 +742,7 @@ fn threadHistoryLines(threadId: str): seq[str] =
     # Type annotations are important: current compiler can mis-infer locals and
     # dispatch `len()` to the wrong overload (e.g. treating seq as str), which
     # can SIGSEGV in strlen on arm64.
-    let lines: seq[str] = splitLinesSimple(content)
+    let lines: str[] = splitLinesSimple(content)
     var idx: int32 = 1
     while idx < len(lines):
         let line: str = argAt(lines, idx)
@@ -732,7 +764,7 @@ fn threadHistoryLines(threadId: str): seq[str] =
                 seqAdd(outVal, "exec: " + commandText)
                 let commandOutput: str = jsonExtractString(line, "commandOutput")
                 if len(commandOutput) > 0:
-                    let cmdLines: seq[str] = splitLinesSimple(commandOutput)
+                    let cmdLines: str[] = splitLinesSimple(commandOutput)
                     var cidx: int32 = 0
                     while cidx < len(cmdLines):
                         seqAdd(outVal, "exec: " + argAt(cmdLines, cidx))
@@ -742,7 +774,7 @@ fn threadHistoryLines(threadId: str): seq[str] =
                     seqAdd(outVal, "exec: exit=" + intToStr(exitCode))
             let diffText: str = jsonExtractString(line, "diff")
             if len(diffText) > 0:
-                let diffLines: seq[str] = splitLinesSimple(diffText)
+                let diffLines: str[] = splitLinesSimple(diffText)
                 var didx: int32 = 0
                 while didx < len(diffLines):
                     seqAdd(outVal, "patch: " + argAt(diffLines, didx))
@@ -760,7 +792,7 @@ fn threadHistoryLines(threadId: str): seq[str] =
                 seqAdd(outVal, "exec: " + commandText)
                 let commandOutput: str = jsonExtractString(line, "commandOutput")
                 if len(commandOutput) > 0:
-                    let cmdLines: seq[str] = splitLinesSimple(commandOutput)
+                    let cmdLines: str[] = splitLinesSimple(commandOutput)
                     var cidx: int32 = 0
                     while cidx < len(cmdLines):
                         seqAdd(outVal, "exec: " + argAt(cmdLines, cidx))
@@ -770,7 +802,7 @@ fn threadHistoryLines(threadId: str): seq[str] =
                     seqAdd(outVal, "exec: exit=" + intToStr(exitCode))
             let diffText: str = jsonExtractString(line, "diff")
             if len(diffText) > 0:
-                let diffLines: seq[str] = splitLinesSimple(diffText)
+                let diffLines: str[] = splitLinesSimple(diffText)
                 var didx: int32 = 0
                 while didx < len(diffLines):
                     seqAdd(outVal, "patch: " + argAt(diffLines, didx))
@@ -781,8 +813,8 @@ fn threadHistoryLines(threadId: str): seq[str] =
         idx = idx + 1
     return outVal
 
-fn threadContextItems(threadId: str): seq[str] =
-    var outVal: seq[str] = newSeq[str]()
+fn threadContextItems(threadId: str): str[] =
+    var outVal: str[] = newSeq[str]()
     if len(threadId) == 0:
         return outVal
     # Type annotations are important: current compiler can mis-infer locals and
@@ -795,7 +827,7 @@ fn threadContextItems(threadId: str): seq[str] =
     let content: str = os.readFile(path)
     if len(content) == 0:
         return outVal
-    let lines: seq[str] = splitLinesSimple(content)
+    let lines: str[] = splitLinesSimple(content)
     var idx: int32 = 1
     while idx < len(lines):
         let line: str = lines[idx]
@@ -807,9 +839,9 @@ fn threadContextItems(threadId: str): seq[str] =
             if len(inputText) > 0:
                 seqAdd(outVal, buildInputMessage("user", inputText))
             else:
-                let inputItems: seq[str] = jsonExtractStringArray(line, "inputItems")
+                let inputItems: str[] = jsonExtractStringArray(line, "inputItems")
                 if len(inputItems) > 0:
-                    let inputMsgs: seq[str] = inputTokensToMessages(inputItems, cwd)
+                    let inputMsgs: str[] = inputTokensToMessages(inputItems, cwd)
                     var ii: int32 = 0
                     while ii < len(inputMsgs):
                         seqAdd(outVal, inputMsgs[ii])

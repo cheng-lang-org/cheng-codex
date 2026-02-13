@@ -5,7 +5,7 @@ import seqs
 type
     ShellToolArgs =
         commandText: str
-        commandTokens: seq[str]
+        commandTokens: str[]
         workdir: str
         sandboxPermissions: str
         justification: str
@@ -13,8 +13,8 @@ type
         login: bool
         hasLogin: bool
 
-fn jsonExtractStringArrayAfter(payload: str, key: str, startIdx: int32): seq[str] =
-    var outVal: seq[str] = newSeq[str]()
+fn jsonExtractStringArrayAfter(payload: str, key: str, startIdx: int32): str[] =
+    var outVal: str[] = newSeq[str]()
     let keyIdx = jsonFindKeyAfter(payload, key, startIdx)
     if keyIdx < 0:
         return outVal
@@ -106,7 +106,7 @@ fn parseShellToolArgs(arguments: str): ShellToolArgs =
             alt = jsonExtractString(arguments, "cmd")
         args.commandText = alt
         if len(alt) > 0:
-            var tokens: seq[str]
+            var tokens: str[]
             var splitErr = ""
             if splitCommandTokens(alt, tokens, splitErr):
                 args.commandTokens = tokens

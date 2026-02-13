@@ -37,7 +37,7 @@ type
 
     CloudAttemptCollect =
         ok: bool
-        attempts: seq[CloudAttemptDiff]
+        attempts: CloudAttemptDiff[]
         err: str
 
     CloudAttemptSelect =
@@ -67,12 +67,12 @@ type
 
     CloudTasksCollect =
         ok: bool
-        tasks: seq[CloudTaskSummary]
+        tasks: CloudTaskSummary[]
         err: str
 
     CloudTaskListPage =
         ok: bool
-        tasks: seq[CloudTaskSummary]
+        tasks: CloudTaskSummary[]
         cursor: str
         hasCursor: bool
         err: str
@@ -92,8 +92,8 @@ type
 
     CloudEnvList =
         ok: bool
-        ids: seq[str]
-        labels: seq[str]
+        ids: str[]
+        labels: str[]
         err: str
 
     CloudEnvResolve =
@@ -145,9 +145,10 @@ fn cloudStatusJson(status: CloudStatus): str =
 
 fn cloudPrintVersion(): int32 =
     var out: str = "codex-cli-cloud"
-    if len(CODEX_VERSION) > 0:
+    let version = codexVersion()
+    if len(version) > 0:
         out = out + " "
-        out = out + CODEX_VERSION
+        out = out + version
     printLine(out)
     return 0
 
@@ -539,8 +540,8 @@ fn cloudBrowserTaskUrl(baseUrl: str, taskId: str): str =
     out = out + taskId
     return out
 
-fn cloudSplitByChar(text: str, sep: char): seq[str] =
-    var outVal: seq[str] = newSeq[str]()
+fn cloudSplitByChar(text: str, sep: char): str[] =
+    var outVal: str[] = newSeq[str]()
     if text == nil:
         return outVal
     var start: int32 = 0
@@ -1045,7 +1046,7 @@ fn cloudZeroPad9Local(value: int32): str =
         v = 0
     if v > 999999999:
         v = 999999999
-    var digits: seq[str] = newSeq[str]()
+    var digits: str[] = newSeq[str]()
     var place: int32 = 100000000
     var i: int32 = 0
     while i < 9:
@@ -1137,7 +1138,7 @@ fn attemptLess(a: CloudAttemptDiff, b: CloudAttemptDiff): bool =
         return a.hasCreated
     return false
 
-fn sortAttempts(attempts: var seq[CloudAttemptDiff]) =
+fn sortAttempts(attempts: var CloudAttemptDiff[]) =
     var i: int32 = 1
     while i < len(attempts):
         var j: int32 = i
@@ -1220,7 +1221,7 @@ fn collectAttemptDiffsLocal(baseUrl: str, token: str, accountId: str, taskId: st
     out.ok = true
     return out
 
-fn selectAttemptLocal(attempts: seq[CloudAttemptDiff], desired: int32): CloudAttemptSelect =
+fn selectAttemptLocal(attempts: CloudAttemptDiff[], desired: int32): CloudAttemptSelect =
     var out: CloudAttemptSelect
     out.ok = false
     out.err = ""
@@ -1360,7 +1361,7 @@ fn parseCreateTaskId(payload: str): str =
     return getStringField(root, "id", "")
 
 fn buildCreateTaskBody(envId: str, branch: str, attempts: int32, prompt: str): str =
-    var inputItems: seq[str] = newSeq[str]()
+    var inputItems: str[] = newSeq[str]()
     let userMsg = jstrObject(seqStr3(
         jstrPair("type", jstrString("message")),
         jstrPair("role", jstrString("user")),
@@ -1380,7 +1381,7 @@ fn buildCreateTaskBody(envId: str, branch: str, attempts: int32, prompt: str): s
                 jstrPair("diff", jstrString(startingDiff))
             )))
         )))
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("new_task", jstrObject(seqStr3(
         jstrPair("environment_id", jstrString(envId)),
         jstrPair("branch", jstrString(branch)),
@@ -1393,7 +1394,7 @@ fn buildCreateTaskBody(envId: str, branch: str, attempts: int32, prompt: str): s
         ))))
     return jstrObject(fields)
 
-fn cloudJoinWithSep(parts: seq[str], sep: str): str =
+fn cloudJoinWithSep(parts: str[], sep: str): str =
     var out = ""
     var i: int32 = 0
     while i < len(parts):
@@ -1409,7 +1410,7 @@ fn cloudTaskEnvLabelLocal(task: CloudTaskSummary): str =
     return task.environmentId
 
 fn cloudTaskMetaLineLocal(task: CloudTaskSummary): str =
-    var parts: seq[str] = newSeq[str]()
+    var parts: str[] = newSeq[str]()
     let label = cloudTaskEnvLabelLocal(task)
     if len(label) > 0:
         seqAdd(parts, label)
@@ -1512,7 +1513,7 @@ fn collectCloudTasksLocal(baseUrl: str, token: str, accountId: str): CloudTasksC
     out.tasks = page.tasks
     return out
 
-fn renderCloudTaskList(tasks: seq[CloudTaskSummary]) =
+fn renderCloudTaskList(tasks: CloudTaskSummary[]) =
     printErr("\x1b[2J\x1b[H")
     tuiHeader("Codex Cloud")
     printErr("")
@@ -1548,7 +1549,7 @@ fn renderCloudTaskList(tasks: seq[CloudTaskSummary]) =
         i = i + 1
     printErr("")
 
-fn selectCloudTask(tasks: seq[CloudTaskSummary]): str =
+fn selectCloudTask(tasks: CloudTaskSummary[]): str =
     let choice = cloudPrompt("Select task number or id (empty to exit):")
     if len(choice) == 0:
         return ""
@@ -1603,7 +1604,7 @@ fn runCloudTui(baseUrl: str, token: str, accountId: str): int32 =
 
 fn cloudPrettyTaskListJson(page: CloudTaskListPage, baseUrl: str): str =
     # Match serde_json::to_string_pretty formatting for this specific payload shape.
-    var parts: seq[str] = newSeq[str]()
+    var parts: str[] = newSeq[str]()
     seqAdd(parts, "{\n")
     if len(page.tasks) == 0:
         seqAdd(parts, "  \"tasks\": [],\n")
@@ -1741,7 +1742,7 @@ fn cloudListIsKnownOption(tok: str): bool =
         return true
     return false
 
-fn runCloudListCommand(args: seq[str], start: int32): int32 =
+fn runCloudListCommand(args: str[], start: int32): int32 =
     var envFilter = ""
     var limit: int32 = 20
     var cursor = ""
@@ -1858,7 +1859,7 @@ fn runCloudListCommand(args: seq[str], start: int32): int32 =
         printLine("To fetch the next page, run codex cloud list --cursor='" + page.cursor + "'")
     return 0
 
-fn runCloudExec(args: seq[str], start: int32): int32 =
+fn runCloudExec(args: str[], start: int32): int32 =
     var envId = ""
     var sawEnv = false
     var attempts: int32 = 1
@@ -2011,7 +2012,7 @@ fn runCloudExec(args: seq[str], start: int32): int32 =
     printLine(cloudBrowserTaskUrl(baseUrl, taskId))
     return 0
 
-fn runCloudStatus(args: seq[str], start: int32): int32 =
+fn runCloudStatus(args: str[], start: int32): int32 =
     var rawTask = ""
     var sawTask = false
     var stopParsing = false
@@ -2064,7 +2065,7 @@ fn runCloudStatus(args: seq[str], start: int32): int32 =
         return 0
     return 1
 
-fn runCloudDiff(args: seq[str], start: int32): int32 =
+fn runCloudDiff(args: str[], start: int32): int32 =
     var rawTask = ""
     var sawTask = false
     var attempt: int32 = 1
@@ -2181,7 +2182,7 @@ fn applyCloudTaskDiff(taskId: str, attempt: int32): int32 =
     printLine(failMsg)
     return 1
 
-fn runCloudApply(args: seq[str], start: int32): int32 =
+fn runCloudApply(args: str[], start: int32): int32 =
     var rawTask = ""
     var sawTask = false
     var attempt: int32 = 1
@@ -2260,14 +2261,14 @@ fn cloudEditDistanceLocal(a: str, b: str): int32 =
         return len(s2)
     if len(s2) == 0:
         return len(s1)
-    var prev: seq[int32] = newSeq[int32]()
+    var prev: int32[] = newSeq[int32]()
     var j: int32 = 0
     while j <= len(s2):
         seqAdd(prev, j)
         j = j + 1
     var i: int32 = 0
     while i < len(s1):
-        var curr: seq[int32] = newSeq[int32]()
+        var curr: int32[] = newSeq[int32]()
         seqAdd(curr, i + 1)
         j = 0
         while j < len(s2):
@@ -2283,7 +2284,7 @@ fn cloudEditDistanceLocal(a: str, b: str): int32 =
     return get[int32](prev, len(s2))
 
 fn cloudSuggestCloudSubcommandLocal(name: str): str =
-    var candidates: seq[str] = newSeq[str]()
+    var candidates: str[] = newSeq[str]()
     seqAdd(candidates, "exec")
     seqAdd(candidates, "status")
     seqAdd(candidates, "list")
@@ -2325,7 +2326,7 @@ fn printCloudHelpCommandHelp(): int32 =
     printLine("  [COMMAND]...  Print help for the subcommand(s)")
     return 0
 
-fn runCloudHelpCommand(args: seq[str], start: int32): int32 =
+fn runCloudHelpCommand(args: str[], start: int32): int32 =
     if start >= len(args):
         return printCloudHelp()
     let sub = argAt(args, start)
@@ -2355,7 +2356,7 @@ fn runCloudHelpCommand(args: seq[str], start: int32): int32 =
         return printCloudHelpCommandHelp()
     return cloudUsageUnrecognizedSubcommand(sub, "codex cloud [OPTIONS] [COMMAND]")
 
-fn runCloudLocal(args: seq[str], start: int32): int32 =
+fn runCloudLocal(args: str[], start: int32): int32 =
     cloudTraceLocal("runCloudLocal.enter")
     var stopParsing = false
     var i: int32 = start

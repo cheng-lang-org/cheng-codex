@@ -1,0 +1,153 @@
+{
+  "suite": "arg0_hooks",
+  "cases": [
+    {
+      "id": "arg0-subcommand-apply-patch-stdin",
+      "description": "root hidden apply_patch command should apply patch from stdin",
+      "args": ["apply_patch"],
+      "cwd": "{{CASE_TMP}}",
+      "stdin": "*** Begin Patch\n*** Add File: arg0-subcommand-apply-patch.txt\n+ok\n*** End Patch\n",
+      "expect": {
+        "exit_code": 0,
+        "baseline_paths_exist": ["{{CASE_TMP}}/arg0-subcommand-apply-patch.txt"],
+        "cheng_paths_exist": ["{{CASE_TMP}}/arg0-subcommand-apply-patch.txt"]
+      }
+    },
+    {
+      "id": "arg0-subcommand-applypatch-stdin",
+      "description": "root hidden applypatch command should apply patch from stdin",
+      "args": ["applypatch"],
+      "cwd": "{{CASE_TMP}}",
+      "stdin": "*** Begin Patch\n*** Add File: arg0-subcommand-applypatch.txt\n+ok\n*** End Patch\n",
+      "expect": {
+        "exit_code": 0,
+        "baseline_paths_exist": ["{{CASE_TMP}}/arg0-subcommand-applypatch.txt"],
+        "cheng_paths_exist": ["{{CASE_TMP}}/arg0-subcommand-applypatch.txt"]
+      }
+    },
+    {
+      "id": "arg0-argv0-apply-patch-stdin",
+      "description": "argv0 apply_patch alias should bypass root parser and apply patch",
+      "requires_direct_bin": true,
+      "platforms": ["macos", "linux"],
+      "argv0": "apply_patch",
+      "args": [],
+      "cwd": "{{CASE_TMP}}",
+      "stdin": "*** Begin Patch\n*** Add File: arg0-argv0-apply-patch.txt\n+ok\n*** End Patch\n",
+      "expect": {
+        "exit_code": 0,
+        "baseline_paths_exist": ["{{CASE_TMP}}/arg0-argv0-apply-patch.txt"],
+        "cheng_paths_exist": ["{{CASE_TMP}}/arg0-argv0-apply-patch.txt"]
+      }
+    },
+    {
+      "id": "arg0-argv0-applypatch-stdin",
+      "description": "argv0 applypatch alias should bypass root parser and apply patch",
+      "requires_direct_bin": true,
+      "platforms": ["macos", "linux"],
+      "argv0": "applypatch",
+      "args": [],
+      "cwd": "{{CASE_TMP}}",
+      "stdin": "*** Begin Patch\n*** Add File: arg0-argv0-applypatch.txt\n+ok\n*** End Patch\n",
+      "expect": {
+        "exit_code": 0,
+        "baseline_paths_exist": ["{{CASE_TMP}}/arg0-argv0-applypatch.txt"],
+        "cheng_paths_exist": ["{{CASE_TMP}}/arg0-argv0-applypatch.txt"]
+      }
+    },
+    {
+      "id": "dotenv-loads-non-codex-and-filters-codex-prefix",
+      "description": "dotenv should load HOME but must ignore CODEX_HOME override",
+      "files": [
+        {
+          "path": "{{HOME}}/.codex/.env",
+          "content": "HOME={{CASE_TMP}}/dotenv-home\nCODEX_HOME={{CASE_TMP}}/blocked-codex-home\n"
+        },
+        {
+          "path": "{{HOME}}/.codex-cheng/.env",
+          "content": "HOME={{CASE_TMP}}/dotenv-home\nCODEX_HOME={{CASE_TMP}}/blocked-codex-home\n"
+        }
+      ],
+      "args": ["config", "home"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["dotenv-home"],
+        "stdout_not_contains": ["blocked-codex-home"]
+      }
+    },
+    {
+      "id": "path-helper-linux-command-v",
+      "description": "linux startup should prepend helper PATH aliases including codex-linux-sandbox",
+      "platforms": ["linux"],
+      "env": {
+        "CODEX_HOME": "{{CASE_TMP}}/codex-home"
+      },
+      "args": ["sandbox", "linux", "--", "sh", "-lc", "command -v apply_patch && command -v applypatch && command -v codex-linux-sandbox"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["apply_patch", "applypatch", "codex-linux-sandbox"],
+        "baseline_paths_exist": ["{{CASE_TMP}}/codex-home/tmp/arg0"],
+        "cheng_paths_exist": ["{{CASE_TMP}}/codex-home/tmp/arg0"]
+      }
+    },
+    {
+      "id": "path-helper-macos-command-v",
+      "description": "macOS startup should prepend helper PATH aliases for apply_patch/applypatch",
+      "platforms": ["macos"],
+      "env": {
+        "CODEX_HOME": "{{CASE_TMP}}/codex-home"
+      },
+      "args": ["sandbox", "macos", "--", "sh", "-lc", "command -v apply_patch && command -v applypatch"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["apply_patch", "applypatch"],
+        "baseline_paths_exist": ["{{CASE_TMP}}/codex-home/tmp/arg0"],
+        "cheng_paths_exist": ["{{CASE_TMP}}/codex-home/tmp/arg0"]
+      }
+    },
+    {
+      "id": "hooks-legacy-notify-wire-shape-source",
+      "description": "legacy notify payload keeps agent-turn-complete kebab-case wire fields",
+      "args": ["--help"],
+      "expect": {
+        "exit_code": 0
+      },
+      "source_checks": [
+        {
+          "path": "src/hooks.cheng",
+          "contains": "\"type\", jstrString(\"agent-turn-complete\")"
+        },
+        {
+          "path": "src/hooks.cheng",
+          "contains": "\"thread-id\""
+        },
+        {
+          "path": "src/hooks.cheng",
+          "contains": "\"last-assistant-message\""
+        }
+      ]
+    },
+    {
+      "id": "hooks-after-tool-use-wire-shape-source",
+      "description": "hooks module should keep after_tool_use wire payload and storage trigger wiring",
+      "args": ["--help"],
+      "expect": {
+        "exit_code": 0
+      },
+      "source_checks": [
+        {
+          "path": "src/hooks.cheng",
+          "contains": "\"event_type\", jstrString(\"after_tool_use\")"
+        },
+        {
+          "path": "src/hooks.cheng",
+          "contains": "\"tool_input\""
+        },
+        {
+          "path": "src/storage.cheng",
+          "contains": "dispatchAfterToolUseInternal(threadId, turnId, callId"
+        }
+      ]
+    }
+  ]
+}

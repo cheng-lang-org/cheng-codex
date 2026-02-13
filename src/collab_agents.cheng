@@ -87,7 +87,7 @@ fn collabWriteState(state: CollabAgentState) =
     let path = collabStatePath(state.id)
     if len(path) == 0:
         return
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("id", jstrString(state.id)))
     seqAdd(fields, jstrPair("thread_id", jstrString(state.threadId)))
     seqAdd(fields, jstrPair("pid", intToStr(state.pid)))
@@ -218,7 +218,7 @@ fn collabRunTurn(state: CollabAgentState, prompt: str, baseInstructions: str, de
     let contextItems = threadContextItems(state.threadId)
     let result = runTurn(prompt, contextItems, workDir, "exec", approvalPolicy, baseInstructions, developerInstructions, outputSchemaJson, false, false, false)
     let inputItems = seqStr1(inputTokenText(prompt))
-    appendTurnEvent(state.threadId, prompt, inputItems, "codex-cheng", result.agentOutput, "", "", -1, "", "")
+    appendTurnEvent(state.threadId, "", prompt, inputItems, "codex-cheng", result.agentOutput, "", "", -1, "", "")
     if len(state.outputPath) > 0 && len(result.agentOutput) > 0:
         os.writeFile(state.outputPath, result.agentOutput)
     if result.ok:
@@ -348,7 +348,7 @@ fn collabWaitAgents(argsJson: str): CollabToolResult =
     let startSec = collabNowSeconds()
     let deadline = startSec + int64((timeoutMs + 999) / 1000)
     while true:
-        var statusPairs: seq[str] = newSeq[str]()
+        var statusPairs: str[] = newSeq[str]()
         var idx: int32 = 0
         while idx < len(ids):
             let agentId = ids[idx]

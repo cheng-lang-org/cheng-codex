@@ -1,20 +1,89 @@
-# Patch tool (placeholder)
+# Patch tool (codex-rs-aligned behavior with apply_patch-first fallback)
 
 import system
+import cmdline
 import std/os
-import seqs
+import std/times
 import cheng/codex/common
+import cheng/codex/config
+
+var patchTempSeq: int32 = 0
+
+fn patchTempBaseDir(): str =
+    let home = codexHomeDir()
+    if len(home) > 0:
+        let base = os.joinPath(home, "tmp")
+        if ! os.dirExists(base):
+            os.createDir(base)
+        return base
+    if os.dirExists("/tmp"):
+        return "/tmp"
+    return os.getCurrentDir()
+
+fn patchNextTempPath(): str =
+    patchTempSeq = patchTempSeq + 1
+    let ts = int64ToStr(times.toUnix(times.now()))
+    var name = "apply_patch-"
+    name = name + ts
+    name = name + "-"
+    name = name + intToStr(patchTempSeq)
+    name = name + ".patch"
+    return os.joinPath(patchTempBaseDir(), name)
+
 fn writeTempPatch(patchText: str): str =
     if len(patchText) == 0:
         return ""
-    let home = codexHomeDir()
-    if len(home) == 0:
+    let path = patchNextTempPath()
+    if len(path) == 0:
         return ""
-    if ! os.dirExists(home):
-        os.createDir(home)
-    let path = os.joinPath(home, "last.patch")
     os.writeFile(path, patchText)
     return path
+
+fn patchToolOutputLocal(res: os.ExecCmdResult): str =
+    var output = res.output
+    if output == nil:
+        output = ""
+    return output
+
+fn patchExecLocal(cmd: str, root: str): ToolResult =
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    let res = os.execCmdEx(cmd, opts, root)
+    let exitCode = int32(res.exitCode)
+    return makeToolResult(exitCode == 0, patchToolOutputLocal(res), exitCode)
+
+fn patchCommandExists(name: str, root: str): bool =
+    if len(name) == 0:
+        return false
+    let check = patchExecLocal("command -v " + shellQuote(name) + " >/dev/null 2>&1", root)
+    return check.exitCode == 0
+
+fn patchCurrentExeName(): str =
+    let raw = trimLine($ cmdline.paramStr(0))
+    if len(raw) == 0:
+        return ""
+    return normalizePolicy(os.extractFilename(raw))
+
+fn patchRunningAsApplyPatchAlias(): bool =
+    let exe = patchCurrentExeName()
+    return exe == "apply_patch" || exe == "applypatch"
+
+fn runApplyPatchBinary(patchPath: str, root: str, commandName: str): ToolResult =
+    if len(patchPath) == 0 || len(commandName) == 0:
+        return makeToolResult(false, "patch write failed", -1)
+    let cmd = commandName + " < " + shellQuote(patchPath)
+    return patchExecLocal(cmd, root)
+
+fn runGitApply(patchPath: str, root: str): ToolResult =
+    if len(patchPath) == 0:
+        return makeToolResult(false, "patch write failed", -1)
+    let cmd = "git apply --whitespace=nowarn " + shellQuote(patchPath)
+    return patchExecLocal(cmd, root)
+
+fn runPosixPatch(patchPath: str, root: str): ToolResult =
+    if len(patchPath) == 0:
+        return makeToolResult(false, "patch write failed", -1)
+    let cmd = "patch -p0 -i " + shellQuote(patchPath)
+    return patchExecLocal(cmd, root)
 
 fn runPatchTool(patchText: str, root: str): ToolResult =
     if len(patchText) == 0:
@@ -22,15 +91,23 @@ fn runPatchTool(patchText: str, root: str): ToolResult =
     let patchPath = writeTempPatch(patchText)
     if len(patchPath) == 0:
         return makeToolResult(false, "patch write failed", -1)
-    let quoted = shellQuote(patchPath)
-    var cmd = "patch -p0 -i " + quoted
-    let gitDir = os.joinPath(root, ".git")
-    if os.dirExists(gitDir):
-        cmd = "git apply --whitespace=nowarn " + quoted
-    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
-    let res = os.execCmdEx(cmd, opts, root)
-    var output = res.output
-    if output == nil:
-        output = ""
-    let exitCode: int32 = int32(res.exitCode)
-    return makeToolResult(exitCode == 0, output, exitCode)
+
+    # Match codex-rs intent: use `apply_patch` tool path when available.
+    # When already running under apply_patch/applypatch argv0, skip the
+    # helper-binary path to avoid recursive self-invocation.
+    let allowHelperBinary = ! patchRunningAsApplyPatchAlias()
+    var result: ToolResult
+    if allowHelperBinary && patchCommandExists("apply_patch", root):
+        result = runApplyPatchBinary(patchPath, root, "apply_patch")
+    elif allowHelperBinary && patchCommandExists("applypatch", root):
+        result = runApplyPatchBinary(patchPath, root, "applypatch")
+    else:
+        # Fallback for environments without arg0 shims.
+        result = runGitApply(patchPath, root)
+        if ! result.ok:
+            result = runPosixPatch(patchPath, root)
+
+    if os.fileExists(patchPath):
+        os.removeFile(patchPath)
+
+    return result

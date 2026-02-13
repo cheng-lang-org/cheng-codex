@@ -5,6 +5,11 @@ import std/os
 import cheng/codex/common
 
 const CODEX_APP_DEFAULT_DMG_URL = "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg"
+const CODEX_APP_BUNDLE_NAME = "Codex.app"
+const CODEX_APP_SYSTEM_PATH = "/Applications/Codex.app"
+
+fn appCommandOpts(): uint64 =
+    return uint64(os.poUsePath | os.poEvalCommand)
 
 fn appStrEq(a: str, b: str): bool =
     if a == nil || b == nil:
@@ -17,6 +22,234 @@ fn appStrEq(a: str, b: str): bool =
             return false
         i = i + 1
     return true
+
+fn appIsWhitespace(ch: char): bool =
+    return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'
+
+fn appSlice(text: str, start: int32, stop: int32): str =
+    if text == nil:
+        return ""
+    let n: int32 = len(text)
+    if n <= 0:
+        return ""
+    var s: int32 = start
+    var e: int32 = stop
+    if s < 0:
+        s = 0
+    if e >= n:
+        e = n - 1
+    if e < s:
+        return ""
+    var out: str = ""
+    var i: int32 = s
+    while i <= e:
+        out = out + $text[i]
+        i = i + 1
+    return out
+
+fn appLastIndexOfChar(text: str, needle: char): int32 =
+    if text == nil:
+        return -1
+    var idx: int32 = -1
+    var i: int32 = 0
+    while i < len(text):
+        if text[i] == needle:
+            idx = i
+        i = i + 1
+    return idx
+
+fn appFindMountPointInFields(line: str): str =
+    if line == nil:
+        return ""
+    var i: int32 = 0
+    while i < len(line):
+        while i < len(line) && appIsWhitespace(line[i]):
+            i = i + 1
+        let start: int32 = i
+        while i < len(line) && ! appIsWhitespace(line[i]):
+            i = i + 1
+        if i > start:
+            let field = appSlice(line, start, i - 1)
+            if hasPrefix(field, "/Volumes/"):
+                return field
+    return ""
+
+fn appParseMountPointFromAttachLine(line: str): str =
+    if line == nil || indexOfSubstr(line, "/Volumes/", 0) < 0:
+        return ""
+    let tab = appLastIndexOfChar(line, '\t')
+    if tab >= 0 && tab + 1 < len(line):
+        let mount = trimLine(appSlice(line, tab + 1, len(line) - 1))
+        if hasPrefix(mount, "/Volumes/"):
+            return mount
+    return appFindMountPointInFields(line)
+
+fn appParseMountPointFromAttachOutput(output: str): str =
+    if output == nil:
+        return ""
+    var start: int32 = 0
+    var i: int32 = 0
+    while i <= len(output):
+        if i == len(output) || output[i] == '\n':
+            let line = appSlice(output, start, i - 1)
+            let mount = appParseMountPointFromAttachLine(line)
+            if len(mount) > 0:
+                return mount
+            start = i + 1
+        i = i + 1
+    return ""
+
+fn appRunShell(command: str): os.ExecCmdResult =
+    return os.execCmdEx(command, appCommandOpts(), os.getCurrentDir())
+
+fn appCanonicalizeWorkspacePath(path: str): str =
+    var p = path
+    if len(p) == 0:
+        p = "."
+    let cmd = "cd " + shellQuote(p) + " 2>/dev/null && pwd -P"
+    let res = appRunShell(cmd)
+    if res.exitCode == 0:
+        let out = trimLine(res.output)
+        if len(out) > 0:
+            return out
+    return os.absolutePath(p)
+
+fn appHomeApplicationsPath(): str =
+    let home = os.getEnvDefault("HOME", "")
+    if len(home) == 0:
+        return ""
+    return os.joinPath(os.joinPath(home, "Applications"), CODEX_APP_BUNDLE_NAME)
+
+fn appFindExistingCodexAppPath(): str =
+    if os.dirExists(CODEX_APP_SYSTEM_PATH):
+        return CODEX_APP_SYSTEM_PATH
+    let userPath = appHomeApplicationsPath()
+    if len(userPath) > 0 && os.dirExists(userPath):
+        return userPath
+    return ""
+
+fn appOpenCodexApp(appPath: str, workspace: str): bool =
+    printErr("Opening workspace " + workspace + "...")
+    let cmd = "open -a " + shellQuote(appPath) + " " + shellQuote(workspace)
+    let res = appRunShell(cmd)
+    if res.exitCode == 0:
+        return true
+    printErr("`open -a " + appPath + " " + workspace + "` exited with " + intToStr(res.exitCode))
+    return false
+
+fn appDownloadDmg(downloadUrl: str, destPath: str): bool =
+    printErr("Downloading installer...")
+    let cmd = "curl -fL --retry 3 --retry-delay 1 -o " + shellQuote(destPath) + " " + shellQuote(downloadUrl)
+    let res = appRunShell(cmd)
+    if res.exitCode == 0:
+        return true
+    printErr("curl download failed with " + intToStr(res.exitCode))
+    return false
+
+fn appMountDmg(dmgPath: str): str =
+    let cmd = "hdiutil attach -nobrowse -readonly " + shellQuote(dmgPath)
+    let res = appRunShell(cmd)
+    if res.exitCode != 0:
+        printErr("`hdiutil attach` failed with " + intToStr(res.exitCode) + ": " + trimLine(res.output))
+        return ""
+    let mount = appParseMountPointFromAttachOutput(res.output)
+    if len(mount) == 0:
+        printErr("failed to parse mount point from hdiutil output")
+    return mount
+
+fn appDetachDmg(mountPoint: str): bool =
+    let cmd = "hdiutil detach " + shellQuote(mountPoint)
+    let res = appRunShell(cmd)
+    if res.exitCode == 0:
+        return true
+    return false
+
+fn appFindCodexAppInMount(mountPoint: str): str =
+    let direct = os.joinPath(mountPoint, CODEX_APP_BUNDLE_NAME)
+    if os.dirExists(direct):
+        return direct
+    let cmd = "find " + shellQuote(mountPoint) + " -maxdepth 1 -type d -name '*.app' | head -n 1"
+    let res = appRunShell(cmd)
+    if res.exitCode != 0:
+        return ""
+    return trimLine(res.output)
+
+fn appCopyAppBundle(srcApp: str, destApp: str): bool =
+    let cmd = "ditto " + shellQuote(srcApp) + " " + shellQuote(destApp)
+    let res = appRunShell(cmd)
+    if res.exitCode == 0:
+        return true
+    return false
+
+fn appInstallCodexAppBundle(appInVolume: str): str =
+    var candidates: str[]
+    seqAdd(candidates, "/Applications")
+    let userApplications = appHomeApplicationsPath()
+    if len(userApplications) > 0:
+        seqAdd(candidates, os.parentDir(userApplications))
+
+    var i: int32 = 0
+    while i < len(candidates):
+        let applicationsDir = argAt(candidates, i)
+        printErr("Installing Codex Desktop into " + applicationsDir + "...")
+        let mkdirCmd = "mkdir -p " + shellQuote(applicationsDir)
+        let mkdirRes = appRunShell(mkdirCmd)
+        if mkdirRes.exitCode != 0:
+            printErr("warning: failed to create applications dir " + applicationsDir)
+            i = i + 1
+            continue
+        let destApp = os.joinPath(applicationsDir, CODEX_APP_BUNDLE_NAME)
+        if os.dirExists(destApp):
+            return destApp
+        if appCopyAppBundle(appInVolume, destApp):
+            return destApp
+        printErr("warning: failed to install Codex.app to " + applicationsDir)
+        i = i + 1
+    return ""
+
+fn appMakeTempInstallerDir(): str =
+    let cmd = "mktemp -d -t codex-app-installer-XXXXXX"
+    let res = appRunShell(cmd)
+    if res.exitCode != 0:
+        return ""
+    return trimLine(res.output)
+
+fn appRemoveTree(path: str) =
+    if len(path) == 0:
+        return
+    let cmd = "rm -rf " + shellQuote(path)
+    appRunShell(cmd)
+
+fn appDownloadAndInstallCodex(downloadUrl: str): str =
+    let tmpRoot = appMakeTempInstallerDir()
+    if len(tmpRoot) == 0:
+        printErr("failed to create temp dir")
+        return ""
+    let dmgPath = os.joinPath(tmpRoot, "Codex.dmg")
+    if ! appDownloadDmg(downloadUrl, dmgPath):
+        appRemoveTree(tmpRoot)
+        return ""
+
+    printErr("Mounting Codex Desktop installer...")
+    let mountPoint = appMountDmg(dmgPath)
+    if len(mountPoint) == 0:
+        appRemoveTree(tmpRoot)
+        return ""
+    printErr("Installer mounted at " + mountPoint + ".")
+
+    var installed = ""
+    let appInVolume = appFindCodexAppInMount(mountPoint)
+    if len(appInVolume) == 0:
+        printErr("failed to locate Codex.app in mounted dmg")
+    else:
+        installed = appInstallCodexAppBundle(appInVolume)
+        if len(installed) == 0:
+            printErr("failed to install Codex.app to any applications directory")
+
+    if ! appDetachDmg(mountPoint):
+        printErr("warning: failed to detach dmg at " + mountPoint)
+    appRemoveTree(tmpRoot)
+    return installed
 
 fn appIsMacHost(): bool =
     let osEnv = normalizePolicy(os.getEnv("OS"))
@@ -38,7 +271,7 @@ fn appIsMacHost(): bool =
             return true
     return false
 
-fn runAppCommand(args: seq[str], start: int32): int32 =
+fn runAppCommand(args: str[], start: int32): int32 =
     var workspace = "."
     var downloadUrl = CODEX_APP_DEFAULT_DMG_URL
     var seenPath = false
@@ -71,8 +304,11 @@ fn runAppCommand(args: seq[str], start: int32): int32 =
         if appStrEq(arg, "--download-url") && i + 1 < len(args):
             downloadUrl = argAt(args, i + 1)
             i = i + 1
-        elif hasPrefix(arg, "--download-url:"):
-            downloadUrl = dropPrefix(arg, "--download-url:")
+        elif appStrEq(arg, "--download-url"):
+            printErr("option '--download-url' requires a value")
+            return 2
+        elif hasPrefix(arg, "--download-url="):
+            downloadUrl = dropPrefix(arg, "--download-url=")
         elif ! seenPath && ! hasPrefix(arg, "-"):
             workspace = arg
             seenPath = true
@@ -85,17 +321,19 @@ fn runAppCommand(args: seq[str], start: int32): int32 =
         printErr("`codex app` is only available on macOS")
         return 2
 
-    let absWorkspace = os.absolutePath(workspace)
-    let openAppCmd = "open -a Codex " + shellQuote(absWorkspace)
-    let openAppRes = os.execCmdEx(openAppCmd, uint64(os.poUsePath | os.poEvalCommand), os.getCurrentDir())
-    if openAppRes.exitCode == 0:
-        return 0
+    let absWorkspace = appCanonicalizeWorkspacePath(workspace)
+    let existingApp = appFindExistingCodexAppPath()
+    if len(existingApp) > 0:
+        printErr("Opening Codex Desktop at " + existingApp + "...")
+        if appOpenCodexApp(existingApp, absWorkspace):
+            return 0
+        return 1
 
-    printErr("Failed to open Codex desktop app. It may not be installed.")
-    if len(downloadUrl) > 0:
-        printErr("Download URL: " + downloadUrl)
-        let openUrlCmd = "open " + shellQuote(downloadUrl)
-        let openUrlRes = os.execCmdEx(openUrlCmd, uint64(os.poUsePath | os.poEvalCommand), os.getCurrentDir())
-        if openUrlRes.exitCode == 0:
-            return 1
+    printErr("Codex Desktop not found; downloading installer...")
+    let installedApp = appDownloadAndInstallCodex(downloadUrl)
+    if len(installedApp) == 0:
+        return 1
+    printErr("Launching Codex Desktop from " + installedApp + "...")
+    if appOpenCodexApp(installedApp, absWorkspace):
+        return 0
     return 1

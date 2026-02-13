@@ -1,0 +1,23 @@
+{
+  "suite": "debug",
+  "cases": [
+    {
+      "id": "debug-help",
+      "description": "debug --help should expose app-server tooling",
+      "args": ["debug", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex debug", "app-server"]
+      }
+    },
+    {
+      "id": "debug-app-server-help",
+      "description": "debug app-server --help should expose send-message-v2",
+      "args": ["debug", "app-server", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["send-message-v2"]
+      }
+    }
+  ]
+}

@@ -24,6 +24,7 @@ Usage: tooling/closed_loop.sh [--check <name>]
 Checks:
   preflight     Verify SPEC/CONTRACT/ACCEPTANCE/TASK_MATRIX exist
   build         Build codex-cheng binary
+  parity        Generate parity manifest and run codex-rs vs cheng parity scenarios
   tui           Run TUI interactive smoke check (offline)
   execpolicy    Run execpolicy smoke check (offline)
   completion    Run completion smoke check (offline)
@@ -38,6 +39,8 @@ Checks:
 Env:
   CODEX_CHENG_ONLINE=1          Enable online gates (login-smoke + exec-smoke)
   CODEX_CHENG_BIN=<path>        Override codex-cheng binary path
+  CODEX_RS_DIR=<path>           Override codex-rs workspace path for parity checks
+  CODEX_RS_BIN=<path>           Override codex-rs binary path for parity checks
 USAGE
 }
 
@@ -109,6 +112,9 @@ resolve_codex_bin() {
   if [ -n "${CODEX_CHENG_BIN:-}" ] && [ -x "${CODEX_CHENG_BIN}" ]; then
     candidates+=("${CODEX_CHENG_BIN}")
   fi
+  if [ -x "${codex_dir}/build/cheng-codex" ]; then
+    candidates+=("${codex_dir}/build/cheng-codex")
+  fi
   if [ -x "${codex_dir}/build/codex-cheng" ]; then
     candidates+=("${codex_dir}/build/codex-cheng")
   fi
@@ -118,9 +124,32 @@ resolve_codex_bin() {
   if [ -x "${HOME}/cheng-lang/codex-cheng-bin" ]; then
     candidates+=("${HOME}/cheng-lang/codex-cheng-bin")
   fi
+  if [ "${#candidates[@]}" -eq 0 ]; then
+    return 1
+  fi
   local cand=""
-  for cand in "${candidates[@]}"; do
+  for cand in "${candidates[@]-}"; do
     if "$cand" --version >/dev/null 2>&1; then
+      printf "%s" "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_codex_rs_dir() {
+  local candidates=()
+  if [ -n "${CODEX_RS_DIR:-}" ]; then
+    candidates+=("${CODEX_RS_DIR}")
+  fi
+  candidates+=("${codex_dir}/../../codex-lbcheng/codex-rs")
+  candidates+=("${HOME}/codex-lbcheng/codex-rs")
+  if [ "${#candidates[@]}" -eq 0 ]; then
+    return 1
+  fi
+  local cand=""
+  for cand in "${candidates[@]-}"; do
+    if [ -f "${cand}/Cargo.toml" ] && [ -f "${cand}/cli/Cargo.toml" ]; then
       printf "%s" "$cand"
       return 0
     fi
@@ -143,6 +172,63 @@ check_build() {
   (cd "$codex_dir" && ./build.sh)
 }
 
+check_parity() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 not found" 1>&2
+    return 2
+  fi
+  local bin
+  if ! bin=$(resolve_codex_bin); then
+    echo "codex-cheng binary not found" 1>&2
+    return 2
+  fi
+  local rs_dir
+  if ! rs_dir=$(resolve_codex_rs_dir); then
+    echo "codex-rs workspace not found (set CODEX_RS_DIR)" 1>&2
+    return 2
+  fi
+  (
+    cd "$codex_dir" && \
+    python3 tooling/parity/generate_manifest.py \
+      --codex-rs-dir "$rs_dir" \
+      --cheng-root "$codex_dir" \
+      --out tooling/parity/parity_manifest.yaml
+  )
+  (
+    cd "$codex_dir" && \
+    python3 - <<'PY'
+import json
+from pathlib import Path
+import sys
+
+root = Path(".")
+behavior = root / "tooling/parity/behavior_manifest.yaml"
+if not behavior.exists():
+    print("missing behavior manifest: tooling/parity/behavior_manifest.yaml", file=sys.stderr)
+    raise SystemExit(2)
+data = json.loads(behavior.read_text(encoding="utf-8"))
+summary = data.get("summary", {})
+total = int(summary.get("total_behaviors", 0))
+implemented = int(summary.get("implemented", 0))
+scenarized = int(summary.get("scenarized", 0))
+if total <= 0 or implemented != total or scenarized != total:
+    print(
+        "behavior manifest summary invalid: "
+        f"total={total} implemented={implemented} scenarized={scenarized}",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+PY
+  )
+  (
+    cd "$codex_dir" && \
+    python3 tooling/parity/run_parity.py \
+      --codex-rs-dir "$rs_dir" \
+      --cheng-root "$codex_dir" \
+      --cheng-bin "$bin"
+  )
+}
+
 check_tui_surface() {
   local bin
   if ! bin=$(resolve_codex_bin); then
@@ -155,7 +241,7 @@ check_tui_surface() {
   grep -Fq "isFeatureEnabled(\"tui2\")" "${codex_dir}/src/interactive.cheng"
   grep -Fq "isFeatureEnabled(\"tui2\")" "${codex_dir}/src/exec_cmd.cheng"
   grep -Fq "if len(args) == 0:" "${codex_dir}/src/main.cheng"
-  grep -Fq "return runInteractive(args, 0)" "${codex_dir}/src/main.cheng"
+  grep -Fq "return runInteractiveWithOpts(rootOpts, \"\")" "${codex_dir}/src/main.cheng"
 }
 
 check_execpolicy() {
@@ -290,6 +376,7 @@ run_selected() {
   case "$1" in
     preflight) run_step "preflight" check_preflight ;;
     build) run_step "build" check_build ;;
+    parity) run_step "parity" check_parity ;;
     tui) run_step "tui" check_tui_surface ;;
     execpolicy) run_step "execpolicy" check_execpolicy ;;
     completion) run_step "completion" check_completion ;;
@@ -313,6 +400,7 @@ if [ -n "$check_only" ]; then
 else
   run_selected preflight
   run_selected build
+  run_selected parity
   run_selected tui
   run_selected execpolicy
   run_selected completion

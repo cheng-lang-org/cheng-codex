@@ -6,7 +6,7 @@ import seqs
 type
     CommandSplitResult =
         ok: bool
-        tokens: seq[str]
+        tokens: str[]
         err: str
 
 fn isSpaceLocal(ch: char): bool =
@@ -33,7 +33,7 @@ fn extractProgramName(path: str): str =
         return parts.name + parts.ext
     return parts.name
 
-fn splitCommandTokens(text: str, outTokens: var seq[str], err: var str): bool =
+fn splitCommandTokens(text: str, outTokens: var str[], err: var str): bool =
     err = ""
     outTokens = newSeq[str]()
     if text == nil:
@@ -111,19 +111,19 @@ fn isLinuxLocal(): bool =
         return true
     return false
 
-fn flushSegmentLocal(segments: var seq[str], current: str): str =
+fn flushSegmentLocal(segments: var str[], current: str): str =
     let trimmed = trimSpacesLocal(current)
     if len(trimmed) > 0:
         seqAdd(segments, trimmed)
     return ""
 
-fn parseWordOnlyCommandsSequence(script: str, outCommands: var seq[seq[str]], err: var str): bool =
+fn parseWordOnlyCommandsSequence(script: str, outCommands: var str[][], err: var str): bool =
     err = ""
-    outCommands = newSeq[seq[str]]()
+    outCommands = newSeq[str[]]()
     if script == nil || len(script) == 0:
         err = "empty script"
         return false
-    var segments: seq[str] = newSeq[str]()
+    var segments: str[] = newSeq[str]()
     var current = ""
     var i: int32 = 0
     var inSingle = false
@@ -209,7 +209,7 @@ fn parseWordOnlyCommandsSequence(script: str, outCommands: var seq[seq[str]], er
         return false
     var sidx: int32 = 0
     while sidx < len(segments):
-        var tokens: seq[str]
+        var tokens: str[]
         var splitErr = ""
         if ! splitCommandTokens(segments[sidx], tokens, splitErr):
             err = splitErr
@@ -218,8 +218,8 @@ fn parseWordOnlyCommandsSequence(script: str, outCommands: var seq[seq[str]], er
         sidx = sidx + 1
     return len(outCommands) > 0
 
-fn parseShellLcPlainCommands(commandTokens: seq[str]): seq[seq[str]] =
-    var empty: seq[seq[str]] = newSeq[seq[str]]()
+fn parseShellLcPlainCommands(commandTokens: str[]): str[][] =
+    var empty: str[][] = newSeq[str[]]()
     if len(commandTokens) < 3:
         return empty
     let program = extractProgramName(commandTokens[0])
@@ -229,7 +229,7 @@ fn parseShellLcPlainCommands(commandTokens: seq[str]): seq[seq[str]] =
     if flag != "-lc" && flag != "-c":
         return empty
     let script = commandTokens[2]
-    var commands: seq[seq[str]]
+    var commands: str[][]
     var err = ""
     if ! parseWordOnlyCommandsSequence(script, commands, err):
         return empty
@@ -243,7 +243,7 @@ fn isValidSedNArg(arg: str): bool =
     let core = __cheng_slice_string(arg, 0, len(arg) - 2, false)
     if len(core) == 0:
         return false
-    var parts: seq[str] = newSeq[str]()
+    var parts: str[] = newSeq[str]()
     var start: int32 = 0
     var i: int32 = 0
     while i <= len(core):
@@ -268,7 +268,7 @@ fn isValidSedNArg(arg: str): bool =
         pidx = pidx + 1
     return true
 
-fn isSafeToCallWithExec(commandTokens: seq[str]): bool =
+fn isSafeToCallWithExec(commandTokens: str[]): bool =
     if len(commandTokens) == 0:
         return false
     let cmd0 = extractProgramName(commandTokens[0])
@@ -317,10 +317,10 @@ fn isSafeToCallWithExec(commandTokens: seq[str]): bool =
         return false
     return false
 
-fn isKnownSafeCommand(commandTokens: seq[str]): bool =
+fn isKnownSafeCommand(commandTokens: str[]): bool =
     if len(commandTokens) == 0:
         return false
-    var tokens: seq[str] = newSeq[str]()
+    var tokens: str[] = newSeq[str]()
     var i: int32 = 0
     while i < len(commandTokens):
         let token = commandTokens[i]
@@ -343,7 +343,7 @@ fn isKnownSafeCommand(commandTokens: seq[str]): bool =
         i = i + 1
     return allSafe
 
-fn isDangerousToCallWithExec(commandTokens: seq[str]): bool =
+fn isDangerousToCallWithExec(commandTokens: str[]): bool =
     if len(commandTokens) == 0:
         return false
     let cmd0 = extractProgramName(commandTokens[0])
@@ -359,7 +359,7 @@ fn isDangerousToCallWithExec(commandTokens: seq[str]): bool =
         return false
     if cmd0 == "sudo":
         if len(commandTokens) > 1:
-            var rest: seq[str] = newSeq[str]()
+            var rest: str[] = newSeq[str]()
             var i: int32 = 1
             while i < len(commandTokens):
                 seqAdd(rest, commandTokens[i])
@@ -368,7 +368,7 @@ fn isDangerousToCallWithExec(commandTokens: seq[str]): bool =
         return false
     return false
 
-fn commandMightBeDangerous(commandTokens: seq[str]): bool =
+fn commandMightBeDangerous(commandTokens: str[]): bool =
     if len(commandTokens) == 0:
         return true
     if isDangerousToCallWithExec(commandTokens):
@@ -387,7 +387,7 @@ fn sandboxPermissionsRequiresEscalated(value: str): bool =
         return true
     return false
 
-fn requiresInitialApproval(policy: str, sandboxMode: str, commandTokens: seq[str], sandboxPermissions: str): bool =
+fn requiresInitialApproval(policy: str, sandboxMode: str, commandTokens: str[], sandboxPermissions: str): bool =
     if isKnownSafeCommand(commandTokens):
         return false
     let normalized = normalizePolicy(trimSpacesLocal(policy))

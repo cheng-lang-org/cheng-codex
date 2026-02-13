@@ -2,11 +2,14 @@ version: 1
 goal: "cheng-codex CLI parity (full) + production closed loop"
 rows:
   - global
+  - parity
+  - arg0_hooks
   - exec
   - review
   - resume_fork
   - login_logout
   - app_server
+  - plan_mode
   - app
   - debug
   - completion
@@ -48,6 +51,46 @@ cells:
       - ./tooling/closed_loop.sh --check build
     outputs:
       - exec parity behavior
+
+  - id: parity.impl
+    touch_scope:
+      - tooling/parity
+      - tooling/closed_loop.sh
+    depends_on:
+      - global.contract
+    done_checks:
+      - ./tooling/closed_loop.sh --check parity
+    outputs:
+      - crate parity manifest + behavior parity manifest available
+      - crate+behavior dual-view coverage table available
+      - scenario runner supports argv0 and source-check cases
+
+  - id: arg0_hooks.impl
+    touch_scope:
+      - src/main.cheng
+      - src/hooks.cheng
+      - src/storage.cheng
+      - src/exec_cmd.cheng
+      - src/app_server.cheng
+    depends_on:
+      - global.contract
+      - parity.impl
+    done_checks:
+      - ./tooling/closed_loop.sh --check parity
+    outputs:
+      - argv0/apply_patch/dotenv/PATH-helper semantics aligned
+      - hooks legacy notify + after_tool_use internal payload wired
+
+  - id: arg0_hooks.tests
+    touch_scope:
+      - tooling/parity/scenarios/arg0_hooks.yaml
+      - tooling/parity/behavior_manifest.yaml
+    depends_on:
+      - arg0_hooks.impl
+    done_checks:
+      - ./tooling/closed_loop.sh --check parity
+    outputs:
+      - arg0/hooks behavior scenarios available for diff gate
 
   - id: exec.tests
     touch_scope:
@@ -104,6 +147,30 @@ cells:
       - ./tooling/closed_loop.sh --check build
     outputs:
       - app-server parity
+
+  - id: plan_mode.impl
+    touch_scope:
+      - src/app_server.cheng
+      - src/json_util.cheng
+      - protocol
+    depends_on:
+      - app_server.impl
+    done_checks:
+      - ./tooling/closed_loop.sh --check parity
+    outputs:
+      - proposed_plan parsing + plan item lifecycle
+      - request_user_input plan-mode protocol parity
+
+  - id: plan_mode.tests
+    touch_scope:
+      - tooling/parity/scenarios/app_server.yaml
+      - tooling/closed_loop.sh
+    depends_on:
+      - plan_mode.impl
+    done_checks:
+      - ./tooling/closed_loop.sh --check parity
+    outputs:
+      - plan mode protocol artifacts covered by parity
 
   - id: app.impl
     touch_scope:
@@ -229,11 +296,16 @@ cells:
       - docs
       - README.md
     depends_on:
+      - parity.impl
+      - arg0_hooks.impl
+      - arg0_hooks.tests
       - exec.impl
       - review.impl
       - resume_fork.impl
       - login_logout.impl
       - app_server.impl
+      - plan_mode.impl
+      - plan_mode.tests
       - app.impl
       - debug.impl
       - completion.impl

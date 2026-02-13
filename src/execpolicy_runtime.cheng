@@ -7,14 +7,14 @@ type
     ExecPolicyRuleMatch =
         isPolicy: bool
         decision: str
-        matchedPrefix: seq[str]
-        command: seq[str]
+        matchedPrefix: str[]
+        command: str[]
 
     ExecApprovalRequirement =
         kind: int32
         reason: str
         bypassSandbox: bool
-        proposedExecpolicyAmendment: seq[str]
+        proposedExecpolicyAmendment: str[]
 
 const
     execReqSkip = 0
@@ -31,8 +31,8 @@ fn execPolicyFeatureEnabled(): bool =
     #   features.exec_policy = true
     return configBoolValue("features.exec_policy", false)
 
-fn listRuleFiles(dirPath: str): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn listRuleFiles(dirPath: str): str[] =
+    var out: str[] = newSeq[str]()
     if len(dirPath) == 0 || ! os.dirExists(dirPath):
         return out
     let entries: seq_WalkDirEntry = os.walkDir(dirPath)
@@ -59,7 +59,7 @@ fn listRuleFiles(dirPath: str): seq[str] =
             j = j + 1
     return out
 
-fn loadExecPolicyRules(outRules: var seq[ExecPolicyRule], err: var str): bool =
+fn loadExecPolicyRules(outRules: var ExecPolicyRule[], err: var str): bool =
     err = ""
     outRules = newSeq[ExecPolicyRule]()
     if ! execPolicyFeatureEnabled():
@@ -75,7 +75,7 @@ fn loadExecPolicyRules(outRules: var seq[ExecPolicyRule], err: var str): bool =
 fn isPolicyMatch(ruleMatch: ExecPolicyRuleMatch): bool =
     return ruleMatch.isPolicy
 
-fn hasPolicyMatchWithDecision(matches: seq[ExecPolicyRuleMatch], decision: str): bool =
+fn hasPolicyMatchWithDecision(matches: ExecPolicyRuleMatch[], decision: str): bool =
     var i: int32 = 0
     while i < len(matches):
         if matches[i].isPolicy && normalizePolicy(matches[i].decision) == decision:
@@ -83,8 +83,8 @@ fn hasPolicyMatchWithDecision(matches: seq[ExecPolicyRuleMatch], decision: str):
         i = i + 1
     return false
 
-fn firstHeuristicMatch(matches: seq[ExecPolicyRuleMatch], decision: str): seq[str] =
-    var empty: seq[str] = newSeq[str]()
+fn firstHeuristicMatch(matches: ExecPolicyRuleMatch[], decision: str): str[] =
+    var empty: str[] = newSeq[str]()
     var i: int32 = 0
     while i < len(matches):
         let item = matches[i]
@@ -93,14 +93,14 @@ fn firstHeuristicMatch(matches: seq[ExecPolicyRuleMatch], decision: str): seq[st
         i = i + 1
     return empty
 
-fn tryDeriveExecpolicyAmendmentForPrompt(matches: seq[ExecPolicyRuleMatch]): seq[str] =
-    var empty: seq[str] = newSeq[str]()
+fn tryDeriveExecpolicyAmendmentForPrompt(matches: ExecPolicyRuleMatch[]): str[] =
+    var empty: str[] = newSeq[str]()
     if hasPolicyMatchWithDecision(matches, "prompt"):
         return empty
     return firstHeuristicMatch(matches, "prompt")
 
-fn tryDeriveExecpolicyAmendmentForAllow(matches: seq[ExecPolicyRuleMatch]): seq[str] =
-    var empty: seq[str] = newSeq[str]()
+fn tryDeriveExecpolicyAmendmentForAllow(matches: ExecPolicyRuleMatch[]): str[] =
+    var empty: str[] = newSeq[str]()
     var i: int32 = 0
     while i < len(matches):
         if matches[i].isPolicy:
@@ -108,12 +108,12 @@ fn tryDeriveExecpolicyAmendmentForAllow(matches: seq[ExecPolicyRuleMatch]): seq[
         i = i + 1
     return firstHeuristicMatch(matches, "allow")
 
-fn derivePromptReason(matches: seq[ExecPolicyRuleMatch]): str =
+fn derivePromptReason(matches: ExecPolicyRuleMatch[]): str =
     if hasPolicyMatchWithDecision(matches, "prompt"):
         return EXEC_POLICY_PROMPT_REASON
     return ""
 
-fn appendExecPolicyAllowRule(prefixTokens: seq[str], err: var str): bool =
+fn appendExecPolicyAllowRule(prefixTokens: str[], err: var str): bool =
     err = ""
     if ! execPolicyFeatureEnabled():
         err = "execpolicy feature is disabled"
@@ -125,7 +125,7 @@ fn appendExecPolicyAllowRule(prefixTokens: seq[str], err: var str): bool =
     if ! os.dirExists(rulesDir):
         os.createDir(rulesDir)
     let rulesPath = os.joinPath(rulesDir, "default.rules")
-    var tokensJson: seq[str] = newSeq[str]()
+    var tokensJson: str[] = newSeq[str]()
     var i: int32 = 0
     while i < len(prefixTokens):
         seqAdd(tokensJson, jstrString(prefixTokens[i]))
@@ -143,21 +143,21 @@ fn appendExecPolicyAllowRule(prefixTokens: seq[str], err: var str): bool =
     os.writeFile(rulesPath, content)
     return true
 
-fn evaluateExecPolicyRequirement(commandTokens: seq[str], approvalPolicy: str, sandboxMode: str, sandboxPermissions: str, err: var str): ExecApprovalRequirement =
+fn evaluateExecPolicyRequirement(commandTokens: str[], approvalPolicy: str, sandboxMode: str, sandboxPermissions: str, err: var str): ExecApprovalRequirement =
     err = ""
     if ! execPolicyFeatureEnabled():
         return ExecApprovalRequirement(kind: execReqSkip, reason: "", bypassSandbox: false, proposedExecpolicyAmendment: newSeq[str]())
-    var rules: seq[ExecPolicyRule]
+    var rules: ExecPolicyRule[]
     var loadErr = ""
     if ! loadExecPolicyRules(rules, loadErr):
         let reason = "execpolicy parse error: " + loadErr
         err = reason
         return ExecApprovalRequirement(kind: execReqForbidden, reason: reason, bypassSandbox: false, proposedExecpolicyAmendment: newSeq[str]())
-    var commands: seq[seq[str]] = parseShellLcPlainCommands(commandTokens)
+    var commands: str[][] = parseShellLcPlainCommands(commandTokens)
     if len(commands) == 0:
-        commands = newSeq[seq[str]]()
+        commands = newSeq[str[]]()
         seqAdd(commands, commandTokens)
-    var matches: seq[ExecPolicyRuleMatch] = newSeq[ExecPolicyRuleMatch]()
+    var matches: ExecPolicyRuleMatch[] = newSeq[ExecPolicyRuleMatch]()
     var cidx: int32 = 0
     while cidx < len(commands):
         let cmd = commands[cidx]

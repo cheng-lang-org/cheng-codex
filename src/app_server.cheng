@@ -14,7 +14,7 @@ type
         initialized: bool
         threadId: str
         turnId: str
-        loadedThreadIds: seq[str]
+        loadedThreadIds: str[]
         itemSeq: int32
         requestSeq: int32
         cwd: str
@@ -25,10 +25,11 @@ type
         baseInstructions: str
         developerInstructions: str
         reasoningEffort: str
-        loginIds: seq[str]
-        loginPids: seq[int32]
-        loginPorts: seq[int32]
-        approvalKeys: seq[str]
+        collaborationMode: str
+        loginIds: str[]
+        loginPids: int32[]
+        loginPorts: int32[]
+        approvalKeys: str[]
 
 type
     FuzzyResult =
@@ -36,25 +37,27 @@ type
         path: str
         fileName: str
         score: int32
-        indices: seq[int32]
+        indices: int32[]
         hasIndices: bool
     ApprovalDecision =
         decision: str
         forSession: bool
-        execpolicyAmendment: seq[str]
+        execpolicyAmendment: str[]
     TurnInfo =
         threadId: str
         turnId: str
 
 const FUZZY_LIMIT_PER_ROOT = 50
 const FUZZY_MAX_SCAN = 20000
+const PROPOSED_PLAN_OPEN_TAG = "<proposed_plan>"
+const PROPOSED_PLAN_CLOSE_TAG = "</proposed_plan>"
 
 fn stdoutWriteLine(line: str) =
     os.writeLine(os.get_stdout(), line)
     c_fflush(os.get_stdout())
 
 fn jsonRpcEvent(methodName: str, paramsJson: str): str =
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
     seqAdd(fields, jstrPair("method", jstrString(methodName)))
     if len(paramsJson) > 0:
@@ -62,7 +65,7 @@ fn jsonRpcEvent(methodName: str, paramsJson: str): str =
     return jstrObject(fields)
 
 fn jsonRpcResponse(id: int32, resultJson: str): str =
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
     seqAdd(fields, jstrPair("id", intToStr(id)))
     if len(resultJson) > 0:
@@ -72,7 +75,7 @@ fn jsonRpcResponse(id: int32, resultJson: str): str =
     return jstrObject(fields)
 
 fn jsonRpcRequest(id: int32, methodName: str, paramsJson: str): str =
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
     seqAdd(fields, jstrPair("id", intToStr(id)))
     seqAdd(fields, jstrPair("method", jstrString(methodName)))
@@ -81,10 +84,10 @@ fn jsonRpcRequest(id: int32, methodName: str, paramsJson: str): str =
     return jstrObject(fields)
 
 fn jsonRpcError(id: int32, code: int32, message: str): str =
-    var errFields: seq[str] = newSeq[str]()
+    var errFields: str[] = newSeq[str]()
     seqAdd(errFields, jstrPair("code", intToStr(code)))
     seqAdd(errFields, jstrPair("message", jstrString(message)))
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
     seqAdd(fields, jstrPair("id", intToStr(id)))
     seqAdd(fields, jstrPair("error", jstrObject(errFields)))
@@ -144,8 +147,8 @@ fn jsonFindObjectEnd(payload: str, startIdx: int32): int32 =
         idx = idx + 1
     return -1
 
-fn extractInputTokens(payload: str): seq[str] =
-    var outVal: seq[str] = newSeq[str]()
+fn extractInputTokens(payload: str): str[] =
+    var outVal: str[] = newSeq[str]()
     let inputIdx = jsonFindKeyAfter(payload, "input", 0)
     if inputIdx < 0:
         return outVal
@@ -225,8 +228,8 @@ fn extractPreview(payload: str): str =
         return direct
     return ""
 
-fn extractPlanItems(payload: str): seq[str] =
-    var items: seq[str] = newSeq[str]()
+fn extractPlanItems(payload: str): str[] =
+    var items: str[] = newSeq[str]()
     var idx: int32 = 0
     while idx < len(payload):
         let stepIdx = jsonFindKeyAfter(payload, "step", idx)
@@ -235,13 +238,67 @@ fn extractPlanItems(payload: str): seq[str] =
         let stepText = jsonExtractStringAfter(payload, "step", stepIdx)
         let statusText = jsonExtractStringAfter(payload, "status", stepIdx)
         if len(stepText) > 0:
-            var fields: seq[str] = newSeq[str]()
+            var fields: str[] = newSeq[str]()
             seqAdd(fields, jstrPair("step", jstrString(stepText)))
             if len(statusText) > 0:
                 seqAdd(fields, jstrPair("status", jstrString(statusText)))
             seqAdd(items, jstrObject(fields))
         idx = stepIdx + 4
     return items
+
+fn sliceInclusive(text: str, startIdx: int32, endIdx: int32): str =
+    if text == nil || len(text) == 0:
+        return ""
+    if startIdx < 0 || endIdx < startIdx || startIdx >= len(text):
+        return ""
+    var last = endIdx
+    if last >= len(text):
+        last = len(text) - 1
+    return __cheng_slice_string(text, startIdx, last, false)
+
+fn trimLeadingNewline(text: str): str =
+    if len(text) == 0:
+        return ""
+    if text[0] == '\n':
+        return sliceInclusive(text, 1, len(text) - 1)
+    if len(text) > 1 && text[0] == '\r' && text[1] == '\n':
+        return sliceInclusive(text, 2, len(text) - 1)
+    return text
+
+fn splitProposedPlanTranscript(text: str, normalOut: var str, planOut: var str) =
+    normalOut = ""
+    planOut = ""
+    if len(text) == 0:
+        return
+    var idx: int32 = 0
+    while idx < len(text):
+        let openIdx = indexOfSubstr(text, PROPOSED_PLAN_OPEN_TAG, idx)
+        if openIdx < 0:
+            normalOut = normalOut + sliceInclusive(text, idx, len(text) - 1)
+            break
+        if openIdx > idx:
+            normalOut = normalOut + sliceInclusive(text, idx, openIdx - 1)
+        let contentStart = openIdx + len(PROPOSED_PLAN_OPEN_TAG)
+        let closeIdx = indexOfSubstr(text, PROPOSED_PLAN_CLOSE_TAG, contentStart)
+        if closeIdx < 0:
+            normalOut = normalOut + sliceInclusive(text, openIdx, len(text) - 1)
+            break
+        if closeIdx > contentStart:
+            let raw = sliceInclusive(text, contentStart, closeIdx - 1)
+            planOut = planOut + trimLeadingNewline(raw)
+        idx = closeIdx + len(PROPOSED_PLAN_CLOSE_TAG)
+
+fn emitPlanItemFromTranscript(threadId: str, turnId: str, transcript: str): str =
+    var normalText = ""
+    var planText = ""
+    splitProposedPlanTranscript(transcript, normalText, planText)
+    if len(trimLine(planText)) == 0:
+        return transcript
+    let itemId = turnId + "-plan"
+    emitItemStarted(threadId, turnId, itemId, "plan", "", "")
+    emitPlanDelta(threadId, turnId, itemId, planText)
+    emitItemCompleted(threadId, turnId, itemId, "plan", "completed", -1, "", planText)
+    return normalText
 
 fn fileNameStartIndex(path: str): int32 =
     if len(path) == 0:
@@ -264,7 +321,7 @@ fn fileNameFromPath(path: str): str =
         return ""
     return __cheng_slice_string(path, start, len(path) - 1, false)
 
-fn fuzzyMatchIndicesLower(textLower: str, queryLower: str, outIndices: var seq[int32]): bool =
+fn fuzzyMatchIndicesLower(textLower: str, queryLower: str, outIndices: var int32[]): bool =
     outIndices = newSeq[int32]()
     if len(textLower) == 0 || len(queryLower) == 0:
         return false
@@ -277,7 +334,7 @@ fn fuzzyMatchIndicesLower(textLower: str, queryLower: str, outIndices: var seq[i
         t = t + 1
     return q == len(queryLower)
 
-fn fuzzyScoreFromIndices(indices: seq[int32], textLen: int32, queryLen: int32): int32 =
+fn fuzzyScoreFromIndices(indices: int32[], textLen: int32, queryLen: int32): int32 =
     if len(indices) == 0:
         return -1
     var gaps: int32 = 0
@@ -296,15 +353,15 @@ fn fuzzyScoreFromIndices(indices: seq[int32], textLen: int32, queryLen: int32): 
         return 0
     return score
 
-fn offsetIndices(indices: seq[int32], offset: int32): seq[int32] =
-    var outVal: seq[int32] = newSeq[int32]()
+fn offsetIndices(indices: int32[], offset: int32): int32[] =
+    var outVal: int32[] = newSeq[int32]()
     var idx: int32 = 0
     while idx < len(indices):
         seqAdd(outVal, indices[idx] + offset)
         idx = idx + 1
     return outVal
 
-fn fuzzyBestMatch(path: str, queryLower: str, outScore: var int32, outIndices: var seq[int32], outHasIndices: var bool): bool =
+fn fuzzyBestMatch(path: str, queryLower: str, outScore: var int32, outIndices: var int32[], outHasIndices: var bool): bool =
     outScore = -1
     outIndices = newSeq[int32]()
     outHasIndices = false
@@ -312,7 +369,7 @@ fn fuzzyBestMatch(path: str, queryLower: str, outScore: var int32, outIndices: v
         return false
     let fileName = fileNameFromPath(path)
     let fileNameLower = normalizePolicy(fileName)
-    var nameIndices: seq[int32] = newSeq[int32]()
+    var nameIndices: int32[] = newSeq[int32]()
     if fuzzyMatchIndicesLower(fileNameLower, queryLower, nameIndices):
         let score = fuzzyScoreFromIndices(nameIndices, len(fileName), len(queryLower))
         let start = fileNameStartIndex(path)
@@ -321,7 +378,7 @@ fn fuzzyBestMatch(path: str, queryLower: str, outScore: var int32, outIndices: v
         outHasIndices = true
         return true
     let pathLower = normalizePolicy(path)
-    var pathIndices: seq[int32] = newSeq[int32]()
+    var pathIndices: int32[] = newSeq[int32]()
     if fuzzyMatchIndicesLower(pathLower, queryLower, pathIndices):
         let score = fuzzyScoreFromIndices(pathIndices, len(path), len(queryLower))
         outScore = score
@@ -337,7 +394,7 @@ fn fuzzyResultBetter(left: FuzzyResult, right: FuzzyResult): bool =
         return false
     return left.path < right.path
 
-fn hasInt32Item(items: seq[int32], value: int32): bool =
+fn hasInt32Item(items: int32[], value: int32): bool =
     var idx: int32 = 0
     while idx < len(items):
         if items[idx] == value:
@@ -345,12 +402,12 @@ fn hasInt32Item(items: seq[int32], value: int32): bool =
         idx = idx + 1
     return false
 
-fn sortFuzzyResults(items: var seq[FuzzyResult]) =
+fn sortFuzzyResults(items: var FuzzyResult[]) =
     let total = len(items)
     if total <= 1:
         return
-    var used: seq[int32] = newSeq[int32]()
-    var sorted: seq[FuzzyResult] = newSeq[FuzzyResult]()
+    var used: int32[] = newSeq[int32]()
+    var sorted: FuzzyResult[] = newSeq[FuzzyResult]()
     while len(sorted) < total:
         var found = false
         var bestIdx: int32 = 0
@@ -371,13 +428,13 @@ fn sortFuzzyResults(items: var seq[FuzzyResult]) =
         seqAdd(sorted, items[bestIdx])
     items = sorted
 
-fn shrinkFuzzyResults(items: var seq[FuzzyResult], newLen: int32) =
+fn shrinkFuzzyResults(items: var FuzzyResult[], newLen: int32) =
     if newLen <= 0:
         items = newSeq[FuzzyResult]()
         return
     if newLen >= len(items):
         return
-    var outVal: seq[FuzzyResult] = newSeq[FuzzyResult]()
+    var outVal: FuzzyResult[] = newSeq[FuzzyResult]()
     var idx: int32 = 0
     while idx < newLen:
         seqAdd(outVal, items[idx])
@@ -398,8 +455,8 @@ fn fuzzyIgnoredPath(path: str): bool =
         return true
     return false
 
-fn runFuzzyFileSearch(query: str, roots: seq[str]): seq[FuzzyResult] =
-    var results: seq[FuzzyResult] = newSeq[FuzzyResult]()
+fn runFuzzyFileSearch(query: str, roots: str[]): FuzzyResult[] =
+    var results: FuzzyResult[] = newSeq[FuzzyResult]()
     let trimmedQuery = trimLine(query)
     if len(trimmedQuery) == 0:
         return results
@@ -411,7 +468,7 @@ fn runFuzzyFileSearch(query: str, roots: seq[str]): seq[FuzzyResult] =
             r = r + 1
             continue
         let files = os.walkDirRec(root)
-        var rootResults: seq[FuzzyResult] = newSeq[FuzzyResult]()
+        var rootResults: FuzzyResult[] = newSeq[FuzzyResult]()
         var scanned: int32 = 0
         var idx: int32 = 0
         while idx < len(files):
@@ -426,7 +483,7 @@ fn runFuzzyFileSearch(query: str, roots: seq[str]): seq[FuzzyResult] =
             if scanned > FUZZY_MAX_SCAN:
                 break
             var score: int32 = -1
-            var indices: seq[int32] = newSeq[int32]()
+            var indices: int32[] = newSeq[int32]()
             var hasIndices = false
             if fuzzyBestMatch(path, queryLower, score, indices, hasIndices):
                 let name = fileNameFromPath(path)
@@ -452,7 +509,7 @@ fn runFuzzyFileSearch(query: str, roots: seq[str]): seq[FuzzyResult] =
     return results
 
 fn fuzzyResultJson(item: FuzzyResult): str =
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("root", jstrString(item.root)))
     seqAdd(fields, jstrPair("path", jstrString(item.path)))
     seqAdd(fields, jstrPair("fileName", jstrString(item.fileName)))
@@ -461,7 +518,7 @@ fn fuzzyResultJson(item: FuzzyResult): str =
         score = 0
     seqAdd(fields, jstrPair("score", intToStr(score)))
     if item.hasIndices && len(item.indices) > 0:
-        var indicesJson: seq[str] = newSeq[str]()
+        var indicesJson: str[] = newSeq[str]()
         var idx: int32 = 0
         while idx < len(item.indices):
             seqAdd(indicesJson, intToStr(item.indices[idx]))
@@ -515,7 +572,7 @@ fn buildUserAgent(payload: str): str =
     # Build incrementally to avoid deep temporary chains.
     var agent: str = originator
     agent = agent + "/"
-    agent = agent + CODEX_VERSION
+    agent = agent + codexVersion()
     if len(name) > 0 || len(version) > 0:
         var label: str = originator
         if len(name) > 0:
@@ -545,11 +602,11 @@ fn sandboxPolicyJson(mode: str, cwd: str): str =
     if norm == "read-only":
         return jstrObject seqStr1(jstrPair("type", jstrString "readOnly"))
     if norm == "workspace-write":
-        var roots: seq[str] = newSeq[str]()
+        var roots: str[] = newSeq[str]()
         if len(cwd) > 0:
             seqAdd(roots, jstrString cwd)
         let networkEnabled = !sandboxNetworkDisabled()
-        var fields: seq[str] = newSeq[str]()
+        var fields: str[] = newSeq[str]()
         seqAdd(fields, jstrPair("type", jstrString "workspaceWrite"))
         seqAdd(fields, jstrPair("writableRoots", jstrArray roots))
         seqAdd(fields, jstrPair("networkAccess", jstrBool networkEnabled))
@@ -567,7 +624,7 @@ fn sandboxPolicyJson(mode: str, cwd: str): str =
     return jstrObject seqStr1(jstrPair("type", jstrString "dangerFullAccess"))
 
 fn defaultReasoningEffortOptionsJson(): str =
-    var options: seq[str] = newSeq[str]()
+    var options: str[] = newSeq[str]()
     seqAdd(options, jstrObject seqStr2(
         jstrPair("reasoningEffort", jstrString "low"),
         jstrPair("description", jstrString "Fast responses with lighter reasoning")
@@ -586,7 +643,7 @@ fn defaultReasoningEffortOptionsJson(): str =
     ))
     return jstrArray options
 
-fn buildThreadFields(threadId: str): seq[str] =
+fn buildThreadFields(threadId: str): str[] =
     var header = readThreadHeader(threadId)
     var preview = ""
     var createdAt = 0
@@ -605,7 +662,7 @@ fn buildThreadFields(threadId: str): seq[str] =
             source = headerSource
     let provider = resolveModelProvider()
     let threadPath = threadFilePath threadId
-    var threadFields: seq[str] = newSeq[str]()
+    var threadFields: str[] = newSeq[str]()
     seqAdd(threadFields, jstrPair("id", jstrString threadId))
     seqAdd(threadFields, jstrPair("preview", jstrString preview))
     seqAdd(threadFields, jstrPair("modelProvider", jstrString provider))
@@ -613,7 +670,7 @@ fn buildThreadFields(threadId: str): seq[str] =
     seqAdd(threadFields, jstrPair("updatedAt", intToStr updatedAt))
     seqAdd(threadFields, jstrPair("path", jstrString threadPath))
     seqAdd(threadFields, jstrPair("cwd", jstrString cwd))
-    seqAdd(threadFields, jstrPair("cliVersion", jstrString CODEX_VERSION))
+    seqAdd(threadFields, jstrPair("cliVersion", jstrString(codexVersion())))
     seqAdd(threadFields, jstrPair("source", jstrString source))
     seqAdd(threadFields, jstrPair("gitInfo", jstrNull()))
     return threadFields
@@ -623,13 +680,13 @@ fn buildThreadObject(threadId: str): str =
     seqAdd(threadFields, jstrPair("turns", jstrArray newSeq[str]()))
     return jstrObject threadFields
 
-fn buildThreadObjectWithTurns(threadId: str, turns: seq[str]): str =
+fn buildThreadObjectWithTurns(threadId: str, turns: str[]): str =
     var threadFields = buildThreadFields(threadId)
     seqAdd(threadFields, jstrPair("turns", jstrArray turns))
     return jstrObject threadFields
 
 fn buildTurnObject(turnId: str, status: str): str =
-    var turnFields: seq[str] = newSeq[str]()
+    var turnFields: str[] = newSeq[str]()
     seqAdd(turnFields, jstrPair("id", jstrString turnId))
     seqAdd(turnFields, jstrPair("items", jstrArray newSeq[str]()))
     if len(status) > 0:
@@ -773,7 +830,7 @@ fn buildRateLimitWindow(node: json.JsonNode): str =
     let used = int32(usedVal + 0.5)
     let limitSec = getIntField(node, "limit_window_seconds", -1)
     let resetsAt = getIntField(node, "reset_at", -1)
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("usedPercent", intToStr(used)))
     if limitSec > 0:
         seqAdd(fields, jstrPair("windowDurationMins", intToStr(int32(limitSec / 60))))
@@ -791,7 +848,7 @@ fn buildCreditsSnapshot(node: json.JsonNode): str =
     let hasCredits = getBoolField(node, "has_credits", false)
     let unlimited = getBoolField(node, "unlimited", false)
     let balance = getStringField(node, "balance", "")
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("hasCredits", jstrBool(hasCredits)))
     seqAdd(fields, jstrPair("unlimited", jstrBool(unlimited)))
     var balanceJson = jstrNull()
@@ -804,10 +861,23 @@ fn collabModePrompt(fileName: str): str =
     let path = findPromptFile(fileName)
     return loadPromptFile(path)
 
+fn defaultCollaborationModeInstructions(): str =
+    let text = collabModePrompt("collaboration_default.md")
+    if len(text) > 0:
+        return text
+    var out = "# Collaboration Mode: Default\n\n"
+    out = out + "You are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.\n\n"
+    out = out + "Your active mode changes only when new developer instructions with a different `<collaboration_mode>...</collaboration_mode>` change it; user requests or tool descriptions do not change mode by themselves. Known mode names are Plan and Default.\n\n"
+    out = out + "## request_user_input availability\n\n"
+    out = out + requestUserInputAvailabilityInstruction("default")
+    out = out + "\n\nIf a decision is necessary and cannot be discovered from local context, ask the user directly. However, in Default mode you should strongly prefer executing the user's request rather than stopping to ask questions."
+    return out
+
 fn collaborationModePresetJson(mode: str, model: str, effort: str, instructions: str): str =
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("mode", jstrString(mode)))
-    seqAdd(fields, jstrPair("model", jstrString(model)))
+    if len(model) > 0:
+        seqAdd(fields, jstrPair("model", jstrString(model)))
     if len(effort) > 0:
         seqAdd(fields, jstrPair("reasoning_effort", jstrString(effort)))
     if len(instructions) > 0:
@@ -816,12 +886,10 @@ fn collaborationModePresetJson(mode: str, model: str, effort: str, instructions:
 
 fn collaborationModeListJson(): str =
     let planInst = collabModePrompt("collaboration_plan.md")
-    let pairInst = collabModePrompt("collaboration_pair_programming.md")
-    let execInst = collabModePrompt("collaboration_execute.md")
-    var items: seq[str] = newSeq[str]()
-    seqAdd(items, collaborationModePresetJson("plan", "gpt-5.2-codex", "medium", planInst))
-    seqAdd(items, collaborationModePresetJson("pair_programming", "gpt-5.2-codex", "medium", pairInst))
-    seqAdd(items, collaborationModePresetJson("execute", "gpt-5.2-codex", "xhigh", execInst))
+    let defaultInst = defaultCollaborationModeInstructions()
+    var items: str[] = newSeq[str]()
+    seqAdd(items, collaborationModePresetJson("plan", "", "medium", planInst))
+    seqAdd(items, collaborationModePresetJson("default", "", "", defaultInst))
     return jstrArray(items)
 
 fn extractCollaborationMode(payload: str): str =
@@ -848,7 +916,10 @@ fn extractCollaborationMode(payload: str): str =
 fn applyCollaborationMode(state: var ServerState, modeJson: str): bool =
     if len(modeJson) == 0:
         return false
-    let mode = normalizePolicy(jsonExtractString(modeJson, "mode"))
+    let rawMode = jsonExtractString(modeJson, "mode")
+    if len(rawMode) == 0:
+        return false
+    let mode = normalizeCollaborationModeKey(rawMode)
     var model = jsonExtractString(modeJson, "model")
     var effort = jsonExtractString(modeJson, "reasoning_effort")
     if len(effort) == 0:
@@ -856,21 +927,37 @@ fn applyCollaborationMode(state: var ServerState, modeJson: str): bool =
     var devInst = jsonExtractString(modeJson, "developer_instructions")
     if len(devInst) == 0:
         devInst = jsonExtractString(modeJson, "developerInstructions")
-    if len(mode) > 0:
+    let settingsJson = jsonExtractRawObjectField(modeJson, "settings")
+    if len(settingsJson) > 0:
         if len(model) == 0:
-            model = "gpt-5.2-codex"
+            model = jsonExtractString(settingsJson, "model")
         if len(effort) == 0:
-            if mode == "execute":
-                effort = "xhigh"
-            else:
-                effort = "medium"
+            effort = jsonExtractString(settingsJson, "reasoning_effort")
+        if len(effort) == 0:
+            effort = jsonExtractString(settingsJson, "reasoningEffort")
         if len(devInst) == 0:
-            if mode == "plan":
-                devInst = collabModePrompt("collaboration_plan.md")
-            elif mode == "pair_programming":
-                devInst = collabModePrompt("collaboration_pair_programming.md")
-            elif mode == "execute":
-                devInst = collabModePrompt("collaboration_execute.md")
+            devInst = jsonExtractString(settingsJson, "developer_instructions")
+        if len(devInst) == 0:
+            devInst = jsonExtractString(settingsJson, "developerInstructions")
+    if len(effort) == 0:
+        if mode == "plan":
+            effort = "medium"
+        elif mode == "pair_programming":
+            effort = "medium"
+        elif mode == "execute":
+            effort = "xhigh"
+    if len(devInst) == 0:
+        if mode == "plan":
+            devInst = collabModePrompt("collaboration_plan.md")
+        elif mode == "default":
+            devInst = defaultCollaborationModeInstructions()
+        elif mode == "pair_programming":
+            devInst = collabModePrompt("collaboration_pair_programming.md")
+        elif mode == "execute":
+            devInst = collabModePrompt("collaboration_execute.md")
+    state.collaborationMode = mode
+    if len(state.collaborationMode) == 0:
+        state.collaborationMode = "default"
     if len(model) > 0:
         state.model = model
     if len(effort) > 0:
@@ -878,6 +965,158 @@ fn applyCollaborationMode(state: var ServerState, modeJson: str): bool =
     if len(devInst) > 0:
         state.developerInstructions = devInst
     return true
+
+fn currentTurnMode(state: ServerState, requestedMode: str): str =
+    let requested = normalizePolicy(trimLine(requestedMode))
+    if requested == "review":
+        return "review"
+    let mode = normalizeCollaborationModeKey(state.collaborationMode)
+    if len(mode) > 0:
+        return mode
+    return "default"
+
+fn requestUserInputModeForTurn(state: ServerState, requestedMode: str): str =
+    let requested = normalizePolicy(trimLine(requestedMode))
+    if requested == "exec" || requested == "execute":
+        return "execute"
+    if requested == "ask":
+        return "default"
+    return currentTurnMode(state, requestedMode)
+
+fn waitForRequestUserInput(state: var ServerState, requestId: int32): str =
+    while true:
+        let rl = stdinReadLine()
+        if ! rl.ok:
+            break
+        let trimmed = trimLine(rl.line)
+        if len(trimmed) == 0:
+            continue
+        let respId = jsonExtractInt(trimmed, "id", -1)
+        if respId == requestId:
+            let resultObj = jsonExtractRawObjectField(trimmed, "result")
+            if len(resultObj) == 0:
+                return requestUserInputEmptyResponseJson()
+            return requestUserInputNormalizeResponse(resultObj)
+        let methodName = jsonExtractString(trimmed, "method")
+        if methodName == "turn/interrupt":
+            let reqId = jsonExtractInt(trimmed, "id", -1)
+            if reqId > 0:
+                sendResponse(reqId, jstrObject(newSeq[str]()))
+            return requestUserInputEmptyResponseJson()
+    return requestUserInputEmptyResponseJson()
+
+fn requestUserInputQuestionsForAppServer(arguments: str): str =
+    let parsed = parseJsonSafe(arguments)
+    if ! parsed.ok:
+        return jstrArray(newSeq[str]())
+    let root: json.JsonNode = parsed.value
+    if root == nil || root.kind != json.JObject || ! root.hasKey("questions"):
+        return jstrArray(newSeq[str]())
+    let questions = json.jsonGetField(root, "questions")
+    if questions == nil || questions.kind != json.JArray:
+        return jstrArray(newSeq[str]())
+    var outItems: str[] = newSeq[str]()
+    var qidx: int32 = 0
+    while qidx < len(questions.a):
+        let q = questions.a[qidx]
+        if q != nil && q.kind == json.JObject:
+            let id = getStringField(q, "id", "")
+            let header = getStringField(q, "header", "")
+            let questionText = getStringField(q, "question", "")
+            var isOther = true
+            if q.hasKey("is_other"):
+                isOther = getBoolField(q, "is_other", true)
+            elif q.hasKey("isOther"):
+                isOther = getBoolField(q, "isOther", true)
+            var isSecret = false
+            if q.hasKey("is_secret"):
+                isSecret = getBoolField(q, "is_secret", false)
+            elif q.hasKey("isSecret"):
+                isSecret = getBoolField(q, "isSecret", false)
+            var qFields: str[] = newSeq[str]()
+            seqAdd(qFields, jstrPair("id", jstrString(id)))
+            seqAdd(qFields, jstrPair("header", jstrString(header)))
+            seqAdd(qFields, jstrPair("question", jstrString(questionText)))
+            seqAdd(qFields, jstrPair("isOther", jstrBool(isOther)))
+            seqAdd(qFields, jstrPair("isSecret", jstrBool(isSecret)))
+            var optionsValue = jstrNull()
+            if q.hasKey("options"):
+                let options = json.jsonGetField(q, "options")
+                if options != nil && options.kind == json.JArray:
+                    var optionItems: str[] = newSeq[str]()
+                    var oidx: int32 = 0
+                    while oidx < len(options.a):
+                        let opt = options.a[oidx]
+                        if opt != nil && opt.kind == json.JObject:
+                            let label = getStringField(opt, "label", "")
+                            let desc = getStringField(opt, "description", "")
+                            var optFields: str[] = newSeq[str]()
+                            seqAdd(optFields, jstrPair("label", jstrString(label)))
+                            seqAdd(optFields, jstrPair("description", jstrString(desc)))
+                            seqAdd(optionItems, jstrObject(optFields))
+                        oidx = oidx + 1
+                    optionsValue = jstrArray(optionItems)
+            seqAdd(qFields, jstrPair("options", optionsValue))
+            seqAdd(outItems, jstrObject(qFields))
+        qidx = qidx + 1
+    return jstrArray(outItems)
+
+fn requestUserInputQuestionsValidationError(arguments: str): str =
+    let parsed = parseJsonSafe(arguments)
+    if ! parsed.ok:
+        return "failed to parse function arguments"
+    let root: json.JsonNode = parsed.value
+    if root == nil || root.kind != json.JObject || ! root.hasKey("questions"):
+        return "failed to parse function arguments"
+    let questions = json.jsonGetField(root, "questions")
+    if questions == nil || questions.kind != json.JArray:
+        return "failed to parse function arguments"
+    var qidx: int32 = 0
+    while qidx < len(questions.a):
+        let q = questions.a[qidx]
+        if q == nil || q.kind != json.JObject:
+            return "failed to parse function arguments"
+        if ! q.hasKey("id") || ! q.hasKey("header") || ! q.hasKey("question"):
+            return "failed to parse function arguments"
+        if ! q.hasKey("options"):
+            return "request_user_input requires non-empty options for every question"
+        let options = json.jsonGetField(q, "options")
+        if options == nil || options.kind != json.JArray || len(options.a) == 0:
+            return "request_user_input requires non-empty options for every question"
+        qidx = qidx + 1
+    return ""
+
+fn requestUserInputItemId(callId: str): str =
+    if len(callId) > 0:
+        return callId
+    return "request-user-input"
+
+fn requestUserInputShouldCallClient(mode: str): bool =
+    return normalizeCollaborationModeKey(mode) == "plan"
+
+fn requestUserInputUnavailableForMode(mode: str): str =
+    return requestUserInputUnavailableMessage(mode)
+
+fn requestUserInputBuildRequestParams(threadId: str, turnId: str, itemId: str, arguments: str): str =
+    var fields: str[] = newSeq[str]()
+    seqAdd(fields, jstrPair("threadId", jstrString(threadId)))
+    seqAdd(fields, jstrPair("turnId", jstrString(turnId)))
+    seqAdd(fields, jstrPair("itemId", jstrString(itemId)))
+    seqAdd(fields, jstrPair("questions", requestUserInputQuestionsForAppServer(arguments)))
+    return jstrObject(fields)
+
+fn requestUserInputMethodName(): str =
+    return "item/tool/requestUserInput"
+
+fn requestUserInputToolOutput(mode: str, responseJson: str): str =
+    if requestUserInputShouldCallClient(mode):
+        if len(responseJson) > 0:
+            return responseJson
+        return requestUserInputEmptyResponseJson()
+    return requestUserInputUnavailableForMode(mode)
+
+fn requestUserInputToolOk(mode: str): bool =
+    return requestUserInputShouldCallClient(mode)
 
 fn updateStateFromParams(state: var ServerState, payload: str, workDir: str) =
     let cwd = jsonExtractString(payload, "cwd")
@@ -923,6 +1162,11 @@ fn updateStateFromParams(state: var ServerState, payload: str, workDir: str) =
         let collabJson = extractCollaborationMode(payload)
         if len(collabJson) > 0:
             usedCollab = applyCollaborationMode(state, collabJson)
+        else:
+            if len(state.collaborationMode) == 0:
+                state.collaborationMode = "default"
+            if normalizeCollaborationModeKey(state.collaborationMode) == "default" && len(state.developerInstructions) == 0:
+                state.developerInstructions = defaultCollaborationModeInstructions()
     if !usedCollab:
         var effort = jsonExtractString(payload, "effort")
         if len(effort) == 0:
@@ -1000,8 +1244,8 @@ fn wantsNoSandboxApproval(policy: str): bool =
         return false
     return true
 
-fn approvalKeyForCommand(commandTokens: seq[str], commandText: str, cwd: str, sandboxPermissions: str): str =
-    var cmdItems: seq[str] = newSeq[str]()
+fn approvalKeyForCommand(commandTokens: str[], commandText: str, cwd: str, sandboxPermissions: str): str =
+    var cmdItems: str[] = newSeq[str]()
     if len(commandTokens) > 0:
         var i: int32 = 0
         while i < len(commandTokens):
@@ -1009,7 +1253,7 @@ fn approvalKeyForCommand(commandTokens: seq[str], commandText: str, cwd: str, sa
             i = i + 1
     else:
         seqAdd(cmdItems, jstrString(commandText))
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("command", jstrArray(cmdItems)))
     seqAdd(fields, jstrPair("cwd", jstrString(cwd)))
     seqAdd(fields, jstrPair("sandboxPermissions", jstrString(sandboxPermissions)))
@@ -1048,7 +1292,7 @@ fn ensureLoadedThread(state: var ServerState, threadId: str) =
 fn removeLoadedThread(state: var ServerState, threadId: str) =
     if len(threadId) == 0:
         return
-    var out: seq[str] = newSeq[str]()
+    var out: str[] = newSeq[str]()
     var removed = false
     var idx: int32 = 0
     while idx < len(state.loadedThreadIds):
@@ -1083,8 +1327,8 @@ fn parseForSession(payload: str): bool =
         return true
     return false
 
-fn parseExecpolicyAmendment(payload: str): seq[str] =
-    var empty: seq[str] = newSeq[str]()
+fn parseExecpolicyAmendment(payload: str): str[] =
+    var empty: str[] = newSeq[str]()
     let direct = jsonExtractStringArrayAfter(payload, "execpolicyAmendment", 0)
     if len(direct) > 0:
         return direct
@@ -1137,26 +1381,26 @@ fn addLoginSession(state: var ServerState, loginId: str, pid: int32, port: int32
     seqAdd(state.loginPids, pid)
     seqAdd(state.loginPorts, port)
 
-fn shrinkSeqString(items: var seq[str], newLen: int32) =
+fn shrinkSeqString(items: var str[], newLen: int32) =
     if newLen <= 0:
         items = newSeq[str]()
         return
     if newLen >= len(items):
         return
-    var out: seq[str] = newSeq[str]()
+    var out: str[] = newSeq[str]()
     var i: int32 = 0
     while i < newLen:
         seqAdd(out, items[i])
         i = i + 1
     items = out
 
-fn shrinkSeqInt32(items: var seq[int32], newLen: int32) =
+fn shrinkSeqInt32(items: var int32[], newLen: int32) =
     if newLen <= 0:
         items = newSeq[int32]()
         return
     if newLen >= len(items):
         return
-    var out: seq[int32] = newSeq[int32]()
+    var out: int32[] = newSeq[int32]()
     var i: int32 = 0
     while i < newLen:
         seqAdd(out, items[i])
@@ -1175,9 +1419,9 @@ fn removeLoginAt(state: var ServerState, idx: int32) =
     let last = len(state.loginIds) - 1
     if idx < 0 || idx > last:
         return
-    var outIds: seq[str] = newSeq[str]()
-    var outPids: seq[int32] = newSeq[int32]()
-    var outPorts: seq[int32] = newSeq[int32]()
+    var outIds: str[] = newSeq[str]()
+    var outPids: int32[] = newSeq[int32]()
+    var outPorts: int32[] = newSeq[int32]()
     var i: int32 = 0
     while i < len(state.loginIds):
         if i != idx:
@@ -1234,18 +1478,18 @@ fn nextRequestId(state: var ServerState): int32 =
     return state.requestSeq
 
 fn emitThreadStarted(threadId: str) =
-    var params: seq[str] = newSeq[str]()
+    var params: str[] = newSeq[str]()
     seqAdd(params, jstrPair("thread", buildThreadObject(threadId)))
     sendEvent("thread/started", jstrObject(params))
 
 fn emitTurnStarted(threadId: str, turnId: str) =
-    var params: seq[str] = newSeq[str]()
+    var params: str[] = newSeq[str]()
     seqAdd(params, jstrPair("threadId", jstrString(threadId)))
     seqAdd(params, jstrPair("turn", buildTurnObject(turnId, "inProgress")))
     sendEvent("turn/started", jstrObject(params))
 
 fn emitTurnCompleted(threadId: str, turnId: str, ok: bool) =
-    var params: seq[str] = newSeq[str]()
+    var params: str[] = newSeq[str]()
     seqAdd(params, jstrPair("threadId", jstrString(threadId)))
     var statusText = "completed"
     if ! ok:
@@ -1257,7 +1501,7 @@ fn emitItemStarted(threadId: str, turnId: str, itemId: str, itemType: str, comma
     var itemJson = ""
     if itemType == "commandExecution":
         let cwd = threadCwd threadId
-        var itemFields: seq[str] = newSeq[str]()
+        var itemFields: str[] = newSeq[str]()
         seqAdd(itemFields, jstrPair("type", jstrString "commandExecution"))
         seqAdd(itemFields, jstrPair("id", jstrString itemId))
         seqAdd(itemFields, jstrPair("command", jstrString command))
@@ -1270,14 +1514,26 @@ fn emitItemStarted(threadId: str, turnId: str, itemId: str, itemType: str, comma
         seqAdd(itemFields, jstrPair("durationMs", jstrNull()))
         itemJson = jstrObject itemFields
     elif itemType == "fileChange":
-        var itemFields: seq[str] = newSeq[str]()
+        var itemFields: str[] = newSeq[str]()
         seqAdd(itemFields, jstrPair("type", jstrString "fileChange"))
         seqAdd(itemFields, jstrPair("id", jstrString itemId))
         seqAdd(itemFields, jstrPair("changes", jstrArray newSeq[str]()))
         seqAdd(itemFields, jstrPair("status", jstrString "inProgress"))
         itemJson = jstrObject itemFields
+    elif itemType == "agentMessage":
+        var itemFields: str[] = newSeq[str]()
+        seqAdd(itemFields, jstrPair("type", jstrString "agentMessage"))
+        seqAdd(itemFields, jstrPair("id", jstrString itemId))
+        seqAdd(itemFields, jstrPair("text", jstrString ""))
+        itemJson = jstrObject itemFields
+    elif itemType == "plan":
+        var itemFields: str[] = newSeq[str]()
+        seqAdd(itemFields, jstrPair("type", jstrString "plan"))
+        seqAdd(itemFields, jstrPair("id", jstrString itemId))
+        seqAdd(itemFields, jstrPair("text", jstrString ""))
+        itemJson = jstrObject itemFields
     else:
-        var itemFields: seq[str] = newSeq[str]()
+        var itemFields: str[] = newSeq[str]()
         seqAdd(itemFields, jstrPair("id", jstrString itemId))
         seqAdd(itemFields, jstrPair("type", jstrString itemType))
         seqAdd(itemFields, jstrPair("status", jstrString "running"))
@@ -1286,7 +1542,7 @@ fn emitItemStarted(threadId: str, turnId: str, itemId: str, itemType: str, comma
         if len(tool) > 0:
             seqAdd(itemFields, jstrPair("tool", jstrString tool))
         itemJson = jstrObject itemFields
-    var params: seq[str] = newSeq[str]()
+    var params: str[] = newSeq[str]()
     if len(threadId) > 0:
         seqAdd(params, jstrPair("threadId", jstrString threadId))
     if len(turnId) > 0:
@@ -1298,7 +1554,7 @@ fn emitItemCompleted(threadId: str, turnId: str, itemId: str, itemType: str, sta
     var itemJson = ""
     if itemType == "commandExecution":
         let cwd = threadCwd threadId
-        var itemFields: seq[str] = newSeq[str]()
+        var itemFields: str[] = newSeq[str]()
         seqAdd(itemFields, jstrPair("type", jstrString "commandExecution"))
         seqAdd(itemFields, jstrPair("id", jstrString itemId))
         seqAdd(itemFields, jstrPair("command", jstrString command))
@@ -1314,14 +1570,26 @@ fn emitItemCompleted(threadId: str, turnId: str, itemId: str, itemType: str, sta
         seqAdd(itemFields, jstrPair("durationMs", jstrNull()))
         itemJson = jstrObject itemFields
     elif itemType == "fileChange":
-        var itemFields: seq[str] = newSeq[str]()
+        var itemFields: str[] = newSeq[str]()
         seqAdd(itemFields, jstrPair("type", jstrString "fileChange"))
         seqAdd(itemFields, jstrPair("id", jstrString itemId))
         seqAdd(itemFields, jstrPair("changes", jstrArray newSeq[str]()))
         seqAdd(itemFields, jstrPair("status", jstrString status))
         itemJson = jstrObject itemFields
+    elif itemType == "agentMessage":
+        var itemFields: str[] = newSeq[str]()
+        seqAdd(itemFields, jstrPair("type", jstrString "agentMessage"))
+        seqAdd(itemFields, jstrPair("id", jstrString itemId))
+        seqAdd(itemFields, jstrPair("text", jstrString command))
+        itemJson = jstrObject itemFields
+    elif itemType == "plan":
+        var itemFields: str[] = newSeq[str]()
+        seqAdd(itemFields, jstrPair("type", jstrString "plan"))
+        seqAdd(itemFields, jstrPair("id", jstrString itemId))
+        seqAdd(itemFields, jstrPair("text", jstrString command))
+        itemJson = jstrObject itemFields
     else:
-        var itemFields: seq[str] = newSeq[str]()
+        var itemFields: str[] = newSeq[str]()
         seqAdd(itemFields, jstrPair("id", jstrString itemId))
         seqAdd(itemFields, jstrPair("type", jstrString itemType))
         seqAdd(itemFields, jstrPair("status", jstrString status))
@@ -1330,7 +1598,7 @@ fn emitItemCompleted(threadId: str, turnId: str, itemId: str, itemType: str, sta
         if len(tool) > 0:
             seqAdd(itemFields, jstrPair("tool", jstrString tool))
         itemJson = jstrObject itemFields
-    var params: seq[str] = newSeq[str]()
+    var params: str[] = newSeq[str]()
     if len(threadId) > 0:
         seqAdd(params, jstrPair("threadId", jstrString threadId))
     if len(turnId) > 0:
@@ -1341,7 +1609,7 @@ fn emitItemCompleted(threadId: str, turnId: str, itemId: str, itemType: str, sta
 fn emitCommandOutputDelta(threadId: str, turnId: str, itemId: str, delta: str) =
     if len(delta) == 0:
         return
-    var params: seq[str] = newSeq[str]()
+    var params: str[] = newSeq[str]()
     if len(threadId) > 0:
         seqAdd(params, jstrPair("threadId", jstrString(threadId)))
     if len(turnId) > 0:
@@ -1354,7 +1622,7 @@ fn emitCommandOutputDelta(threadId: str, turnId: str, itemId: str, delta: str) =
 fn emitFileChangeDelta(threadId: str, turnId: str, itemId: str, delta: str) =
     if len(delta) == 0:
         return
-    var params: seq[str] = newSeq[str]()
+    var params: str[] = newSeq[str]()
     if len(threadId) > 0:
         seqAdd(params, jstrPair("threadId", jstrString(threadId)))
     if len(turnId) > 0:
@@ -1370,7 +1638,7 @@ fn emitAgentDelta(threadId: str, turnId: str, itemId: str, text: str) =
     var finalItemId = itemId
     if len(finalItemId) == 0 && len(turnId) > 0:
         finalItemId = turnId + "-agent"
-    var params: seq[str] = newSeq[str]()
+    var params: str[] = newSeq[str]()
     if len(threadId) > 0:
         seqAdd(params, jstrPair("threadId", jstrString threadId))
     if len(turnId) > 0:
@@ -1380,10 +1648,23 @@ fn emitAgentDelta(threadId: str, turnId: str, itemId: str, text: str) =
     seqAdd(params, jstrPair("delta", jstrString text))
     sendEvent("item/agentMessage/delta", jstrObject params)
 
+fn emitPlanDelta(threadId: str, turnId: str, itemId: str, delta: str) =
+    if len(delta) == 0:
+        return
+    var params: str[] = newSeq[str]()
+    if len(threadId) > 0:
+        seqAdd(params, jstrPair("threadId", jstrString threadId))
+    if len(turnId) > 0:
+        seqAdd(params, jstrPair("turnId", jstrString turnId))
+    if len(itemId) > 0:
+        seqAdd(params, jstrPair("itemId", jstrString itemId))
+    seqAdd(params, jstrPair("delta", jstrString delta))
+    sendEvent("item/plan/delta", jstrObject params)
+
 fn emitDiffUpdated(threadId: str, turnId: str, diffText: str) =
     if len(diffText) == 0:
         return
-    var params: seq[str] = newSeq[str]()
+    var params: str[] = newSeq[str]()
     if len(threadId) > 0:
         seqAdd(params, jstrPair("threadId", jstrString(threadId)))
     if len(turnId) > 0:
@@ -1391,8 +1672,8 @@ fn emitDiffUpdated(threadId: str, turnId: str, diffText: str) =
     seqAdd(params, jstrPair("diff", jstrString(diffText)))
     sendEvent("turn/diff/updated", jstrObject(params))
 
-fn emitPlanUpdated(threadId: str, turnId: str, explanation: str, planItems: seq[str]) =
-    var params: seq[str] = newSeq[str]()
+fn emitPlanUpdated(threadId: str, turnId: str, explanation: str, planItems: str[]) =
+    var params: str[] = newSeq[str]()
     if len(threadId) > 0:
         seqAdd(params, jstrPair("threadId", jstrString(threadId)))
     if len(turnId) > 0:
@@ -1403,13 +1684,13 @@ fn emitPlanUpdated(threadId: str, turnId: str, explanation: str, planItems: seq[
     sendEvent("turn/plan/updated", jstrObject(params))
 
 fn emitImageViewStarted(threadId: str, turnId: str, itemId: str, path: str) =
-    var itemFields: seq[str] = newSeq[str]()
+    var itemFields: str[] = newSeq[str]()
     seqAdd(itemFields, jstrPair("id", jstrString(itemId)))
     seqAdd(itemFields, jstrPair("type", jstrString("imageView")))
     seqAdd(itemFields, jstrPair("status", jstrString("running")))
     if len(path) > 0:
         seqAdd(itemFields, jstrPair("path", jstrString(path)))
-    var params: seq[str] = newSeq[str]()
+    var params: str[] = newSeq[str]()
     if len(threadId) > 0:
         seqAdd(params, jstrPair("threadId", jstrString(threadId)))
     if len(turnId) > 0:
@@ -1418,7 +1699,7 @@ fn emitImageViewStarted(threadId: str, turnId: str, itemId: str, path: str) =
     sendEvent("item/started", jstrObject(params))
 
 fn emitImageViewCompleted(threadId: str, turnId: str, itemId: str, path: str, ok: bool) =
-    var itemFields: seq[str] = newSeq[str]()
+    var itemFields: str[] = newSeq[str]()
     seqAdd(itemFields, jstrPair("id", jstrString(itemId)))
     seqAdd(itemFields, jstrPair("type", jstrString("imageView")))
     var statusText = "completed"
@@ -1427,7 +1708,7 @@ fn emitImageViewCompleted(threadId: str, turnId: str, itemId: str, path: str, ok
     seqAdd(itemFields, jstrPair("status", jstrString(statusText)))
     if len(path) > 0:
         seqAdd(itemFields, jstrPair("path", jstrString(path)))
-    var params: seq[str] = newSeq[str]()
+    var params: str[] = newSeq[str]()
     if len(threadId) > 0:
         seqAdd(params, jstrPair("threadId", jstrString(threadId)))
     if len(turnId) > 0:
@@ -1436,13 +1717,13 @@ fn emitImageViewCompleted(threadId: str, turnId: str, itemId: str, path: str, ok
     sendEvent("item/completed", jstrObject(params))
 
 fn emitReviewModeStarted(threadId: str, turnId: str, itemId: str, reviewLabel: str) =
-    var itemFields: seq[str] = newSeq[str]()
+    var itemFields: str[] = newSeq[str]()
     seqAdd(itemFields, jstrPair("id", jstrString(itemId)))
     seqAdd(itemFields, jstrPair("type", jstrString("enteredReviewMode")))
     seqAdd(itemFields, jstrPair("status", jstrString("running")))
     if len(reviewLabel) > 0:
         seqAdd(itemFields, jstrPair("review", jstrString(reviewLabel)))
-    var params: seq[str] = newSeq[str]()
+    var params: str[] = newSeq[str]()
     if len(threadId) > 0:
         seqAdd(params, jstrPair("threadId", jstrString(threadId)))
     if len(turnId) > 0:
@@ -1451,13 +1732,13 @@ fn emitReviewModeStarted(threadId: str, turnId: str, itemId: str, reviewLabel: s
     sendEvent("item/started", jstrObject(params))
 
 fn emitWebSearchStarted(threadId: str, turnId: str, itemId: str, query: str) =
-    var itemFields: seq[str] = newSeq[str]()
+    var itemFields: str[] = newSeq[str]()
     seqAdd(itemFields, jstrPair("id", jstrString(itemId)))
     seqAdd(itemFields, jstrPair("type", jstrString("webSearch")))
     seqAdd(itemFields, jstrPair("status", jstrString("running")))
     if len(query) > 0:
         seqAdd(itemFields, jstrPair("query", jstrString(query)))
-    var params: seq[str] = newSeq[str]()
+    var params: str[] = newSeq[str]()
     if len(threadId) > 0:
         seqAdd(params, jstrPair("threadId", jstrString(threadId)))
     if len(turnId) > 0:
@@ -1466,13 +1747,13 @@ fn emitWebSearchStarted(threadId: str, turnId: str, itemId: str, query: str) =
     sendEvent("item/started", jstrObject(params))
 
 fn emitWebSearchCompleted(threadId: str, turnId: str, itemId: str, query: str) =
-    var itemFields: seq[str] = newSeq[str]()
+    var itemFields: str[] = newSeq[str]()
     seqAdd(itemFields, jstrPair("id", jstrString(itemId)))
     seqAdd(itemFields, jstrPair("type", jstrString("webSearch")))
     seqAdd(itemFields, jstrPair("status", jstrString("completed")))
     if len(query) > 0:
         seqAdd(itemFields, jstrPair("query", jstrString(query)))
-    var params: seq[str] = newSeq[str]()
+    var params: str[] = newSeq[str]()
     if len(threadId) > 0:
         seqAdd(params, jstrPair("threadId", jstrString(threadId)))
     if len(turnId) > 0:
@@ -1481,13 +1762,13 @@ fn emitWebSearchCompleted(threadId: str, turnId: str, itemId: str, query: str) =
     sendEvent("item/completed", jstrObject(params))
 
 fn emitReviewModeCompleted(threadId: str, turnId: str, itemId: str, reviewText: str) =
-    var itemFields: seq[str] = newSeq[str]()
+    var itemFields: str[] = newSeq[str]()
     seqAdd(itemFields, jstrPair("id", jstrString(itemId)))
     seqAdd(itemFields, jstrPair("type", jstrString("exitedReviewMode")))
     seqAdd(itemFields, jstrPair("status", jstrString("completed")))
     if len(reviewText) > 0:
         seqAdd(itemFields, jstrPair("review", jstrString(reviewText)))
-    var params: seq[str] = newSeq[str]()
+    var params: str[] = newSeq[str]()
     if len(threadId) > 0:
         seqAdd(params, jstrPair("threadId", jstrString(threadId)))
     if len(turnId) > 0:
@@ -1503,7 +1784,7 @@ fn appendTranscript(transcript: var str, text: str) =
     else:
         transcript = transcript + text
 
-fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: seq[str], mode: str, requestThreadId: str, contextItems: seq[str], workDir: str, emitThread: bool): TurnInfo =
+fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: str[], mode: str, requestThreadId: str, contextItems: str[], workDir: str, emitThread: bool): TurnInfo =
     var threadId = requestThreadId
     if len(threadId) == 0:
         threadId = createThread(buildPreview(prompt), workDir, "appServer")
@@ -1554,7 +1835,7 @@ fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: seq[s
                 reason = reason + state.approvalPolicy
                 emitCommandOutputDelta(threadId, turnId, itemId, reason)
                 emitItemCompleted(threadId, turnId, itemId, "commandExecution", "failed", -1, "", command)
-                appendToolEvent(threadId, "shell", command, reason, -1, "", "", false)
+                appendToolEventWithContext(threadId, turnId, result.pendingCallId, "shell", command, reason, -1, "", "", false)
                 result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, reason, false, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
                 appendTranscript(agentTranscript, result.agentOutput)
                 continue
@@ -1566,7 +1847,7 @@ fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: seq[s
                     reason = requirement.reason
                 emitCommandOutputDelta(threadId, turnId, itemId, reason)
                 emitItemCompleted(threadId, turnId, itemId, "commandExecution", "failed", -1, "", command)
-                appendToolEvent(threadId, "shell", command, reason, -1, "", "", false)
+                appendToolEventWithContext(threadId, turnId, result.pendingCallId, "shell", command, reason, -1, "", "", false)
                 result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, reason, false, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
                 appendTranscript(agentTranscript, result.agentOutput)
                 continue
@@ -1579,7 +1860,7 @@ fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: seq[s
                     alreadyApproved = true
                 else:
                     let reqId = nextRequestId(state)
-                    var reqFields: seq[str] = newSeq[str]()
+                    var reqFields: str[] = newSeq[str]()
                     seqAdd(reqFields, jstrPair("threadId", jstrString(threadId)))
                     seqAdd(reqFields, jstrPair("turnId", jstrString(turnId)))
                     seqAdd(reqFields, jstrPair("itemId", jstrString(itemId)))
@@ -1593,7 +1874,7 @@ fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: seq[s
                     if len(reasonText) > 0:
                         seqAdd(reqFields, jstrPair("reason", jstrString(reasonText)))
                     if len(requirement.proposedExecpolicyAmendment) > 0:
-                        var amendItems: seq[str] = newSeq[str]()
+                        var amendItems: str[] = newSeq[str]()
                         var ai: int32 = 0
                         while ai < len(requirement.proposedExecpolicyAmendment):
                             seqAdd(amendItems, jstrString(requirement.proposedExecpolicyAmendment[ai]))
@@ -1619,7 +1900,7 @@ fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: seq[s
                             appendExecPolicyAllowRule(amend, amendErr)
             if ! approved:
                 emitItemCompleted(threadId, turnId, itemId, "commandExecution", "declined", -1, "", command)
-                appendToolEvent(threadId, "shell", command, "", -1, "", "", false)
+                appendToolEventWithContext(threadId, turnId, result.pendingCallId, "shell", command, "", -1, "", "", false)
                 result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, "declined", false, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
                 appendTranscript(agentTranscript, result.agentOutput)
                 continue
@@ -1634,13 +1915,13 @@ fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: seq[s
                 var retryApproved = alreadyApproved
                 if ! retryApproved:
                     let retryId = nextRequestId(state)
-                    var retryFields: seq[str] = newSeq[str]()
+                    var retryFields: str[] = newSeq[str]()
                     seqAdd(retryFields, jstrPair("threadId", jstrString(threadId)))
                     seqAdd(retryFields, jstrPair("turnId", jstrString(turnId)))
                     seqAdd(retryFields, jstrPair("itemId", jstrString(itemId)))
                     seqAdd(retryFields, jstrPair("reason", jstrString(SANDBOX_DENIAL_REASON)))
                     if len(requirement.proposedExecpolicyAmendment) > 0:
-                        var amendItems: seq[str] = newSeq[str]()
+                        var amendItems: str[] = newSeq[str]()
                         var ai: int32 = 0
                         while ai < len(requirement.proposedExecpolicyAmendment):
                             seqAdd(amendItems, jstrString(requirement.proposedExecpolicyAmendment[ai]))
@@ -1667,7 +1948,7 @@ fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: seq[s
             if ! finalRes.ok:
                 execStatus = "failed"
             emitItemCompleted(threadId, turnId, itemId, "commandExecution", execStatus, finalRes.exitCode, "", command)
-            appendToolEvent(threadId, "shell", command, finalRes.output, finalRes.exitCode, "", "", finalRes.ok)
+            appendToolEventWithContext(threadId, turnId, result.pendingCallId, "shell", command, finalRes.output, finalRes.exitCode, "", "", finalRes.ok)
             result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, finalRes.output, finalRes.ok, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
             appendTranscript(agentTranscript, result.agentOutput)
             continue
@@ -1683,9 +1964,9 @@ fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: seq[s
             var viewText = "attached local image path"
             if ! ok:
                 viewText = "image attach failed"
-            appendToolEvent(threadId, "view_image", "", "", -1, "", viewText, ok)
+            appendToolEventWithContext(threadId, turnId, result.pendingCallId, "view_image", "", "", -1, "", viewText, ok)
             if ok:
-                var nextItems: seq[str] = newSeq[str]()
+                var nextItems: str[] = newSeq[str]()
                 var ii: int32 = 0
                 while ii < len(result.pendingInputItems):
                     seqAdd(nextItems, result.pendingInputItems[ii])
@@ -1697,14 +1978,14 @@ fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: seq[s
             appendTranscript(agentTranscript, result.agentOutput)
             continue
         if result.pendingToolName == "apply_patch":
-            let patchText = jsonExtractString(result.pendingArguments, "patch")
+            let patchText = toolPatchTextFromArguments(result.pendingArguments)
             let itemId = nextItemId(state, turnId)
             emitItemStarted(threadId, turnId, itemId, "fileChange", "", "")
             emitFileChangeDelta(threadId, turnId, itemId, patchText)
             var approved = true
             if approvalRequiresRequest(state.approvalPolicy):
                 let reqId = nextRequestId(state)
-                var reqFields: seq[str] = newSeq[str]()
+                var reqFields: str[] = newSeq[str]()
                 seqAdd(reqFields, jstrPair("threadId", jstrString(threadId)))
                 seqAdd(reqFields, jstrPair("turnId", jstrString(turnId)))
                 seqAdd(reqFields, jstrPair("itemId", jstrString(itemId)))
@@ -1722,7 +2003,7 @@ fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: seq[s
             if ! approved:
                 emitItemCompleted(threadId, turnId, itemId, "fileChange", "declined", -1, "", "")
                 emitDiffUpdated(threadId, turnId, patchText)
-                appendToolEvent(threadId, "apply_patch", "", "", -1, patchText, "", false)
+                appendToolEventWithContext(threadId, turnId, result.pendingCallId, "apply_patch", "", "", -1, patchText, "", false)
                 result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, "declined", false, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
                 appendTranscript(agentTranscript, result.agentOutput)
                 continue
@@ -1732,7 +2013,7 @@ fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: seq[s
                 patchStatus = "failed"
             emitItemCompleted(threadId, turnId, itemId, "fileChange", patchStatus, -1, "", "")
             emitDiffUpdated(threadId, turnId, patchText)
-            appendToolEvent(threadId, "apply_patch", "", "", -1, patchText, res.output, res.ok)
+            appendToolEventWithContext(threadId, turnId, result.pendingCallId, "apply_patch", "", "", -1, patchText, res.output, res.ok)
             var toolText = res.output
             if len(toolText) == 0:
                 if res.ok:
@@ -1742,7 +2023,34 @@ fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: seq[s
             result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolText, res.ok, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
             appendTranscript(agentTranscript, result.agentOutput)
             continue
+        if result.pendingToolName == "request_user_input":
+            let inputMode = requestUserInputModeForTurn(state, mode)
+            let validationErr = requestUserInputQuestionsValidationError(result.pendingArguments)
+            if len(validationErr) > 0:
+                appendToolEventWithContext(threadId, turnId, result.pendingCallId, "request_user_input", "", "", -1, "", validationErr, false)
+                result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, validationErr, false, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
+                appendTranscript(agentTranscript, result.agentOutput)
+                continue
+            var responseJson = ""
+            if requestUserInputShouldCallClient(inputMode):
+                let reqId = nextRequestId(state)
+                let itemId = requestUserInputItemId(result.pendingCallId)
+                let paramsJson = requestUserInputBuildRequestParams(threadId, turnId, itemId, result.pendingArguments)
+                sendRequest(reqId, requestUserInputMethodName(), paramsJson)
+                responseJson = waitForRequestUserInput(state, reqId)
+            let toolText = requestUserInputToolOutput(inputMode, responseJson)
+            let ok = requestUserInputToolOk(inputMode)
+            appendToolEventWithContext(threadId, turnId, result.pendingCallId, "request_user_input", "", "", -1, "", toolText, ok)
+            result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolText, ok, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
+            appendTranscript(agentTranscript, result.agentOutput)
+            continue
         if result.pendingToolName == "update_plan":
+            if normalizeCollaborationModeKey(mode) == "plan":
+                let errText = "update_plan is a TODO/checklist tool and is not allowed in Plan mode"
+                appendToolEventWithContext(threadId, turnId, result.pendingCallId, "update_plan", "", "", -1, "", errText, false)
+                result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, errText, false, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
+                appendTranscript(agentTranscript, result.agentOutput)
+                continue
             let explanation = jsonExtractString(result.pendingArguments, "explanation")
             let planItems = extractPlanItems(result.pendingArguments)
             emitPlanUpdated(threadId, turnId, explanation, planItems)
@@ -1751,25 +2059,25 @@ fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: seq[s
             continue
         if result.pendingToolName == "spawn_agent":
             let toolRes = collabSpawnAgent(result.pendingArguments, state.baseInstructions, state.developerInstructions, state.model, state.approvalPolicy, workDir)
-            appendToolEvent(threadId, "spawn_agent", "", "", -1, "", toolRes.output, toolRes.ok)
+            appendToolEventWithContext(threadId, turnId, result.pendingCallId, "spawn_agent", "", "", -1, "", toolRes.output, toolRes.ok)
             result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolRes.output, toolRes.ok, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
             appendTranscript(agentTranscript, result.agentOutput)
             continue
         if result.pendingToolName == "send_input":
             let toolRes = collabSendInput(result.pendingArguments, state.baseInstructions, state.developerInstructions, state.model, state.approvalPolicy, workDir)
-            appendToolEvent(threadId, "send_input", "", "", -1, "", toolRes.output, toolRes.ok)
+            appendToolEventWithContext(threadId, turnId, result.pendingCallId, "send_input", "", "", -1, "", toolRes.output, toolRes.ok)
             result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolRes.output, toolRes.ok, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
             appendTranscript(agentTranscript, result.agentOutput)
             continue
         if result.pendingToolName == "wait":
             let toolRes = collabWaitAgents(result.pendingArguments)
-            appendToolEvent(threadId, "wait", "", "", -1, "", toolRes.output, toolRes.ok)
+            appendToolEventWithContext(threadId, turnId, result.pendingCallId, "wait", "", "", -1, "", toolRes.output, toolRes.ok)
             result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolRes.output, toolRes.ok, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
             appendTranscript(agentTranscript, result.agentOutput)
             continue
         if result.pendingToolName == "close_agent":
             let toolRes = collabCloseAgent(result.pendingArguments)
-            appendToolEvent(threadId, "close_agent", "", "", -1, "", toolRes.output, toolRes.ok)
+            appendToolEventWithContext(threadId, turnId, result.pendingCallId, "close_agent", "", "", -1, "", toolRes.output, toolRes.ok)
             result = resumeTurnWithTool(result.pendingInputItems, result.pendingResponseId, result.pendingCallId, toolRes.output, toolRes.ok, workDir, state.approvalPolicy, result.pendingModel, result.pendingInstructions, "", true, disableWebSearch, disableViewImage)
             appendTranscript(agentTranscript, result.agentOutput)
             continue
@@ -1784,7 +2092,7 @@ fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: seq[s
             let itemId = nextItemId(state, turnId)
             emitWebSearchStarted(threadId, turnId, itemId, query)
             emitWebSearchCompleted(threadId, turnId, itemId, query)
-            appendToolEvent(threadId, "web_search", "", "", -1, "", query, true)
+            appendToolEventWithContext(threadId, turnId, "", "web_search", "", "", -1, "", query, true)
             widx = widx + 1
     if mode == "review":
         var reviewText: str = result.agentText
@@ -1793,15 +2101,21 @@ fn handleTurnWithContext(state: var ServerState, prompt: str, inputTokens: seq[s
         let reviewExitedId = nextItemId(state, turnId)
         emitReviewModeCompleted(threadId, turnId, reviewExitedId, reviewText)
     else:
-        if len(agentTranscript) > 0:
-            emitAgentDelta(threadId, turnId, "", agentTranscript)
-        else:
-            emitAgentDelta(threadId, turnId, "", result.agentText)
-    appendTurnEvent(threadId, prompt, inputTokens, "codex-cheng", agentTranscript, "", "", -1, "", "")
+        var finalAgentText = agentTranscript
+        if len(finalAgentText) == 0:
+            finalAgentText = result.agentText
+        let nonPlanText = emitPlanItemFromTranscript(threadId, turnId, finalAgentText)
+        if len(trimLine(nonPlanText)) > 0:
+            let agentItemId = turnId + "-agent"
+            emitItemStarted(threadId, turnId, agentItemId, "agentMessage", "", "")
+            emitAgentDelta(threadId, turnId, agentItemId, nonPlanText)
+            emitItemCompleted(threadId, turnId, agentItemId, "agentMessage", "completed", -1, "", nonPlanText)
+        agentTranscript = nonPlanText
+    appendTurnEvent(threadId, turnId, prompt, inputTokens, "codex-cheng", agentTranscript, "", "", -1, "", "")
     emitTurnCompleted(threadId, turnId, result.ok)
     TurnInfo(threadId: threadId, turnId: turnId)
 
-fn handleTurn(state: var ServerState, prompt: str, inputTokens: seq[str], mode: str, requestThreadId: str, workDir: str): TurnInfo =
+fn handleTurn(state: var ServerState, prompt: str, inputTokens: str[], mode: str, requestThreadId: str, workDir: str): TurnInfo =
     var threadId = requestThreadId
     var shouldEmitThread = false
     if len(threadId) == 0:
@@ -1827,7 +2141,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
             return
         state.initialized = true
         updateStateFromParams(state, payload, workDir)
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         let userAgent = buildUserAgent payload
         seqAdd(resFields, jstrPair("userAgent", jstrString userAgent))
         sendResponse(id, jstrObject(resFields))
@@ -1845,7 +2159,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
         state.threadId = threadId
         ensureLoadedThread(state, threadId)
         emitThreadStarted(threadId)
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         seqAdd(resFields, jstrPair("thread", buildThreadObject(threadId)))
         seqAdd(resFields, jstrPair("model", jstrString(state.model)))
         seqAdd(resFields, jstrPair("modelProvider", jstrString(resolveModelProvider())))
@@ -1867,7 +2181,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
         threadId = ensureThread(threadId, "", state.cwd, "appServer")
         state.threadId = threadId
         ensureLoadedThread(state, threadId)
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         let turns = threadTurns(threadId)
         seqAdd(resFields, jstrPair("thread", buildThreadObjectWithTurns(threadId, turns)))
         seqAdd(resFields, jstrPair("model", jstrString(state.model)))
@@ -1897,7 +2211,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
         ensureLoadedThread(state, newId)
         emitThreadStarted(newId)
         let turns = threadTurns(newId)
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         seqAdd(resFields, jstrPair("thread", buildThreadObjectWithTurns(newId, turns)))
         seqAdd(resFields, jstrPair("model", jstrString(state.model)))
         seqAdd(resFields, jstrPair("modelProvider", jstrString(resolveModelProvider())))
@@ -1917,14 +2231,14 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
         if len(cursorText) > 0:
             startIdx = parseInt32Simple(cursorText, 0)
         let infos = listThreadInfos("", true)
-        var data: seq[str] = newSeq[str]()
+        var data: str[] = newSeq[str]()
         var idx: int32 = startIdx
         var count: int32 = 0
         while idx < len(infos) && count < limitVal:
             seqAdd(data, buildThreadObject(infos[idx].id))
             idx = idx + 1
             count = count + 1
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         seqAdd(resFields, jstrPair("data", jstrArray(data)))
         if idx < len(infos):
             seqAdd(resFields, jstrPair("nextCursor", jstrString(intToStr(idx))))
@@ -1941,14 +2255,14 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
         var limit = limitVal
         if limit <= 0:
             limit = len(state.loadedThreadIds)
-        var data: seq[str] = newSeq[str]()
+        var data: str[] = newSeq[str]()
         var idx: int32 = startIdx
         var count: int32 = 0
         while idx < len(state.loadedThreadIds) && count < limit:
             seqAdd(data, jstrString(state.loadedThreadIds[idx]))
             idx = idx + 1
             count = count + 1
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         seqAdd(resFields, jstrPair("data", jstrArray(data)))
         if idx < len(state.loadedThreadIds):
             seqAdd(resFields, jstrPair("nextCursor", jstrString(intToStr(idx))))
@@ -1983,7 +2297,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
             return
         ensureLoadedThread(state, threadId)
         let turns = threadTurns(threadId)
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         seqAdd(resFields, jstrPair("thread", buildThreadObjectWithTurns(threadId, turns)))
         sendResponse(id, jstrObject(resFields))
         return
@@ -2000,8 +2314,9 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
         if len(prompt) == 0:
             prompt = promptText
         let threadId = jsonExtractString(payload, "threadId")
-        let info = handleTurn(state, prompt, inputTokens, "ask", threadId, state.cwd)
-        var resFields: seq[str] = newSeq[str]()
+        let turnMode = currentTurnMode(state, "ask")
+        let info = handleTurn(state, prompt, inputTokens, turnMode, threadId, state.cwd)
+        var resFields: str[] = newSeq[str]()
         seqAdd(resFields, jstrPair("turn", buildTurnObject(info.turnId, "inProgress")))
         sendResponse(id, jstrObject(resFields))
         return
@@ -2032,7 +2347,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
             info = handleTurnWithContext(state, prompt, inputTokens, "review", "", contextItems, state.cwd, true)
         else:
             info = handleTurn(state, prompt, inputTokens, "review", threadId, state.cwd)
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         seqAdd(resFields, jstrPair("turn", buildTurnObject(info.turnId, "inProgress")))
         seqAdd(resFields, jstrPair("reviewThreadId", jstrString(info.threadId)))
         sendResponse(id, jstrObject(resFields))
@@ -2061,7 +2376,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
                 reason = requirement.reason
             emitCommandOutputDelta(state.threadId, state.turnId, itemId, reason)
             emitItemCompleted(state.threadId, state.turnId, itemId, "commandExecution", "failed", -1, "", command)
-            var resFields: seq[str] = newSeq[str]()
+            var resFields: str[] = newSeq[str]()
             seqAdd(resFields, jstrPair("exitCode", intToStr(-1)))
             seqAdd(resFields, jstrPair("stdout", jstrString(reason)))
             seqAdd(resFields, jstrPair("stderr", jstrString("")))
@@ -2074,7 +2389,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
                 approved = true
             else:
                 let reqId = nextRequestId(state)
-                var reqFields: seq[str] = newSeq[str]()
+                var reqFields: str[] = newSeq[str]()
                 seqAdd(reqFields, jstrPair("threadId", jstrString(state.threadId)))
                 seqAdd(reqFields, jstrPair("turnId", jstrString(state.turnId)))
                 seqAdd(reqFields, jstrPair("itemId", jstrString(itemId)))
@@ -2088,7 +2403,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
                 if len(reasonText) > 0:
                     seqAdd(reqFields, jstrPair("reason", jstrString(reasonText)))
                 if len(requirement.proposedExecpolicyAmendment) > 0:
-                    var amendItems: seq[str] = newSeq[str]()
+                    var amendItems: str[] = newSeq[str]()
                     var ai: int32 = 0
                     while ai < len(requirement.proposedExecpolicyAmendment):
                         seqAdd(amendItems, jstrString(requirement.proposedExecpolicyAmendment[ai]))
@@ -2114,7 +2429,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
                         appendExecPolicyAllowRule(amend, amendErr)
         if ! approved:
             emitItemCompleted(state.threadId, state.turnId, itemId, "commandExecution", "declined", -1, "", command)
-            var resFields: seq[str] = newSeq[str]()
+            var resFields: str[] = newSeq[str]()
             seqAdd(resFields, jstrPair("exitCode", intToStr(-1)))
             seqAdd(resFields, jstrPair("stdout", jstrString("declined")))
             seqAdd(resFields, jstrPair("stderr", jstrString("")))
@@ -2128,19 +2443,19 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
         if ! res.ok:
             execStatus = "failed"
         emitItemCompleted(state.threadId, state.turnId, itemId, "commandExecution", execStatus, res.exitCode, "", command)
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         seqAdd(resFields, jstrPair("exitCode", intToStr(res.exitCode)))
         seqAdd(resFields, jstrPair("stdout", jstrString(res.output)))
         seqAdd(resFields, jstrPair("stderr", jstrString("")))
         sendResponse(id, jstrObject(resFields))
         return
     if methodName == "model/list":
-        var models: seq[str] = newSeq[str]()
+        var models: str[] = newSeq[str]()
         let effortOptions = defaultReasoningEffortOptionsJson()
         let defaultEffort = "medium"
         let baseModel = loadModel()
         if len(baseModel) > 0:
-            var fields: seq[str] = newSeq[str]()
+            var fields: str[] = newSeq[str]()
             seqAdd(fields, jstrPair("id", jstrString baseModel))
             seqAdd(fields, jstrPair("model", jstrString baseModel))
             seqAdd(fields, jstrPair("displayName", jstrString baseModel))
@@ -2151,7 +2466,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
             seqAdd(models, jstrObject(fields))
         let reviewModel = loadReviewModel()
         if len(reviewModel) > 0 && reviewModel != baseModel:
-            var fields: seq[str] = newSeq[str]()
+            var fields: str[] = newSeq[str]()
             seqAdd(fields, jstrPair("id", jstrString reviewModel))
             seqAdd(fields, jstrPair("model", jstrString reviewModel))
             seqAdd(fields, jstrPair("displayName", jstrString reviewModel))
@@ -2160,7 +2475,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
             seqAdd(fields, jstrPair("defaultReasoningEffort", jstrString defaultEffort))
             seqAdd(fields, jstrPair("isDefault", jstrBool false))
             seqAdd(models, jstrObject(fields))
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         seqAdd(resFields, jstrPair("data", jstrArray models))
         seqAdd(resFields, jstrPair("nextCursor", jstrNull()))
         sendResponse(id, jstrObject(resFields))
@@ -2174,17 +2489,17 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
             else:
                 seqAdd(roots, workDir)
         let matches = runFuzzyFileSearch(query, roots)
-        var files: seq[str] = newSeq[str]()
+        var files: str[] = newSeq[str]()
         var idx: int32 = 0
         while idx < len(matches):
             seqAdd(files, fuzzyResultJson(matches[idx]))
             idx = idx + 1
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         seqAdd(resFields, jstrPair("files", jstrArray(files)))
         sendResponse(id, jstrObject(resFields))
         return
     if methodName == "collaborationMode/list":
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         var dataJson = jstrArray(newSeq[str]())
         if isFeatureEnabled("collaboration_modes"):
             dataJson = collaborationModeListJson()
@@ -2199,7 +2514,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
                 seqAdd(cwds, state.cwd)
             else:
                 seqAdd(cwds, workDir)
-        var entries: seq[str] = newSeq[str]()
+        var entries: str[] = newSeq[str]()
         var idx: int32 = 0
         while idx < len(cwds):
             let cwd = cwds[idx]
@@ -2212,7 +2527,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
                 outcome = loadSkillsForCwd(cwd, forceReload)
             seqAdd(entries, skillsListEntryJson(cwd, outcome))
             idx = idx + 1
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         seqAdd(resFields, jstrPair("data", jstrArray(entries)))
         sendResponse(id, jstrObject(resFields))
         return
@@ -2228,19 +2543,19 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
             sendError(id, "failed to update skill settings")
             return
         clearSkillsCache()
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         seqAdd(resFields, jstrPair("effectiveEnabled", jstrBool(enabled)))
         sendResponse(id, jstrObject(resFields))
         return
     if methodName == "mcpServerStatus/list":
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         seqAdd(resFields, jstrPair("data", jstrArray(newSeq[str]())))
         seqAdd(resFields, jstrPair("nextCursor", jstrNull()))
         sendResponse(id, jstrObject(resFields))
         return
     if methodName == "config/read":
         let includeLayers = indexOfSubstr(payload, "\"includeLayers\":true", 0) >= 0 || indexOfSubstr(payload, "\"include_layers\":true", 0) >= 0
-        var cfgFields: seq[str] = newSeq[str]()
+        var cfgFields: str[] = newSeq[str]()
         if len(state.model) > 0:
             seqAdd(cfgFields, jstrPair("model", jstrString state.model))
         if len(state.reviewModel) > 0:
@@ -2257,11 +2572,11 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
             seqAdd(cfgFields, jstrPair("chatgpt_base_url", jstrString chatgptBase))
         let webSearch = configBoolValueAny(seqStr4("features.web_search_request", "web_search_request", "tools.web_search", "web_search"), false)
         let viewImage = configBoolValueAny(seqStr2("features.view_image_tool", "tools.view_image"), true)
-        var toolsFields: seq[str] = newSeq[str]()
+        var toolsFields: str[] = newSeq[str]()
         seqAdd(toolsFields, jstrPair("web_search", jstrBool webSearch))
         seqAdd(toolsFields, jstrPair("view_image", jstrBool viewImage))
         seqAdd(cfgFields, jstrPair("tools", jstrObject toolsFields))
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         seqAdd(resFields, jstrPair("config", jstrObject cfgFields))
         seqAdd(resFields, jstrPair("origins", jstrObject newSeq[str]()))
         if includeLayers:
@@ -2301,17 +2616,17 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
         sendResponse(id, jstrObject(newSeq[str]()))
         return
     if methodName == "configRequirements/read":
-        var approvalPolicies: seq[str] = newSeq[str]()
-        var sandboxModes: seq[str] = newSeq[str]()
+        var approvalPolicies: str[] = newSeq[str]()
+        var sandboxModes: str[] = newSeq[str]()
         let hasRequirements = readConfigRequirements(approvalPolicies, sandboxModes)
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         if ! hasRequirements:
             seqAdd(resFields, jstrPair("requirements", jstrNull()))
             sendResponse(id, jstrObject(resFields))
             return
-        var reqFields: seq[str] = newSeq[str]()
+        var reqFields: str[] = newSeq[str]()
         if len(approvalPolicies) > 0:
-            var items: seq[str] = newSeq[str]()
+            var items: str[] = newSeq[str]()
             var idx: int32 = 0
             while idx < len(approvalPolicies):
                 seqAdd(items, jstrString(approvalPolicies[idx]))
@@ -2320,7 +2635,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
         else:
             seqAdd(reqFields, jstrPair("allowedApprovalPolicies", jstrNull()))
         if len(sandboxModes) > 0:
-            var items: seq[str] = newSeq[str]()
+            var items: str[] = newSeq[str]()
             var idx: int32 = 0
             while idx < len(sandboxModes):
                 seqAdd(items, jstrString(sandboxModes[idx]))
@@ -2501,7 +2816,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
             sendError(id, "failed to parse rate limits")
             return
         let root: json.JsonNode = parsed.value
-        var rateFields: seq[str] = newSeq[str]()
+        var rateFields: str[] = newSeq[str]()
         var rateNode: json.JsonNode = json.newJNull()
         if root.kind == json.JObject && root.hasKey("rate_limit"):
             rateNode = json.jsonGetField(root, "rate_limit")
@@ -2540,7 +2855,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
         var threadId = jsonExtractString(payload, "threadId")
         if len(threadId) == 0:
             threadId = state.threadId
-        var resFields: seq[str] = newSeq[str]()
+        var resFields: str[] = newSeq[str]()
         seqAdd(resFields, jstrPair("threadId", jstrString(threadId)))
         sendResponse(id, jstrObject(resFields))
         return
@@ -2549,7 +2864,7 @@ fn handleRpc(state: var ServerState, payload: str, workDir: str) =
         return
     sendError(id, "unknown method")
 
-fn runAppServer(args: seq[str], start: int32): int32 =
+fn runAppServer(args: str[], start: int32): int32 =
     var analyticsDefaultEnabled = false
     var listenUrl = "stdio://"
     var i: int32 = start
@@ -2621,7 +2936,7 @@ fn runAppServer(args: seq[str], start: int32): int32 =
         let cfg = readConfigValue("analytics.enabled")
         if len(cfg) == 0:
             addConfigOverride("analytics.enabled", "true")
-    var readyParams: seq[str] = newSeq[str]()
+    var readyParams: str[] = newSeq[str]()
     seqAdd(readyParams, jstrPair("server", jstrString("codex-cheng")))
     seqAdd(readyParams, jstrPair("status", jstrString("ready")))
     sendEvent("app-server/ready", jstrObject(readyParams))
@@ -2640,6 +2955,7 @@ fn runAppServer(args: seq[str], start: int32): int32 =
         baseInstructions: "",
         developerInstructions: "",
         reasoningEffort: "",
+        collaborationMode: "default",
         loginIds: newSeq[str](),
         loginPids: newSeq[int32](),
         loginPorts: newSeq[int32](),

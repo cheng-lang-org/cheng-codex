@@ -28,7 +28,7 @@ fn mcpServerUsage(): int32 =
     return 0
 
 fn mcpServerJsonRpcResponse(idJson: str, resultJson: str): str =
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
     seqAdd(fields, jstrPair("id", idJson))
     seqAdd(fields, jstrPair("result", resultJson))
@@ -39,7 +39,7 @@ fn mcpServerJsonRpcError(idJson: str, code: int32, message: str): str =
         jstrPair("code", intToStr(code)),
         jstrPair("message", jstrString(message))
     ))
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
     seqAdd(fields, jstrPair("id", idJson))
     seqAdd(fields, jstrPair("error", errObj))
@@ -144,7 +144,7 @@ fn mcpServerRunCodexPrompt(prompt: str, threadHint: str, model: str, profile: st
         runCwd = opts.cwd
     if len(out.threadId) == 0:
         out.threadId = createThread(mcpServerPreview(promptText), runCwd, "mcp")
-    var contextItems: seq[str] = newSeq[str]()
+    var contextItems: str[] = newSeq[str]()
     let result = runExecTurn(opts, out.threadId, promptText, contextItems, "exec")
     out.ok = result.ok
     out.text = result.agentText
@@ -165,7 +165,7 @@ fn mcpServerToolOutputSchemaJson(): str =
     ))
 
 fn mcpServerCodexToolJson(): str =
-    var props: seq[str] = newSeq[str]()
+    var props: str[] = newSeq[str]()
     seqAdd(props, jstrPair("prompt", jstrObject(seqStr1(jstrPair("type", jstrString("string"))))))
     seqAdd(props, jstrPair("model", jstrObject(seqStr1(jstrPair("type", jstrString("string"))))))
     seqAdd(props, jstrPair("profile", jstrObject(seqStr1(jstrPair("type", jstrString("string"))))))
@@ -178,7 +178,7 @@ fn mcpServerCodexToolJson(): str =
         jstrPair("properties", jstrObject(props)),
         jstrPair("required", jstrArray(seqStr1(jstrString("prompt"))))
     ))
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("name", jstrString("codex")))
     seqAdd(fields, jstrPair("title", jstrString("Codex")))
     seqAdd(fields, jstrPair("description", jstrString("Run a Codex session.")))
@@ -196,7 +196,7 @@ fn mcpServerCodexReplyToolJson(): str =
         ))),
         jstrPair("required", jstrArray(seqStr1(jstrString("prompt"))))
     ))
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("name", jstrString("codex-reply")))
     seqAdd(fields, jstrPair("title", jstrString("Codex Reply")))
     seqAdd(fields, jstrPair("description", jstrString("Continue a Codex conversation by providing a prompt and optional thread id.")))
@@ -209,7 +209,7 @@ fn mcpServerToolResultJson(threadId: str, text: str, isError: bool): str =
         jstrPair("type", jstrString("text")),
         jstrPair("text", jstrString(text))
     ))))
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("content", content))
     if len(threadId) > 0:
         let structured = jstrObject(seqStr2(
@@ -314,15 +314,15 @@ fn mcpServerInitializeProtocolPayload(payload: str): str =
 
 fn mcpServerHandleInitialize(idJson: str, root: json.JsonNode) =
     let protocol = mcpServerInitializeProtocol(root)
-    var serverInfoFields: seq[str] = newSeq[str]()
+    var serverInfoFields: str[] = newSeq[str]()
     seqAdd(serverInfoFields, jstrPair("name", jstrString("codex-mcp-server")))
     seqAdd(serverInfoFields, jstrPair("title", jstrString("Codex")))
-    seqAdd(serverInfoFields, jstrPair("version", jstrString(CODEX_VERSION)))
+    seqAdd(serverInfoFields, jstrPair("version", jstrString(codexVersion())))
     seqAdd(serverInfoFields, jstrPair("user_agent", jstrString("codex-cheng")))
     let serverInfo = jstrObject(serverInfoFields)
     let toolsCaps = jstrObject(seqStr1(jstrPair("listChanged", jstrBool(true))))
     let caps = jstrObject(seqStr1(jstrPair("tools", toolsCaps)))
-    var resultFields: seq[str] = newSeq[str]()
+    var resultFields: str[] = newSeq[str]()
     seqAdd(resultFields, jstrPair("capabilities", caps))
     seqAdd(resultFields, jstrPair("instructions", jstrNull()))
     seqAdd(resultFields, jstrPair("protocolVersion", jstrString(protocol)))
@@ -332,15 +332,15 @@ fn mcpServerHandleInitialize(idJson: str, root: json.JsonNode) =
 
 fn mcpServerHandleInitializePayload(idJson: str, payload: str) =
     let protocol = mcpServerInitializeProtocolPayload(payload)
-    var serverInfoFields: seq[str] = newSeq[str]()
+    var serverInfoFields: str[] = newSeq[str]()
     seqAdd(serverInfoFields, jstrPair("name", jstrString("codex-mcp-server")))
     seqAdd(serverInfoFields, jstrPair("title", jstrString("Codex")))
-    seqAdd(serverInfoFields, jstrPair("version", jstrString(CODEX_VERSION)))
+    seqAdd(serverInfoFields, jstrPair("version", jstrString(codexVersion())))
     seqAdd(serverInfoFields, jstrPair("user_agent", jstrString("codex-cheng")))
     let serverInfo = jstrObject(serverInfoFields)
     let toolsCaps = jstrObject(seqStr1(jstrPair("listChanged", jstrBool(true))))
     let caps = jstrObject(seqStr1(jstrPair("tools", toolsCaps)))
-    var resultFields: seq[str] = newSeq[str]()
+    var resultFields: str[] = newSeq[str]()
     seqAdd(resultFields, jstrPair("capabilities", caps))
     seqAdd(resultFields, jstrPair("instructions", jstrNull()))
     seqAdd(resultFields, jstrPair("protocolVersion", jstrString(protocol)))
@@ -500,7 +500,7 @@ fn mcpServerHandleRequestPayload(payload: str) =
         return
     mcpServerSendError(idJson, -32601, "method not found: " + methodName)
 
-fn runMcpServerCommand(args: seq[str], start: int32): int32 =
+fn runMcpServerCommand(args: str[], start: int32): int32 =
     if start < len(args):
         let arg = argAt(args, start)
         if arg == "--help" || arg == "-h":

@@ -6,13 +6,13 @@ import seqs
 import cheng/codex/common
 type
     ExecPolicyRule =
-        pattern: seq[seq[str]]
+        pattern: str[][]
         decision: str
 
     ParsedValue =
         kind: int32
         strVal: str
-        listVal: seq[ParsedValue]
+        listVal: ParsedValue[]
 
     ParenBlock =
         block: str
@@ -31,13 +31,13 @@ type
 
     ParseStringListResult =
         ok: bool
-        items: seq[str]
+        items: str[]
         next: int32
         err: str
 
     ParsePatternResult =
         ok: bool
-        pattern: seq[seq[str]]
+        pattern: str[][]
         next: int32
         err: str
 
@@ -48,7 +48,7 @@ type
 
     ParseRulesResult =
         ok: bool
-        rules: seq[ExecPolicyRule]
+        rules: ExecPolicyRule[]
         err: str
 
 const
@@ -183,7 +183,7 @@ fn parseStringListAt(text: str, start: int32): ParseStringListResult =
 fn parsePatternValueAt(text: str, start: int32): ParsePatternResult =
     var out: ParsePatternResult
     out.ok = false
-    out.pattern = newSeq[seq[str]]()
+    out.pattern = newSeq[str[]]()
     out.next = start
     out.err = ""
     if start >= len(text) || text[start] != '[':
@@ -303,9 +303,9 @@ fn parseStringLiteral(text: str, startIdx: int32, outValue: var str): int32 =
         idx = idx + 1
     return -1
 
-fn parseListValue(text: str, idx: var int32, outItems: var seq[ParsedValue], err: var str): bool =
+fn parseListValue(text: str, idx: var int32, outItems: var ParsedValue[], err: var str): bool =
     err = ""
-    var items: seq[ParsedValue] = newSeq[ParsedValue]()
+    var items: ParsedValue[] = newSeq[ParsedValue]()
     var pos: int32 = 0
     pos = idx + 0
     if pos >= len(text) || text[pos] != '[':
@@ -337,7 +337,7 @@ fn parseListValue(text: str, idx: var int32, outItems: var seq[ParsedValue], err
             seqAdd(items, item)
             pos = nextIdx
         elif ch == '[':
-            var nested: seq[ParsedValue]
+            var nested: ParsedValue[]
             var nestedErr = ""
             if ! parseListValue(text, idx, nested, nestedErr):
                 err = nestedErr
@@ -374,9 +374,9 @@ fn parseIdentifier(text: str, idx: var int32): str =
         return ""
     return __cheng_slice_string(text, start, pos - 1, false)
 
-fn parseExampleString(text: str, outTokens: var seq[str], err: var str): bool =
+fn parseExampleString(text: str, outTokens: var str[], err: var str): bool =
     err = ""
-    var tokens: seq[str] = newSeq[str]()
+    var tokens: str[] = newSeq[str]()
     if text == nil:
         err = "empty example"
         return false
@@ -445,16 +445,16 @@ fn parseExampleString(text: str, outTokens: var seq[str], err: var str): bool =
     outTokens = tokens
     return true
 
-fn parsePattern(items: seq[ParsedValue], outPattern: var seq[seq[str]], err: var str): bool =
+fn parsePattern(items: ParsedValue[], outPattern: var str[][], err: var str): bool =
     err = ""
-    var pattern: seq[seq[str]] = newSeq[seq[str]]()
+    var pattern: str[][] = newSeq[str[]]()
     var i: int32 = 0
     while i < len(items):
         let item = items[i]
         if item.kind == pvString:
             seqAdd(pattern, seqStr1(item.strVal))
         elif item.kind == pvList:
-            var alts: seq[str] = newSeq[str]()
+            var alts: str[] = newSeq[str]()
             var j: int32 = 0
             while j < len(item.listVal):
                 let altItem = item.listVal[j]
@@ -477,21 +477,21 @@ fn parsePattern(items: seq[ParsedValue], outPattern: var seq[seq[str]], err: var
     outPattern = pattern
     return true
 
-fn parseExamples(items: seq[ParsedValue], outExamples: var seq[seq[str]], err: var str): bool =
+fn parseExamples(items: ParsedValue[], outExamples: var str[][], err: var str): bool =
     err = ""
-    var examples: seq[seq[str]] = newSeq[seq[str]]()
+    var examples: str[][] = newSeq[str[]]()
     var i: int32 = 0
     while i < len(items):
         let item = items[i]
         if item.kind == pvString:
-            var tokens: seq[str]
+            var tokens: str[]
             var splitErr = ""
             if ! parseExampleString(item.strVal, tokens, splitErr):
                 err = splitErr
                 return false
             seqAdd(examples, tokens)
         elif item.kind == pvList:
-            var tokens: seq[str] = newSeq[str]()
+            var tokens: str[] = newSeq[str]()
             var j: int32 = 0
             while j < len(item.listVal):
                 let tokenItem = item.listVal[j]
@@ -521,8 +521,8 @@ fn parseDecisionValue(value: str, outDecision: var str): bool =
         return true
     return false
 
-fn ruleMatchPrefix(rule: var ExecPolicyRule, tokens: seq[str]): seq[str] =
-    var empty: seq[str] = newSeq[str]()
+fn ruleMatchPrefix(rule: var ExecPolicyRule, tokens: str[]): str[] =
+    var empty: str[] = newSeq[str]()
     if len(tokens) < len(rule.pattern):
         return empty
     var idx: int32 = 0
@@ -538,14 +538,14 @@ fn ruleMatchPrefix(rule: var ExecPolicyRule, tokens: seq[str]): seq[str] =
         if ! matched:
             return empty
         idx = idx + 1
-    var prefix: seq[str] = newSeq[str]()
+    var prefix: str[] = newSeq[str]()
     var k: int32 = 0
     while k < len(rule.pattern):
         seqAdd(prefix, tokens[k])
         k = k + 1
     return prefix
 
-fn validateExamples(rule: var ExecPolicyRule, matches: seq[seq[str]], notMatches: seq[seq[str]], err: var str): bool =
+fn validateExamples(rule: var ExecPolicyRule, matches: str[][], notMatches: str[][], err: var str): bool =
     err = ""
     var i: int32 = 0
     while i < len(matches):
@@ -569,10 +569,10 @@ fn parsePrefixRuleBlock(block: str, outRule: var ExecPolicyRule, err: var str): 
     err = ""
     var idx: int32 = 0
     var loopCount: int32 = 0
-    var pattern: seq[seq[str]] = newSeq[seq[str]]()
+    var pattern: str[][] = newSeq[str[]]()
     var decision = "allow"
-    var matchExamples: seq[seq[str]] = newSeq[seq[str]]()
-    var notMatchExamples: seq[seq[str]] = newSeq[seq[str]]()
+    var matchExamples: str[][] = newSeq[str[]]()
+    var notMatchExamples: str[][] = newSeq[str[]]()
     while idx < len(block):
         loopCount = loopCount + 1
         if loopCount > len(block) + 64:
@@ -604,7 +604,7 @@ fn parsePrefixRuleBlock(block: str, outRule: var ExecPolicyRule, err: var str): 
                 return false
             idx = nextIdx
         elif key == "pattern":
-            var items: seq[ParsedValue]
+            var items: ParsedValue[]
             var listErr = ""
             var listIdx: int32 = idx
             if ! parseListValue(block, listIdx, items, listErr):
@@ -616,7 +616,7 @@ fn parsePrefixRuleBlock(block: str, outRule: var ExecPolicyRule, err: var str): 
                 err = patErr
                 return false
         elif key == "match" || key == "not_match":
-            var items: seq[ParsedValue]
+            var items: ParsedValue[]
             var listErr = ""
             var listIdx: int32 = idx
             if ! parseListValue(block, listIdx, items, listErr):
@@ -624,7 +624,7 @@ fn parsePrefixRuleBlock(block: str, outRule: var ExecPolicyRule, err: var str): 
                 return false
             idx = listIdx
             var exErr = ""
-            var examples: seq[seq[str]]
+            var examples: str[][]
             if ! parseExamples(items, examples, exErr):
                 err = exErr
                 return false
@@ -634,7 +634,7 @@ fn parsePrefixRuleBlock(block: str, outRule: var ExecPolicyRule, err: var str): 
                 notMatchExamples = examples
         else:
             if idx < len(block) && block[idx] == '[':
-                var skipItems: seq[ParsedValue]
+                var skipItems: ParsedValue[]
                 var skipErr = ""
                 var skipIdx: int32 = idx
                 if ! parseListValue(block, skipIdx, skipItems, skipErr):
@@ -680,9 +680,9 @@ fn extractParenBlock(text: str, startIdx: int32): ParenBlock =
         idx = idx + 1
     return ParenBlock(block: "", endIdx: -1)
 
-fn parseRulesFromText(text: str, outRules: var seq[ExecPolicyRule], err: var str): bool =
+fn parseRulesFromText(text: str, outRules: var ExecPolicyRule[], err: var str): bool =
     err = ""
-    var rulesOut: seq[ExecPolicyRule] = newSeq[ExecPolicyRule]()
+    var rulesOut: ExecPolicyRule[] = newSeq[ExecPolicyRule]()
     let cleaned = stripComments(text)
     var idx: int32 = 0
     while idx < len(cleaned):
@@ -707,16 +707,16 @@ fn parseRulesFromText(text: str, outRules: var seq[ExecPolicyRule], err: var str
     outRules = rulesOut
     return true
 
-fn parseExecPolicyFiles(paths: seq[str], outRules: var seq[ExecPolicyRule], err: var str): bool =
+fn parseExecPolicyFiles(paths: str[], outRules: var ExecPolicyRule[], err: var str): bool =
     err = ""
-    var rulesOut: seq[ExecPolicyRule] = newSeq[ExecPolicyRule]()
+    var rulesOut: ExecPolicyRule[] = newSeq[ExecPolicyRule]()
     var idx: int32 = 0
     while idx < len(paths):
         let path = "" + paths[idx]
         if os.fileExists(path):
             let content = os.readFile(path)
             if content != nil && len(content) > 0:
-                var rules: seq[ExecPolicyRule]
+                var rules: ExecPolicyRule[]
                 var parseErr = ""
                 if ! parseRulesFromText(content, rules, parseErr):
                     # Build incrementally to avoid deep temporary chains.
@@ -738,7 +738,7 @@ fn parsePrefixRuleBlockSafe(block: str): ParseRuleResult =
     var out: ParseRuleResult
     out.ok = false
     out.err = ""
-    out.rule.pattern = newSeq[seq[str]]()
+    out.rule.pattern = newSeq[str[]]()
     out.rule.decision = "allow"
     var idx: int32 = 0
     var guard: int32 = 0
@@ -821,7 +821,7 @@ fn parseRulesFromTextSafe(text: str): ParseRulesResult =
     out.ok = true
     return out
 
-fn parseExecPolicyFilesSafe(paths: seq[str]): ParseRulesResult =
+fn parseExecPolicyFilesSafe(paths: str[]): ParseRulesResult =
     var out: ParseRulesResult
     out.ok = false
     out.err = ""
@@ -918,7 +918,7 @@ fn prettyJson(payload: str): str =
         i = i + 1
     return out
 
-fn runExecpolicy(args: seq[str], start: int32): int32 =
+fn runExecpolicy(args: str[], start: int32): int32 =
     if start >= len(args):
         # Clap: missing subcommand prints short help + exit 2.
         printLine("Execpolicy tooling")
@@ -1063,9 +1063,9 @@ fn runExecpolicy(args: seq[str], start: int32): int32 =
         printLine("  -h, --help                Print help (see more with '--help')")
         return 0
 
-    var rulesPaths: seq[str] = newSeq[str]()
+    var rulesPaths: str[] = newSeq[str]()
     var pretty = false
-    var cmdParts: seq[str] = newSeq[str]()
+    var cmdParts: str[] = newSeq[str]()
     var i: int32 = start + 1
     while i < len(args):
         let arg = argAt(args, i)
@@ -1102,7 +1102,7 @@ fn runExecpolicy(args: seq[str], start: int32): int32 =
         printErr("execpolicy parse error: " + parsed.err)
         return 1
     let rules = parsed.rules
-    var matchedRules: seq[str] = newSeq[str]()
+    var matchedRules: str[] = newSeq[str]()
     var bestDecision = ""
     var bestRank: int32 = 0
     var idx: int32 = 0
@@ -1110,12 +1110,12 @@ fn runExecpolicy(args: seq[str], start: int32): int32 =
         let rule = rules[idx]
         let prefix = ruleMatchPrefix(rule, cmdParts)
         if len(prefix) > 0:
-            var prefixItems: seq[str] = newSeq[str]()
+            var prefixItems: str[] = newSeq[str]()
             var p: int32 = 0
             while p < len(prefix):
                 seqAdd(prefixItems, jstrString(prefix[p]))
                 p = p + 1
-            var fields: seq[str] = newSeq[str]()
+            var fields: str[] = newSeq[str]()
             seqAdd(fields, jstrPair("matchedPrefix", jstrArray(prefixItems)))
             seqAdd(fields, jstrPair("decision", jstrString(rule.decision)))
             seqAdd(matchedRules, jstrObject(seqStr1(jstrPair("prefixRuleMatch", jstrObject(fields)))))

@@ -1,0 +1,41 @@
+{
+  "suite": "resume_fork",
+  "cases": [
+    {
+      "id": "resume-help",
+      "description": "resume --help should document session selection semantics",
+      "args": ["resume", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex resume", "--last", "--all"]
+      }
+    },
+    {
+      "id": "fork-help",
+      "description": "fork --help should document session selection semantics",
+      "args": ["fork", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex fork", "--last", "--all"]
+      }
+    },
+    {
+      "id": "resume-last-help",
+      "description": "resume --last combined with --help should remain valid",
+      "args": ["resume", "--last", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex resume", "--last"]
+      }
+    },
+    {
+      "id": "fork-last-help",
+      "description": "fork --last combined with --help should remain valid",
+      "args": ["fork", "--last", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex fork", "--last"]
+      }
+    }
+  ]
+}

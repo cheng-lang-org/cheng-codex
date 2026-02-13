@@ -1,0 +1,28 @@
+{
+  "suite": "tui_surface",
+  "cases": [
+    {
+      "id": "root-help-includes-interactive-commands",
+      "description": "Top-level help should expose interactive entry and resume/fork commands",
+      "args": ["--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["resume", "fork", "exec"]
+      },
+      "source_checks": [
+        {
+          "path": "src/interactive.cheng",
+          "contains": "fn interactiveMenuChoiceTui"
+        },
+        {
+          "path": "src/exec_cmd.cheng",
+          "contains": "fn selectThreadIdTui"
+        },
+        {
+          "path": "src/main.cheng",
+          "contains": "return runInteractiveWithOpts(rootOpts, \"\")"
+        }
+      ]
+    }
+  ]
+}

@@ -35,4 +35,13 @@ You can also use the helper script:
 - Full CLI command surface wired in `src/main.cheng`.
 - App-server, cloud, execpolicy, responses proxy, stdio relay and feature controls available.
 - MCP / MCP Server / debug paths are all implemented natively in Cheng.
-- Closed-loop gate runner: `tooling/closed_loop.sh` (preflight/build/execpolicy/completion/app-server/debug/mcp + optional online smoke).
+- Plan mode parity is landed: `<proposed_plan>` parsing, `item/plan/delta`, and `request_user_input` protocol surface are implemented.
+- `arg0` parity is tightened to codex-rs semantics: argv0 dispatch (`apply_patch` / `applypatch` / `codex-linux-sandbox`), dotenv filtering (`CODEX_*` blocked), and PATH helper aliases under `CODEX_HOME/tmp/arg0`.
+- `apply_patch` supports all three parity paths: argv0 aliases, hidden `--codex-run-as-apply-patch`, and hidden root command tokens (`apply_patch` / `applypatch`).
+- Legacy `notify` hook parity is implemented (`notify=[...]` appends `agent-turn-complete` JSON payload).
+- Tool lifecycle hook channel is wired with `after_tool_use` internal payload shape and turn/call context propagation.
+- Parity manifest currently reports `61/61` workspace crates mapped as implemented.
+- Behavior manifest is added at `tooling/parity/behavior_manifest.yaml` to track behavior-level (not only crate-level) coverage.
+- Final dual-view coverage snapshot is available at `tooling/parity/coverage_table.md`.
+- Dual-run parity framework in `tooling/parity/` (manifest + scenario diff reports).
+- Closed-loop gate runner: `tooling/closed_loop.sh` (preflight/build/parity/execpolicy/completion/app-server/debug/mcp + optional online smoke).

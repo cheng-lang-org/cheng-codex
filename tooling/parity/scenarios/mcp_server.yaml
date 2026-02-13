@@ -1,0 +1,25 @@
+{
+  "suite": "mcp_server",
+  "cases": [
+    {
+      "id": "mcp-server-help",
+      "description": "mcp-server --help should be available",
+      "args": ["mcp-server", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["mcp-server", "Usage:"]
+      }
+    },
+    {
+      "id": "mcp-server-initialize",
+      "description": "mcp-server should answer initialize JSON-RPC request",
+      "args": ["mcp-server"],
+      "stdin": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"smoke\",\"version\":\"1.0\"}}}\n",
+      "timeout_sec": 6,
+      "expect": {
+        "ignore_exit_code": true,
+        "stdout_contains": ["\"id\":1", "\"result\"", "protocolVersion"]
+      }
+    }
+  ]
+}

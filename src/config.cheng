@@ -22,8 +22,8 @@ fn trimLine(text: str): str =
     # Return an owned string: slice views can dangle once the source buffer drops.
     return "" + __cheng_slice_string(text, start, stop, false)
 
-fn splitLinesSimple(text: str): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn splitLinesSimple(text: str): str[] =
+    var out: str[] = newSeq[str]()
     var start: int32 = 0
     var i: int32 = 0
     while i < len(text):
@@ -43,8 +43,8 @@ fn splitLinesSimple(text: str): seq[str] =
         seqAdd(out, "")
     return out
 
-var configOverrideKeys: seq[str] = newSeq[str]()
-var configOverrideValues: seq[str] = newSeq[str]()
+var configOverrideKeys: str[] = newSeq[str]()
+var configOverrideValues: str[] = newSeq[str]()
 
 fn clearConfigOverrides() =
     configOverrideKeys = newSeq[str]()
@@ -64,7 +64,7 @@ fn findConfigOverrideIndex(key: str): int32 =
         idx = idx + 1
     return -1
 
-fn setConfigOverrides(overrides: seq[str]) =
+fn setConfigOverrides(overrides: str[]) =
     clearConfigOverrides()
     var idx: int32 = 0
     while idx < len(overrides):
@@ -186,7 +186,11 @@ fn writeAuthJsonApiKey(token: str): bool =
     if ! os.dirExists(home):
         os.createDir(home)
     let path = codexAuthJsonPath()
-    let content = "{\n  \"OPENAI_API_KEY\": " + jstrString(token) + "\n}\n"
+    var lines = "{\n"
+    lines = lines + "  \"auth_mode\": \"api_key\",\n"
+    lines = lines + "  \"OPENAI_API_KEY\": " + jstrString(token) + "\n"
+    lines = lines + "}\n"
+    let content = lines
     os.writeFile(path, content)
     return true
 
@@ -274,7 +278,7 @@ fn writeConfigValue(key: str, value: str): bool =
     if ! os.dirExists(home):
         os.createDir(home)
     let path = codexConfigPath()
-    var lines: seq[str] = newSeq[str]()
+    var lines: str[] = newSeq[str]()
     if os.fileExists(path):
         let content = os.readFile(path)
         if len(content) > 0:
@@ -399,8 +403,8 @@ fn parseTomlStringValue(raw: str): str =
         return unescapeConfigValue(trimmed)
     return trimmed
 
-fn parseTomlStringArray(raw: str): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn parseTomlStringArray(raw: str): str[] =
+    var out: str[] = newSeq[str]()
     let trimmed = trimLine(raw)
     if len(trimmed) == 0:
         return out
@@ -486,7 +490,7 @@ fn normalizeSandboxModeValue(value: str): str =
         return "danger-full-access"
     return normalized
 
-fn addUniqueString(items: var seq[str], value: str) =
+fn addUniqueString(items: var str[], value: str) =
     if len(value) == 0:
         return
     var idx: int32 = 0
@@ -514,7 +518,7 @@ fn managedConfigTomlPath(): str =
         return unixPath
     return ""
 
-fn parseRequirementsToml(content: str, outApproval: var seq[str], outSandbox: var seq[str]) =
+fn parseRequirementsToml(content: str, outApproval: var str[], outSandbox: var str[]) =
     let lines = splitLinesSimple(content)
     var idx: int32 = 0
     while idx < len(lines):
@@ -549,7 +553,7 @@ fn parseRequirementsToml(content: str, outApproval: var seq[str], outSandbox: va
                 itemIdx = itemIdx + 1
         idx = idx + 1
 
-fn parseLegacyManagedConfig(content: str, outApproval: var seq[str], outSandbox: var seq[str]) =
+fn parseLegacyManagedConfig(content: str, outApproval: var str[], outSandbox: var str[]) =
     let lines = splitLinesSimple(content)
     var idx: int32 = 0
     while idx < len(lines):
@@ -579,7 +583,7 @@ fn parseLegacyManagedConfig(content: str, outApproval: var seq[str], outSandbox:
                     addUniqueString(outSandbox, normalized)
         idx = idx + 1
 
-fn readConfigRequirements(outApproval: var seq[str], outSandbox: var seq[str]): bool =
+fn readConfigRequirements(outApproval: var str[], outSandbox: var str[]): bool =
     outApproval = newSeq[str]()
     outSandbox = newSeq[str]()
     let requirementsPath = requirementsTomlPath()

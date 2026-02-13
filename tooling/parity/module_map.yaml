@@ -1,0 +1,504 @@
+{
+  "version": 1,
+  "mappings": [
+    {
+      "crate": "backend-client",
+      "cheng_modules": [
+        "src/model_client.cheng",
+        "src/auth_store.cheng",
+        "src/common.cheng"
+      ],
+      "notes": "Backend transport/client behaviors are consolidated in model + auth layers"
+    },
+    {
+      "crate": "ansi-escape",
+      "cheng_modules": [
+        "src/common.cheng"
+      ],
+      "notes": "ANSI formatting helpers are consolidated in common utilities"
+    },
+    {
+      "crate": "async-utils",
+      "cheng_modules": [
+        "src/common.cheng",
+        "src/model_client.cheng"
+      ],
+      "notes": "Async/retry/timeout style helpers are inlined into common and model client logic"
+    },
+    {
+      "crate": "app-server",
+      "cheng_modules": [
+        "src/app_server.cheng"
+      ],
+      "notes": "App server runtime"
+    },
+    {
+      "crate": "app-server-protocol",
+      "cheng_modules": [
+        "protocol"
+      ],
+      "notes": "TS/JSON schema generation output"
+    },
+    {
+      "crate": "app-server-test-client",
+      "cheng_modules": [
+        "src/app_server_test_client.cheng"
+      ],
+      "notes": "Debug/test client behavior"
+    },
+    {
+      "crate": "debug-client",
+      "cheng_modules": [
+        "src/app_server_test_client.cheng",
+        "src/main.cheng"
+      ],
+      "notes": "Debug client flows are provided by app-server test client command surface"
+    },
+    {
+      "crate": "apply-patch",
+      "cheng_modules": [
+        "src/tools/patch.cheng"
+      ],
+      "notes": "Patch tool implementation"
+    },
+    {
+      "crate": "arg0",
+      "cheng_modules": [
+        "src/main.cheng",
+        "src/tools/patch.cheng"
+      ],
+      "notes": "Arg0/apply_patch compatibility dispatch is implemented in main + patch tooling"
+    },
+    {
+      "crate": "feedback",
+      "cheng_modules": [
+        "src/app_server.cheng",
+        "src/main.cheng"
+      ],
+      "notes": "Feedback/reporting surfaces are routed through app server and CLI pathways"
+    },
+    {
+      "crate": "codex-backend-openapi-models",
+      "cheng_modules": [
+        "protocol",
+        "src/model_client.cheng"
+      ],
+      "notes": "Backend schema and wire models are represented in protocol artifacts + model client parsing"
+    },
+    {
+      "crate": "cloud-requirements",
+      "cheng_modules": [
+        "src/cloud_tasks_cmd.cheng",
+        "src/auth_store.cheng"
+      ],
+      "notes": "Cloud requirements and auth preflight logic are integrated in cloud task command paths"
+    },
+    {
+      "crate": "cloud-tasks",
+      "cheng_modules": [
+        "src/cloud_tasks_cmd.cheng"
+      ],
+      "notes": "Cloud task CLI and parsing"
+    },
+    {
+      "crate": "cloud-tasks-client",
+      "cheng_modules": [
+        "src/cloud_tasks_cmd.cheng",
+        "src/auth_store.cheng"
+      ],
+      "notes": "Cloud task API client behavior is implemented inside cloud task command module"
+    },
+    {
+      "crate": "cli",
+      "cheng_modules": [
+        "src/main.cheng",
+        "src/app_cmd.cheng",
+        "src/mcp_cmd.cheng",
+        "src/mcp_server_cmd.cheng"
+      ],
+      "notes": "Top-level CLI dispatcher and subcommand surfaces"
+    },
+    {
+      "crate": "config",
+      "cheng_modules": [
+        "src/config.cheng"
+      ],
+      "notes": "Config read/write and overrides"
+    },
+    {
+      "crate": "shell-command",
+      "cheng_modules": [
+        "src/tools/shell.cheng",
+        "src/sandbox_runner.cheng",
+        "src/shell_tool_args.cheng",
+        "src/shell_snapshot.cheng"
+      ],
+      "notes": "Shell tool execution"
+    },
+    {
+      "crate": "core",
+      "cheng_modules": [
+        "src/config.cheng",
+        "src/storage.cheng",
+        "src/common.cheng",
+        "src/features.cheng",
+        "src/auth_store.cheng"
+      ],
+      "notes": "Config/state/features/auth model"
+    },
+    {
+      "crate": "hooks",
+      "cheng_modules": [
+        "src/hooks.cheng",
+        "src/storage.cheng"
+      ],
+      "notes": "Legacy notify hook payload + dispatch is implemented in hooks/storage turn lifecycle"
+    },
+    {
+      "crate": "secrets",
+      "cheng_modules": [
+        "src/auth_store.cheng",
+        "src/config.cheng"
+      ],
+      "notes": "Secret/token storage and config redaction live in auth + config modules"
+    },
+    {
+      "crate": "exec",
+      "cheng_modules": [
+        "src/exec_cmd.cheng",
+        "src/engine.cheng",
+        "src/interactive.cheng"
+      ],
+      "notes": "Non-interactive execution + review/resume/fork flows"
+    },
+    {
+      "crate": "exec-server",
+      "cheng_modules": [
+        "src/app_server.cheng",
+        "src/engine.cheng"
+      ],
+      "notes": "Exec server semantics are provided by app-server runtime + execution engine"
+    },
+    {
+      "crate": "execpolicy",
+      "cheng_modules": [
+        "src/execpolicy_cmd.cheng",
+        "src/execpolicy_runtime.cheng",
+        "src/command_safety.cheng"
+      ],
+      "notes": "Exec policy CLI and runtime checks"
+    },
+    {
+      "crate": "execpolicy-legacy",
+      "cheng_modules": [
+        "src/execpolicy_runtime.cheng",
+        "src/command_safety.cheng"
+      ],
+      "notes": "Legacy execpolicy checks are merged into current runtime + safety parser"
+    },
+    {
+      "crate": "keyring-store",
+      "cheng_modules": [
+        "src/auth_store.cheng"
+      ],
+      "notes": "Credential persistence/keyring fallback behavior is implemented in auth store"
+    },
+    {
+      "crate": "file-search",
+      "cheng_modules": [
+        "src/app_server.cheng"
+      ],
+      "notes": "Fuzzy file search RPC behavior is implemented in app-server"
+    },
+    {
+      "crate": "linux-sandbox",
+      "cheng_modules": [
+        "src/sandbox_runner.cheng"
+      ],
+      "notes": "Sandbox execution wrappers"
+    },
+    {
+      "crate": "lmstudio",
+      "cheng_modules": [
+        "src/interactive.cheng",
+        "src/exec_cmd.cheng"
+      ],
+      "notes": "LM Studio provider probing/selection is implemented in interactive + exec options"
+    },
+    {
+      "crate": "login",
+      "cheng_modules": [
+        "src/auth_login.cheng",
+        "src/auth_store.cheng",
+        "src/main.cheng"
+      ],
+      "notes": "Login/logout/status"
+    },
+    {
+      "crate": "mcp-server",
+      "cheng_modules": [
+        "src/mcp_cmd.cheng",
+        "src/mcp_server_cmd.cheng",
+        "src/mcp_oauth.cheng"
+      ],
+      "notes": "MCP client/server + OAuth"
+    },
+    {
+      "crate": "network-proxy",
+      "cheng_modules": [
+        "src/responses_proxy_cmd.cheng",
+        "src/posix_net.cheng"
+      ],
+      "notes": "Proxy and HTTP relay behaviors"
+    },
+    {
+      "crate": "ollama",
+      "cheng_modules": [
+        "src/interactive.cheng",
+        "src/exec_cmd.cheng"
+      ],
+      "notes": "Ollama provider probing/selection is implemented in interactive + exec options"
+    },
+    {
+      "crate": "process-hardening",
+      "cheng_modules": [
+        "src/sandbox_runner.cheng",
+        "src/command_safety.cheng"
+      ],
+      "notes": "Process hardening and safety checks are implemented in sandbox + command safety paths"
+    },
+    {
+      "crate": "protocol",
+      "cheng_modules": [
+        "protocol"
+      ],
+      "notes": "Protocol fixtures and generated artifacts"
+    },
+    {
+      "crate": "rmcp-client",
+      "cheng_modules": [
+        "src/mcp_cmd.cheng",
+        "src/mcp_oauth.cheng"
+      ],
+      "notes": "Remote MCP plumbing"
+    },
+    {
+      "crate": "responses-api-proxy",
+      "cheng_modules": [
+        "src/responses_proxy_cmd.cheng",
+        "src/posix_net.cheng"
+      ],
+      "notes": "Responses proxy transport"
+    },
+    {
+      "crate": "stdio-to-uds",
+      "cheng_modules": [
+        "src/stdio_to_uds_cmd.cheng",
+        "src/posix_net.cheng"
+      ],
+      "notes": "stdio <-> uds relay"
+    },
+    {
+      "crate": "otel",
+      "cheng_modules": [
+        "src/common.cheng",
+        "src/main.cheng"
+      ],
+      "notes": "Telemetry/tracing controls are consolidated in common + entrypoint toggles"
+    },
+    {
+      "crate": "tui",
+      "cheng_modules": [
+        "src/interactive.cheng",
+        "src/exec_cmd.cheng",
+        "src/main.cheng"
+      ],
+      "notes": "TUI and interactive controls"
+    },
+    {
+      "crate": "utils/absolute-path",
+      "cheng_modules": [
+        "src/common.cheng",
+        "src/config.cheng",
+        "src/storage.cheng"
+      ],
+      "notes": "Absolute path normalization is inlined into common/config/storage utilities"
+    },
+    {
+      "crate": "utils/cargo-bin",
+      "cheng_modules": [
+        "src/app_server_test_client.cheng",
+        "src/main.cheng"
+      ],
+      "notes": "Binary path resolution helpers are folded into CLI/test-client command logic"
+    },
+    {
+      "crate": "utils/git",
+      "cheng_modules": [
+        "src/storage.cheng",
+        "src/cloud_tasks_cmd.cheng",
+        "src/main.cheng"
+      ],
+      "notes": "Git helpers (diff/apply/status) are consolidated in storage/cloud/main paths"
+    },
+    {
+      "crate": "utils/cache",
+      "cheng_modules": [
+        "src/storage.cheng"
+      ],
+      "notes": "Cache persistence/indexing is handled by storage module"
+    },
+    {
+      "crate": "utils/image",
+      "cheng_modules": [
+        "src/engine.cheng",
+        "src/app_server.cheng"
+      ],
+      "notes": "Image tool payload handling is implemented in engine + app-server runtime"
+    },
+    {
+      "crate": "utils/json-to-toml",
+      "cheng_modules": [
+        "src/config.cheng"
+      ],
+      "notes": "JSON/TOML conversion and override parsing live in config module"
+    },
+    {
+      "crate": "utils/home-dir",
+      "cheng_modules": [
+        "src/config.cheng"
+      ],
+      "notes": "Home/CODEX_HOME resolution is implemented in config module"
+    },
+    {
+      "crate": "utils/pty",
+      "cheng_modules": [
+        "src/sandbox_runner.cheng",
+        "src/exec_cmd.cheng"
+      ],
+      "notes": "Terminal/command execution compatibility behavior is in sandbox + exec paths"
+    },
+    {
+      "crate": "utils/readiness",
+      "cheng_modules": [
+        "src/posix_net.cheng",
+        "src/app_cmd.cheng",
+        "src/cloud_tasks_cmd.cheng"
+      ],
+      "notes": "Readiness/network probing helpers are inlined into net/app/cloud command modules"
+    },
+    {
+      "crate": "utils/rustls-provider",
+      "cheng_modules": [
+        "src/model_client.cheng"
+      ],
+      "notes": "TLS/provider wiring for HTTP clients is consolidated in model client module"
+    },
+    {
+      "crate": "utils/string",
+      "cheng_modules": [
+        "src/common.cheng",
+        "src/json_util.cheng"
+      ],
+      "notes": "String normalization/format helpers are consolidated in common/json utilities"
+    },
+    {
+      "crate": "utils/cli",
+      "cheng_modules": [
+        "src/main.cheng",
+        "src/exec_cmd.cheng",
+        "src/cloud_tasks_cmd.cheng"
+      ],
+      "notes": "Shared CLI parsing/formatting behavior is consolidated across command modules"
+    },
+    {
+      "crate": "utils/elapsed",
+      "cheng_modules": [
+        "src/common.cheng",
+        "src/exec_cmd.cheng"
+      ],
+      "notes": "Elapsed-time formatting/accounting is inlined in common + exec runtime"
+    },
+    {
+      "crate": "utils/sandbox-summary",
+      "cheng_modules": [
+        "src/shell_snapshot.cheng",
+        "src/sandbox_runner.cheng"
+      ],
+      "notes": "Sandbox summary/snapshot behavior is implemented in shell snapshot + sandbox runner"
+    },
+    {
+      "crate": "utils/sanitizer",
+      "cheng_modules": [
+        "src/command_safety.cheng",
+        "src/shell_tool_args.cheng"
+      ],
+      "notes": "Command/argument sanitization logic is implemented in safety + shell args parsing"
+    },
+    {
+      "crate": "utils/approval-presets",
+      "cheng_modules": [
+        "src/exec_cmd.cheng",
+        "src/main.cheng",
+        "src/command_safety.cheng"
+      ],
+      "notes": "Approval preset semantics are implemented in root + exec command parsing/runtime"
+    },
+    {
+      "crate": "utils/oss",
+      "cheng_modules": [
+        "src/interactive.cheng",
+        "src/exec_cmd.cheng",
+        "src/model_client.cheng"
+      ],
+      "notes": "OSS provider wiring and defaults are implemented in interactive/exec/model layers"
+    },
+    {
+      "crate": "utils/fuzzy-match",
+      "cheng_modules": [
+        "src/app_server.cheng"
+      ],
+      "notes": "Fuzzy matching utilities are implemented in app-server search helpers"
+    },
+    {
+      "crate": "codex-client",
+      "cheng_modules": [
+        "src/model_client.cheng",
+        "src/engine.cheng"
+      ],
+      "notes": "Codex client runtime is implemented by model client + engine integration"
+    },
+    {
+      "crate": "codex-api",
+      "cheng_modules": [
+        "src/model_client.cheng",
+        "protocol"
+      ],
+      "notes": "API wire contracts are represented by model client + generated protocol artifacts"
+    },
+    {
+      "crate": "state",
+      "cheng_modules": [
+        "src/storage.cheng"
+      ],
+      "notes": "State persistence/history/thread storage is implemented in storage module"
+    },
+    {
+      "crate": "codex-experimental-api-macros",
+      "cheng_modules": [
+        "protocol",
+        "src/features.cheng"
+      ],
+      "notes": "Experimental API gating is represented via protocol artifacts + feature gating"
+    },
+    {
+      "crate": "chatgpt",
+      "cheng_modules": [
+        "src/auth_login.cheng",
+        "src/auth_store.cheng",
+        "src/model_client.cheng"
+      ],
+      "notes": "Login and upstream API client behavior"
+    }
+  ]
+}

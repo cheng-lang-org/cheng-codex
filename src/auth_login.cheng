@@ -67,7 +67,7 @@ fn loginTrimTrailingSlash(url: str): str =
 
 fn loginReadHttpRequest(fd: int32, maxHeader: int32, maxBody: int32): str =
     # Avoid repeated `raw = raw + chunk` growth (quadratic for long payloads).
-    var parts: seq[str] = newSeq[str]()
+    var parts: str[] = newSeq[str]()
     var totalLen: int32 = 0
     var headerEnd: int32 = -1
     var contentLen: int32 = -1
@@ -115,8 +115,8 @@ fn loginReadHttpRequest(fd: int32, maxHeader: int32, maxBody: int32): str =
             break
     return joinPartsBalanced(parts)
 
-fn loginSplitLinesRaw(text: str): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn loginSplitLinesRaw(text: str): str[] =
+    var out: str[] = newSeq[str]()
     if text == nil:
         return out
     var start: int32 = 0

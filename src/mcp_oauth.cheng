@@ -25,7 +25,7 @@ type
         hasRefreshToken: bool
         expiresAt: int64
         hasExpiresAt: bool
-        scopes: seq[str]
+        scopes: str[]
 
     McpOauthSession =
         serverName: str
@@ -36,7 +36,7 @@ type
         pkceVerifier: str
         state: str
         redirectUri: str
-        headers: seq[str]
+        headers: str[]
         port: int32
 
 fn mcpOauthTrimSlashes(path: str): str =
@@ -52,8 +52,8 @@ fn mcpOauthTrimSlashes(path: str): str =
         return ""
     return __cheng_slice_string(path, start, stop, false)
 
-fn mcpOauthDiscoveryUrls(serverUrl: str): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn mcpOauthDiscoveryUrls(serverUrl: str): str[] =
+    var out: str[] = newSeq[str]()
     let parts = web_url.urlParse(serverUrl)
     if len(parts.scheme) == 0 || len(parts.authority) == 0:
         return out
@@ -77,8 +77,8 @@ fn mcpOauthDiscoveryUrls(serverUrl: str): seq[str] =
     seqAdd(out, root + canonical)
     return out
 
-fn mcpOauthAddProtocolHeader(headers: seq[str]): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn mcpOauthAddProtocolHeader(headers: str[]): str[] =
+    var out: str[] = newSeq[str]()
     var i: int32 = 0
     while i < len(headers):
         seqAdd(out, headers[i])
@@ -86,7 +86,7 @@ fn mcpOauthAddProtocolHeader(headers: seq[str]): seq[str] =
     seqAdd(out, mcpOauthProtocolHeader + ": " + mcpOauthProtocolVersion)
     return out
 
-fn mcpOauthHttpRequest(method: str, url: str, body: str, contentType: str, headers: seq[str]): AuthHttpResult =
+fn mcpOauthHttpRequest(method: str, url: str, body: str, contentType: str, headers: str[]): AuthHttpResult =
     var out: AuthHttpResult
     if len(url) == 0:
         out.error = "missing url"
@@ -152,7 +152,7 @@ fn mcpOauthHttpRequest(method: str, url: str, body: str, contentType: str, heade
             out.error = "request failed"
     return out
 
-fn mcpOauthDiscover(serverUrl: str, headers: seq[str], meta: var McpOauthMetadata, err: var str): bool =
+fn mcpOauthDiscover(serverUrl: str, headers: str[], meta: var McpOauthMetadata, err: var str): bool =
     meta.authorizationEndpoint = ""
     meta.tokenEndpoint = ""
     meta.registrationEndpoint = ""
@@ -180,16 +180,16 @@ fn mcpOauthDiscover(serverUrl: str, headers: seq[str], meta: var McpOauthMetadat
     err = "OAuth discovery failed"
     return false
 
-fn mcpOauthRegisterClient(meta: McpOauthMetadata, redirectUri: str, clientName: str, headers: seq[str], clientId: var str, err: var str): bool =
+fn mcpOauthRegisterClient(meta: McpOauthMetadata, redirectUri: str, clientName: str, headers: str[], clientId: var str, err: var str): bool =
     clientId = ""
     err = ""
     if len(meta.registrationEndpoint) == 0:
         err = "dynamic registration not supported"
         return false
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("client_name", jstrString(clientName)))
     seqAdd(fields, jstrPair("redirect_uris", jstrArray(seqStr1(jstrString(redirectUri)))))
-    var grantTypes: seq[str] = newSeq[str]()
+    var grantTypes: str[] = newSeq[str]()
     seqAdd(grantTypes, jstrString("authorization_code"))
     seqAdd(grantTypes, jstrString("refresh_token"))
     seqAdd(fields, jstrPair("grant_types", jstrArray(grantTypes)))
@@ -213,7 +213,7 @@ fn mcpOauthRegisterClient(meta: McpOauthMetadata, redirectUri: str, clientName: 
     clientId = id
     return true
 
-fn mcpOauthJoinScopes(scopes: seq[str]): str =
+fn mcpOauthJoinScopes(scopes: str[]): str =
     var out = ""
     var idx: int32 = 0
     while idx < len(scopes):
@@ -226,8 +226,8 @@ fn mcpOauthJoinScopes(scopes: seq[str]): str =
         idx = idx + 1
     return out
 
-fn mcpOauthSplitScopes(text: str): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn mcpOauthSplitScopes(text: str): str[] =
+    var out: str[] = newSeq[str]()
     if text == nil || len(text) == 0:
         return out
     var start: int32 = 0
@@ -242,7 +242,7 @@ fn mcpOauthSplitScopes(text: str): seq[str] =
         i = i + 1
     return out
 
-fn mcpOauthJoinWithAmpersand(items: seq[str]): str =
+fn mcpOauthJoinWithAmpersand(items: str[]): str =
     var out = ""
     var i: int32 = 0
     while i < len(items):
@@ -253,8 +253,8 @@ fn mcpOauthJoinWithAmpersand(items: seq[str]): str =
         i = i + 1
     return out
 
-fn mcpOauthBuildAuthorizationUrl(meta: McpOauthMetadata, clientId: str, redirectUri: str, codeChallenge: str, state: str, scopes: seq[str]): str =
-    var query: seq[str] = newSeq[str]()
+fn mcpOauthBuildAuthorizationUrl(meta: McpOauthMetadata, clientId: str, redirectUri: str, codeChallenge: str, state: str, scopes: str[]): str =
+    var query: str[] = newSeq[str]()
     seqAdd(query, "response_type=" + web_url.urlEncodeComponent("code"))
     seqAdd(query, "client_id=" + web_url.urlEncodeComponent(clientId))
     seqAdd(query, "redirect_uri=" + web_url.urlEncodeComponent(redirectUri))
@@ -279,13 +279,13 @@ fn mcpOauthResetTokens(tokens: var McpOauthTokens) =
     tokens.hasExpiresAt = false
     tokens.scopes = newSeq[str]()
 
-fn mcpOauthExchangeCode(tokenEndpoint: str, clientId: str, redirectUri: str, codeVerifier: str, code: str, headers: seq[str], tokens: var McpOauthTokens, err: var str): bool =
+fn mcpOauthExchangeCode(tokenEndpoint: str, clientId: str, redirectUri: str, codeVerifier: str, code: str, headers: str[], tokens: var McpOauthTokens, err: var str): bool =
     mcpOauthResetTokens(tokens)
     err = ""
     if len(tokenEndpoint) == 0:
         err = "missing token endpoint"
         return false
-    var formPairs: seq[str] = newSeq[str]()
+    var formPairs: str[] = newSeq[str]()
     seqAdd(formPairs, "grant_type=" + web_url.urlEncodeComponent("authorization_code"))
     seqAdd(formPairs, "code=" + web_url.urlEncodeComponent(code))
     seqAdd(formPairs, "redirect_uri=" + web_url.urlEncodeComponent(redirectUri))
@@ -385,14 +385,14 @@ fn mcpOauthJsonEncode(node: json.JsonNode): str =
     if node.kind == json.JString:
         return jstrString(node.getStr())
     if node.kind == json.JArray:
-        var items: seq[str] = newSeq[str]()
+        var items: str[] = newSeq[str]()
         var i: int32 = 0
         while i < len(node.a):
             seqAdd(items, mcpOauthJsonEncode(node.a[i]))
             i = i + 1
         return jstrArray(items)
     if node.kind == json.JObject:
-        var pairs: seq[str] = newSeq[str]()
+        var pairs: str[] = newSeq[str]()
         var i: int32 = 0
         while i < len(node.okeys):
             let key = node.okeys[i]
@@ -490,11 +490,11 @@ fn mcpOauthDeleteTokens(serverName: str, serverUrl: str, removed: var bool): boo
         return true
     return mcpOauthWriteCredentials(path, updated)
 
-fn mcpOauthSupportsLogin(serverUrl: str, headers: seq[str], err: var str): bool =
+fn mcpOauthSupportsLogin(serverUrl: str, headers: str[], err: var str): bool =
     var meta: McpOauthMetadata
     return mcpOauthDiscover(serverUrl, headers, meta, err)
 
-fn mcpOauthCreateSession(serverName: str, serverUrl: str, headers: seq[str], scopes: seq[str], sess: var McpOauthSession, listenerFd: var int32, err: var str): bool =
+fn mcpOauthCreateSession(serverName: str, serverUrl: str, headers: str[], scopes: str[], sess: var McpOauthSession, listenerFd: var int32, err: var str): bool =
     err = ""
     listenerFd = -1
     sess.serverName = serverName
@@ -622,7 +622,7 @@ fn mcpOauthRunSession(listenerFd: int32, sess: McpOauthSession, openBrowser: boo
         closeFd(client)
     return false
 
-fn mcpOauthLogin(serverName: str, serverUrl: str, headers: seq[str], scopes: seq[str], openBrowser: bool, announce: bool, authUrl: var str, err: var str): bool =
+fn mcpOauthLogin(serverName: str, serverUrl: str, headers: str[], scopes: str[], openBrowser: bool, announce: bool, authUrl: var str, err: var str): bool =
     var sess: McpOauthSession
     var listenerFd: int32 = -1
     if ! mcpOauthCreateSession(serverName, serverUrl, headers, scopes, sess, listenerFd, err):

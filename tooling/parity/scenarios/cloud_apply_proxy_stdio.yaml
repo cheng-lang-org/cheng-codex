@@ -1,0 +1,51 @@
+{
+  "suite": "cloud_apply_proxy_stdio",
+  "cases": [
+    {
+      "id": "cloud-help",
+      "description": "cloud --help should expose task subcommands",
+      "args": ["cloud", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex cloud", "exec", "status", "list", "apply", "diff"]
+      }
+    },
+    {
+      "id": "apply-help",
+      "description": "apply --help should be available",
+      "args": ["apply", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex apply"]
+      }
+    },
+    {
+      "id": "responses-proxy-help",
+      "description": "responses-api-proxy --help should be available",
+      "args": ["responses-api-proxy", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex responses-api-proxy", "--port"]
+      }
+    },
+    {
+      "id": "stdio-to-uds-help",
+      "description": "stdio-to-uds --help should be available",
+      "args": ["stdio-to-uds", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex stdio-to-uds"]
+      }
+    },
+    {
+      "id": "app-help-macos",
+      "description": "app --help should be available on macOS",
+      "platforms": ["macos"],
+      "args": ["app", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex app"]
+      }
+    }
+  ]
+}

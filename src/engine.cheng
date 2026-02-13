@@ -24,19 +24,31 @@ type
         diff: str
         mock: str
         imagePath: str
-        webSearchQueries: seq[str]
+        webSearchQueries: str[]
         pending: bool
         pendingResponseId: str
         pendingCallId: str
         pendingToolName: str
         pendingArguments: str
-        pendingInputItems: seq[str]
+        pendingInputItems: str[]
         pendingModel: str
         pendingInstructions: str
     TurnContext =
         instructions: str
         model: str
         userInstructions: str
+
+var engineCurrentMode: str = "default"
+
+fn requestUserInputModeFromEngine(): str =
+    let mode = normalizePolicy(trimLine(engineCurrentMode))
+    if mode == "plan":
+        return "plan"
+    if mode == "exec" || mode == "execute":
+        return "execute"
+    if mode == "pair_programming" || mode == "pairprogramming" || mode == "pair-programming" || mode == "pair":
+        return "pair_programming"
+    return "default"
 
 fn traceEngineLocal(msg: str) =
     let enabled = normalizePolicy(trimLine(os.getEnv("CODEX_TRACE_ENGINE")))
@@ -54,8 +66,8 @@ fn cloneTextEngine(value: str): str =
         i = i + 1
     return out
 
-fn cloneSeqStrEngine(values: seq[str]): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn cloneSeqStrEngine(values: str[]): str[] =
+    var out: str[] = newSeq[str]()
     if values == nil:
         return out
     var i: int32 = 0
@@ -64,8 +76,8 @@ fn cloneSeqStrEngine(values: seq[str]): seq[str] =
         i = i + 1
     return out
 
-fn cloneSeqShallowEngine(values: seq[str]): seq[str] =
-    var out: seq[str] = newSeq[str]()
+fn cloneSeqShallowEngine(values: str[]): str[] =
+    var out: str[] = newSeq[str]()
     if values == nil:
         return out
     var i: int32 = 0
@@ -186,7 +198,7 @@ fn runToolCall(toolName: str, arguments: str, workDir: str, approvalPolicy: str)
         result.agentText = toolText
         return result
     if toolName == "apply_patch":
-        let patchText = jsonExtractString(arguments, "patch")
+        let patchText = toolPatchTextFromArguments(arguments)
         if len(patchText) == 0:
             result.ok = false
             result.agentText = "missing patch"
@@ -223,6 +235,10 @@ fn runToolCall(toolName: str, arguments: str, workDir: str, approvalPolicy: str)
         result.imagePath = path
         result.ok = true
         result.agentText = "attached local image path"
+        return result
+    if toolName == "request_user_input":
+        result.ok = false
+        result.agentText = requestUserInputUnavailableMessage(requestUserInputModeFromEngine())
         return result
     if toolName == "spawn_agent":
         let toolRes = collabSpawnAgent(arguments, "", "", "", approvalPolicy, workDir)
@@ -268,7 +284,7 @@ fn mergeInstructions(baseText: str, userText: str, developerText: str): str =
             out = "" + developerText
     return out
 
-fn continueTurn(inputItems: seq[str], previousResponseId: str, workDir: str, approvalPolicy: str, model: str, instructions: str, outputSchemaJson: str, useTools: bool, pauseOnTool: bool, disableWebSearch: bool, disableViewImage: bool): TurnResult =
+fn continueTurn(inputItems: str[], previousResponseId: str, workDir: str, approvalPolicy: str, model: str, instructions: str, outputSchemaJson: str, useTools: bool, pauseOnTool: bool, disableWebSearch: bool, disableViewImage: bool): TurnResult =
     traceEngineLocal("continueTurn.begin")
     var result: TurnResult = TurnResult(
         ok: true,
@@ -291,14 +307,14 @@ fn continueTurn(inputItems: seq[str], previousResponseId: str, workDir: str, app
         pendingModel: "",
         pendingInstructions: ""
     )
-    var workingItems: seq[str] = newSeq[str]()
+    var workingItems: str[] = newSeq[str]()
     var idx: int32 = 0
     while idx < len(inputItems):
         seqAdd(workingItems, inputItems[idx])
         idx = idx + 1
     var loopCount: int32 = 0
     var lastResponseId: str = previousResponseId
-    var webQueries: seq[str] = newSeq[str]()
+    var webQueries: str[] = newSeq[str]()
     while loopCount < 4:
         traceEngineLocal("continueTurn.before.callResponses")
         let response = callResponsesApi(model, instructions, workingItems, useTools, outputSchemaJson, disableWebSearch, disableViewImage, lastResponseId)
@@ -403,7 +419,7 @@ fn buildTurnInstructions(mode: str, baseInstructions: str, developerInstructions
     traceEngineLocal("buildTurnInstructions.end")
     return TurnContext(instructions: instructions, model: model, userInstructions: userText)
 
-fn runTurnWithItems(inputItems: seq[str], contextItems: seq[str], workDir: str, mode: str, approvalPolicy: str, baseInstructions: str, developerInstructions: str, outputSchemaJson: str, pauseOnTool: bool, disableWebSearch: bool, disableViewImage: bool): TurnResult =
+fn runTurnWithItems(inputItems: str[], contextItems: str[], workDir: str, mode: str, approvalPolicy: str, baseInstructions: str, developerInstructions: str, outputSchemaJson: str, pauseOnTool: bool, disableWebSearch: bool, disableViewImage: bool): TurnResult =
     traceEngineLocal("runTurnWithItems.begin")
     var result: TurnResult = TurnResult(
         ok: true,
@@ -433,7 +449,7 @@ fn runTurnWithItems(inputItems: seq[str], contextItems: seq[str], workDir: str, 
     traceEngineLocal("runTurnWithItems.before.buildTurnInstructions")
     let context = buildTurnInstructions(mode, baseInstructions, developerInstructions, workDir)
     traceEngineLocal("runTurnWithItems.after.buildTurnInstructions")
-    var items: seq[str] = newSeq[str]()
+    var items: str[] = newSeq[str]()
     var idx: int32 = 0
     while idx < len(contextItems):
         seqAdd(items, contextItems[idx])
@@ -444,12 +460,13 @@ fn runTurnWithItems(inputItems: seq[str], contextItems: seq[str], workDir: str, 
     while j < len(inputItems):
         seqAdd(items, inputItems[j])
         j = j + 1
+    engineCurrentMode = mode
     let useTools = true
     let pause = if useTools: pauseOnTool else: false
     traceEngineLocal("runTurnWithItems.before.continueTurn")
     return continueTurn(items, "", workDir, approvalPolicy, context.model, context.instructions, outputSchemaJson, useTools, pause, disableWebSearch, disableViewImage)
 
-fn runTurn(prompt: str, contextItems: seq[str], workDir: str, mode: str, approvalPolicy: str, baseInstructions: str, developerInstructions: str, outputSchemaJson: str, pauseOnTool: bool, disableWebSearch: bool, disableViewImage: bool): TurnResult =
+fn runTurn(prompt: str, contextItems: str[], workDir: str, mode: str, approvalPolicy: str, baseInstructions: str, developerInstructions: str, outputSchemaJson: str, pauseOnTool: bool, disableWebSearch: bool, disableViewImage: bool): TurnResult =
     traceEngineLocal("runTurn.begin")
     var result: TurnResult = TurnResult(
         ok: true,
@@ -478,13 +495,13 @@ fn runTurn(prompt: str, contextItems: seq[str], workDir: str, mode: str, approva
         result.agentText = "empty prompt"
         return result
     traceEngineLocal("runTurn.before.buildInputMessage")
-    var inputItems: seq[str] = newSeq[str]()
+    var inputItems: str[] = newSeq[str]()
     seqAdd(inputItems, buildInputMessage("user", trimmed))
     traceEngineLocal("runTurn.after.buildInputMessage")
     return runTurnWithItems(inputItems, contextItems, workDir, mode, approvalPolicy, baseInstructions, developerInstructions, outputSchemaJson, pauseOnTool, disableWebSearch, disableViewImage)
 
-fn resumeTurnWithTool(pendingInputItems: seq[str], previousResponseId: str, callId: str, toolOutputText: str, toolSuccess: bool, workDir: str, approvalPolicy: str, model: str, instructions: str, outputSchemaJson: str, pauseOnTool: bool, disableWebSearch: bool, disableViewImage: bool): TurnResult =
-    var inputItems: seq[str] = newSeq[str]()
+fn resumeTurnWithTool(pendingInputItems: str[], previousResponseId: str, callId: str, toolOutputText: str, toolSuccess: bool, workDir: str, approvalPolicy: str, model: str, instructions: str, outputSchemaJson: str, pauseOnTool: bool, disableWebSearch: bool, disableViewImage: bool): TurnResult =
+    var inputItems: str[] = newSeq[str]()
     var idx: int32 = 0
     while idx < len(pendingInputItems):
         seqAdd(inputItems, pendingInputItems[idx])

@@ -1,0 +1,58 @@
+{
+  "suite": "auth_features",
+  "cases": [
+    {
+      "id": "login-help",
+      "description": "login --help should expose auth methods",
+      "args": ["login", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["login", "--with-api-key", "--device-auth"]
+      }
+    },
+    {
+      "id": "login-status",
+      "description": "login status should return stable command semantics",
+      "args": ["login", "status"],
+      "expect": {
+        "exit_code": "equal"
+      }
+    },
+    {
+      "id": "logout-help",
+      "description": "logout --help should be available",
+      "args": ["logout", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex logout"]
+      }
+    },
+    {
+      "id": "features-help",
+      "description": "features --help should expose list/enable/disable",
+      "args": ["features", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex features", "list", "enable", "disable"]
+      }
+    },
+    {
+      "id": "features-list-help",
+      "description": "features list --help should be valid",
+      "args": ["features", "list", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex features list"]
+      }
+    },
+    {
+      "id": "root-enable-help",
+      "description": "root --enable should parse before command help",
+      "args": ["--enable", "tui2", "features", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex features"]
+      }
+    }
+  ]
+}

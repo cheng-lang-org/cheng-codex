@@ -1,0 +1,43 @@
+{
+  "suite": "mcp",
+  "cases": [
+    {
+      "id": "mcp-help",
+      "description": "mcp --help should expose lifecycle commands",
+      "args": ["mcp", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["mcp", "list", "get", "add", "remove", "login", "logout"]
+      }
+    },
+    {
+      "id": "mcp-lifecycle-json",
+      "description": "mcp add/list/get/remove lifecycle should work in isolated HOME",
+      "platforms": ["macos", "linux"],
+      "steps": [
+        {
+          "args": ["mcp", "add", "smoke", "--", "/bin/echo", "hello"]
+        },
+        {
+          "args": ["mcp", "list", "--json"]
+        },
+        {
+          "args": ["mcp", "get", "smoke", "--json"]
+        },
+        {
+          "args": ["mcp", "remove", "smoke"]
+        }
+      ],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["smoke", "transport"],
+        "cheng": {
+          "stdout_contains": ["auth_status", "enabled_tools"]
+        },
+        "baseline": {
+          "stdout_contains": ["auth_status", "enabled_tools"]
+        }
+      }
+    }
+  ]
+}

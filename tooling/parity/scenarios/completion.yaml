@@ -1,0 +1,28 @@
+{
+  "suite": "completion",
+  "cases": [
+    {
+      "id": "completion-help",
+      "description": "completion --help should expose supported shells",
+      "args": ["completion", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex completion", "bash", "zsh", "fish"]
+      }
+    },
+    {
+      "id": "completion-bash",
+      "description": "completion bash should emit completion script",
+      "args": ["completion", "bash"],
+      "expect": {
+        "exit_code": 0,
+        "cheng": {
+          "stdout_regex": ["codex"]
+        },
+        "baseline": {
+          "stdout_regex": ["codex"]
+        }
+      }
+    }
+  ]
+}

@@ -22,7 +22,7 @@ fn appServerTestUsage(): int32 =
     return 0
 
 fn appServerTestRequest(id: int32, methodName: str, paramsJson: str): str =
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
     seqAdd(fields, jstrPair("id", intToStr(id)))
     seqAdd(fields, jstrPair("method", jstrString(methodName)))
@@ -31,7 +31,7 @@ fn appServerTestRequest(id: int32, methodName: str, paramsJson: str): str =
     return jstrObject(fields)
 
 fn appServerTestNotification(methodName: str, paramsJson: str): str =
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
     seqAdd(fields, jstrPair("method", jstrString(methodName)))
     if len(paramsJson) > 0:
@@ -39,10 +39,10 @@ fn appServerTestNotification(methodName: str, paramsJson: str): str =
     return jstrObject(fields)
 
 fn appServerTestApprovalResponse(id: int32, decision: str, forSession: bool): str =
-    var resultFields: seq[str] = newSeq[str]()
+    var resultFields: str[] = newSeq[str]()
     seqAdd(resultFields, jstrPair("decision", jstrString(decision)))
     seqAdd(resultFields, jstrPair("forSession", jstrBool(forSession)))
-    var fields: seq[str] = newSeq[str]()
+    var fields: str[] = newSeq[str]()
     seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
     seqAdd(fields, jstrPair("id", intToStr(id)))
     seqAdd(fields, jstrPair("result", jstrObject(resultFields)))
@@ -94,7 +94,7 @@ fn appServerTestRunSession(codexBin: str, prompt: str, approvalPolicy: str): int
     ))
     appServerTestSendLine(writeFd, appServerTestRequest(1, "initialize", initParams))
     appServerTestSendLine(writeFd, appServerTestNotification("initialized", ""))
-    var turnFields: seq[str] = newSeq[str]()
+    var turnFields: str[] = newSeq[str]()
     seqAdd(turnFields, jstrPair("text", jstrString(prompt)))
     if len(approvalPolicy) > 0:
         seqAdd(turnFields, jstrPair("approvalPolicy", jstrString(approvalPolicy)))
@@ -122,10 +122,10 @@ fn appServerTestRunSession(codexBin: str, prompt: str, approvalPolicy: str): int
     ptyWait(pid, &exitCode)
     return 0
 
-fn runAppServerTest(args: seq[str], start: int32): int32 =
+fn runAppServerTest(args: str[], start: int32): int32 =
     var codexBin = defaultAppServerBin()
     var sub = ""
-    var promptParts: seq[str] = newSeq[str]()
+    var promptParts: str[] = newSeq[str]()
     var i: int32 = start
     while i < len(args):
         let arg = args[i]

@@ -66,7 +66,7 @@ fn relayFd(srcFd: int32, dstFd: int32) =
         writeAll(dstFd, chunk)
         chunk = readChunk(srcFd, 4096)
 
-fn runStdioToUdsLocal(args: seq[str], start: int32): int32 =
+fn runStdioToUdsLocal(args: str[], start: int32): int32 =
     # Help flags are accepted anywhere before `--` (matches clap behavior).
     var delim: int32 = -1
     var i: int32 = start

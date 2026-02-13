@@ -8,8 +8,8 @@ type
         stage: str
         defaultEnabled: bool
 
-fn listFeatureSpecs(): seq[FeatureSpec] =
-    var specs: seq[FeatureSpec] = newSeq[FeatureSpec]()
+fn listFeatureSpecs(): FeatureSpec[] =
+    var specs: FeatureSpec[] = newSeq[FeatureSpec]()
     seqAdd(specs, FeatureSpec(key: "undo", stage: "stable", defaultEnabled: false))
     seqAdd(specs, FeatureSpec(key: "parallel", stage: "stable", defaultEnabled: true))
     seqAdd(specs, FeatureSpec(key: "view_image_tool", stage: "stable", defaultEnabled: true))
@@ -28,7 +28,7 @@ fn listFeatureSpecs(): seq[FeatureSpec] =
     seqAdd(specs, FeatureSpec(key: "powershell_utf8", stage: "experimental", defaultEnabled: false))
     seqAdd(specs, FeatureSpec(key: "tui2", stage: "experimental", defaultEnabled: true))
     seqAdd(specs, FeatureSpec(key: "collab", stage: "experimental", defaultEnabled: false))
-    seqAdd(specs, FeatureSpec(key: "collaboration_modes", stage: "experimental", defaultEnabled: false))
+    seqAdd(specs, FeatureSpec(key: "collaboration_modes", stage: "stable", defaultEnabled: true))
     return specs
 
 fn configBoolValue(key: str, defaultValue: bool): bool =

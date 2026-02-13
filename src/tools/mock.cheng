@@ -1,7 +1,14 @@
-# Mock tool (placeholder)
+# Mock tool shim
 
 import system
-import seqs
+import std/os
 import cheng/codex/common
+
 fn runMockTool(): ToolResult =
-    return makeToolResult(true, "mock tool ok", 0)
+    let override = trimLine(os.getEnv("CODEX_MOCK_TOOL_RESULT"))
+    let normalized = normalizePolicy(override)
+    if normalized == "fail" || normalized == "error":
+        return makeToolResult(false, "mock tool failed", 1)
+    if len(override) > 0:
+        return makeToolResult(true, override, 0)
+    return makeToolResult(true, "ok", 0)

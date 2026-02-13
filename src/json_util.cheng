@@ -6,7 +6,7 @@ import seqs
 fn ord(ch: char): int32 =
     return int32(ch)
 
-fn jsonJoinPartsBalanced(parts: seq[str]): str =
+fn jsonJoinPartsBalanced(parts: str[]): str =
     # Balanced join avoids O(n^2) growth when concatenating many pieces.
     if len(parts) == 0:
         return ""
@@ -15,7 +15,7 @@ fn jsonJoinPartsBalanced(parts: seq[str]): str =
         if only == nil:
             return ""
         return "" + only
-    var work: seq[str] = newSeq[str]()
+    var work: str[] = newSeq[str]()
     var i: int32 = 0
     while i < len(parts):
         let part: str = get[str](parts, i)
@@ -25,7 +25,7 @@ fn jsonJoinPartsBalanced(parts: seq[str]): str =
             seqAdd(work, part)
         i = i + 1
     while len(work) > 1:
-        var next: seq[str] = newSeq[str]()
+        var next: str[] = newSeq[str]()
         var j: int32 = 0
         while j < len(work):
             if j + 1 < len(work):
@@ -46,7 +46,7 @@ fn jstrEscape(value: str): str =
     if value == nil:
         return ""
     # Build via slices + balanced join to avoid O(n^2) growth and deep `+` chains.
-    var parts: seq[str] = newSeq[str]()
+    var parts: str[] = newSeq[str]()
     var last: int32 = 0
     var i: int32 = 0
     while i < len(value):
@@ -97,11 +97,11 @@ fn jstrPair(key: str, valueJson: str): str =
     out = out + valueJson
     return out
 
-fn joinWithComma(items: seq[str]): str =
+fn joinWithComma(items: str[]): str =
     if len(items) == 0:
         return ""
     # Use parts + balanced join to avoid quadratic behavior for large arrays.
-    var parts: seq[str] = newSeq[str]()
+    var parts: str[] = newSeq[str]()
     var i: int32 = 0
     while i < len(items):
         if i > 0:
@@ -114,14 +114,14 @@ fn joinWithComma(items: seq[str]): str =
         i = i + 1
     return jsonJoinPartsBalanced(parts)
 
-fn jstrObject(pairs: seq[str]): str =
+fn jstrObject(pairs: str[]): str =
     # Build incrementally to avoid deep temporary chains (can SIGSEGV).
     var out = "{"
     out = out + joinWithComma(pairs)
     out = out + "}"
     return out
 
-fn jstrArray(items: seq[str]): str =
+fn jstrArray(items: str[]): str =
     # Build incrementally to avoid deep temporary chains (can SIGSEGV).
     var out = "["
     out = out + joinWithComma(items)
@@ -200,6 +200,140 @@ fn jsonExtractStringAfter(payload: str, key: str, startIdx: int32): str =
 fn jsonExtractString(payload: str, key: str): str =
     return jsonExtractStringAfter(payload, key, 0)
 
+fn jsonFindContainerEnd(payload: str, startIdx: int32, openCh: char, closeCh: char): int32 =
+    if payload == nil || startIdx < 0 || startIdx >= len(payload):
+        return -1
+    if payload[startIdx] != openCh:
+        return -1
+    var idx = startIdx
+    var depth = 0
+    var inString = false
+    while idx < len(payload):
+        let ch = payload[idx]
+        if inString:
+            if ch == '\\' && idx + 1 < len(payload):
+                idx = idx + 2
+                continue
+            if ch == '"':
+                inString = false
+            idx = idx + 1
+            continue
+        if ch == '"':
+            inString = true
+        elif ch == openCh:
+            depth = depth + 1
+        elif ch == closeCh:
+            depth = depth - 1
+            if depth == 0:
+                return idx
+        idx = idx + 1
+    return -1
+
+fn jsonExtractRawFieldAfter(payload: str, key: str, startIdx: int32, expectOpen: char): str =
+    let keyIdx = jsonFindKeyAfter(payload, key, startIdx)
+    if keyIdx < 0:
+        return ""
+    var idx: int32 = indexOfSubstr(payload, ":", keyIdx + len(key) + 2)
+    if idx < 0:
+        return ""
+    idx = jsonSkipSpaces(payload, idx + 1)
+    if idx < 0 || idx >= len(payload):
+        return ""
+    if payload[idx] != expectOpen:
+        return ""
+    var endIdx: int32 = -1
+    if expectOpen == '{':
+        endIdx = jsonFindContainerEnd(payload, idx, '{', '}')
+    elif expectOpen == '[':
+        endIdx = jsonFindContainerEnd(payload, idx, '[', ']')
+    if endIdx < 0:
+        return ""
+    return __cheng_slice_string(payload, idx, endIdx, false)
+
+fn jsonExtractRawObjectFieldAfter(payload: str, key: str, startIdx: int32): str =
+    return jsonExtractRawFieldAfter(payload, key, startIdx, '{')
+
+fn jsonExtractRawObjectField(payload: str, key: str): str =
+    return jsonExtractRawObjectFieldAfter(payload, key, 0)
+
+fn jsonExtractRawArrayFieldAfter(payload: str, key: str, startIdx: int32): str =
+    return jsonExtractRawFieldAfter(payload, key, startIdx, '[')
+
+fn jsonExtractRawArrayField(payload: str, key: str): str =
+    return jsonExtractRawArrayFieldAfter(payload, key, 0)
+
+fn normalizeCollaborationModeKey(mode: str): str =
+    let norm = normalizePolicy(trimLine(mode))
+    if norm == "plan":
+        return "plan"
+    if norm == "execute" || norm == "exec":
+        return "execute"
+    if norm == "pairprogramming" || norm == "pair_programming" || norm == "pair-programming" || norm == "pair":
+        return "pair_programming"
+    if norm == "default" || norm == "ask" || norm == "normal":
+        return "default"
+    return "default"
+
+fn collaborationModeDisplayName(mode: str): str =
+    let norm = normalizeCollaborationModeKey(mode)
+    if norm == "plan":
+        return "Plan"
+    if norm == "execute":
+        return "Execute"
+    if norm == "pair_programming":
+        return "Pair Programming"
+    return "Default"
+
+fn requestUserInputUnavailableMessage(mode: str): str =
+    let modeName = collaborationModeDisplayName(mode)
+    return "request_user_input is unavailable in " + modeName + " mode"
+
+fn requestUserInputAvailabilityInstruction(mode: str): str =
+    let modeName = collaborationModeDisplayName(mode)
+    if normalizeCollaborationModeKey(mode) == "plan":
+        return "The `request_user_input` tool is available in " + modeName + " mode."
+    return "The `request_user_input` tool is unavailable in " + modeName + " mode. If you call it while in " + modeName + " mode, it will return an error."
+
+fn requestUserInputEmptyResponseJson(): str =
+    return jstrObject(seqStr1(jstrPair("answers", jstrObject(newSeq[str]()))))
+
+fn requestUserInputQuestionsFromArguments(arguments: str): str =
+    let questions = jsonExtractRawArrayField(arguments, "questions")
+    if len(questions) > 0:
+        return questions
+    return jstrArray(newSeq[str]())
+
+fn requestUserInputNormalizeResponse(resultJson: str): str =
+    let answers = jsonExtractRawObjectField(resultJson, "answers")
+    if len(answers) == 0:
+        return requestUserInputEmptyResponseJson()
+    return jstrObject(seqStr1(jstrPair("answers", answers)))
+
+fn jsonFirstNonSpaceIndex(payload: str): int32 =
+    if payload == nil:
+        return -1
+    var i: int32 = 0
+    while i < len(payload):
+        let ch = payload[i]
+        if ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r':
+            return i
+        i = i + 1
+    return -1
+
+fn toolPatchTextFromArguments(arguments: str): str =
+    # `apply_patch` can arrive either as JSON (`{"patch":"..."}`) or freeform text.
+    # For semantic parity with codex-rs freeform support, accept non-JSON bodies directly.
+    let fromJson = jsonExtractString(arguments, "patch")
+    if len(fromJson) > 0:
+        return fromJson
+    let first = jsonFirstNonSpaceIndex(arguments)
+    if first < 0:
+        return ""
+    let ch = arguments[first]
+    if ch == '{' || ch == '[' || ch == '"':
+        return ""
+    return arguments
+
 fn jsonExtractIntAfter(payload: str, key: str, startIdx: int32, defaultValue: int32): int32 =
     let keyIdx = jsonFindKeyAfter(payload, key, startIdx)
     if keyIdx < 0:
@@ -228,8 +362,8 @@ fn jsonExtractIntAfter(payload: str, key: str, startIdx: int32, defaultValue: in
 fn jsonExtractInt(payload: str, key: str, defaultValue: int32): int32 =
     return jsonExtractIntAfter(payload, key, 0, defaultValue)
 
-fn jsonExtractStringArray(payload: str, key: str): seq[str] =
-    var outVal: seq[str] = newSeq[str]()
+fn jsonExtractStringArray(payload: str, key: str): str[] =
+    var outVal: str[] = newSeq[str]()
     let keyIdx = jsonFindKeyAfter(payload, key, 0)
     if keyIdx < 0:
         return outVal
@@ -252,7 +386,7 @@ fn jsonExtractStringArray(payload: str, key: str): seq[str] =
         idx = idx + 1
         # Build via slices + balanced join to avoid O(n^2) growth and to reduce
         # exposure to runtime instability in repeated `value = value + ...`.
-        var parts: seq[str] = newSeq[str]()
+        var parts: str[] = newSeq[str]()
         var last: int32 = idx
         while idx < len(payload):
             let c = payload[idx]

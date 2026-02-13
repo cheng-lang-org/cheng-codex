@@ -30,6 +30,7 @@ if [ "${CODEX_BUILD_VERBOSE:-1}" != "0" ]; then
   echo "[cheng-codex] build: stage1 -> backend driver (obj/exe) -> link (this can take a few minutes)"
 fi
 export CHENG_BACKEND_LINKER="${CHENG_BACKEND_LINKER:-self}"
+export CHENG_BACKEND_FRONTEND="${CHENG_BACKEND_FRONTEND:-mvp}"
 if [ "${CODEX_BUILD_FAST:-0}" = "1" ]; then
   export CFLAGS="${CFLAGS:--O0}"
 fi
@@ -272,11 +273,18 @@ cd "$CHENG_ROOT"
 reset_build_outputs
 run_chengc
 
+BUILT_BIN=""
 if [ -f "$CHENG_ROOT/$NAME" ]; then
+  BUILT_BIN="$CHENG_ROOT/$NAME"
+elif [ -f "$CHENG_ROOT/artifacts/chengc/$NAME" ]; then
+  BUILT_BIN="$CHENG_ROOT/artifacts/chengc/$NAME"
+fi
+
+if [ -n "$BUILT_BIN" ] && [ -f "$BUILT_BIN" ]; then
   mkdir -p "$OUT_DIR"
   # Ensure a fresh inode: avoids macOS caching invalid code-sign state on overwrite.
   rm -f "$OUT_DIR/$OUT_NAME"
-  cp "$CHENG_ROOT/$NAME" "$OUT_DIR/$OUT_NAME"
+  cp "$BUILT_BIN" "$OUT_DIR/$OUT_NAME"
   # macOS can SIGKILL newly-built adhoc binaries unless explicitly re-signed.
   if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
     codesign --force --sign - "$OUT_DIR/$OUT_NAME" >/dev/null 2>&1 || true

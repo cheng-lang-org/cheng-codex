@@ -1,0 +1,74 @@
+{
+  "suite": "sandbox_execpolicy",
+  "cases": [
+    {
+      "id": "sandbox-help",
+      "description": "sandbox --help should expose platform subcommands",
+      "args": ["sandbox", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex sandbox", "macos", "linux", "windows"]
+      }
+    },
+    {
+      "id": "sandbox-macos-help",
+      "description": "sandbox macos --help should be available on macOS",
+      "platforms": ["macos"],
+      "args": ["sandbox", "macos", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex sandbox macos", "--full-auto"]
+      }
+    },
+    {
+      "id": "sandbox-linux-help",
+      "description": "sandbox linux --help should be available on Linux",
+      "platforms": ["linux"],
+      "args": ["sandbox", "linux", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex sandbox linux", "--full-auto"]
+      }
+    },
+    {
+      "id": "sandbox-windows-help",
+      "description": "sandbox windows --help should be available on Windows",
+      "platforms": ["windows"],
+      "args": ["sandbox", "windows", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex sandbox windows"]
+      }
+    },
+    {
+      "id": "execpolicy-check",
+      "description": "execpolicy check should emit JSON decision payload",
+      "files": [
+        {
+          "path": "rules/policy.rules",
+          "content": "prefix_rule(\n    pattern = [\"git\", \"push\"],\n    decision = \"forbidden\",\n)\n"
+        }
+      ],
+      "args": [
+        "execpolicy",
+        "check",
+        "--rules",
+        "{{CASE_TMP}}/rules/policy.rules",
+        "git",
+        "push",
+        "origin",
+        "main"
+      ],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["decision"],
+        "cheng": {
+          "stdout_contains": ["matchedRules"]
+        },
+        "baseline": {
+          "stdout_contains": ["matchedRules"]
+        }
+      }
+    }
+  ]
+}

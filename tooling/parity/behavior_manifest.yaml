@@ -1,0 +1,228 @@
+{
+  "version": 1,
+  "baseline": {
+    "repo": "/Users/lbcheng/codex-lbcheng/codex-rs",
+    "commit": "ebe359b8"
+  },
+  "summary": {
+    "total_behaviors": 20,
+    "implemented": 20,
+    "scenarized": 20,
+    "verification_status": "pending_execution"
+  },
+  "behaviors": [
+    {
+      "id": "arg0-argv0-dispatch",
+      "domain": "arg0",
+      "status": "implemented",
+      "cheng_modules": ["src/main.cheng"],
+      "source_refs": ["codex-rs/arg0/src/lib.rs"],
+      "scenario_refs": ["tooling/parity/scenarios/arg0_hooks.yaml::arg0-argv0-apply-patch-stdin", "tooling/parity/scenarios/arg0_hooks.yaml::arg0-argv0-applypatch-stdin"],
+      "notes": "supports argv0 dispatch for apply_patch/applypatch/codex-linux-sandbox"
+    },
+    {
+      "id": "arg0-hidden-apply-patch-arg1",
+      "domain": "arg0",
+      "status": "implemented",
+      "cheng_modules": ["src/main.cheng"],
+      "source_refs": ["codex-rs/core/src/apply_patch.rs", "codex-rs/arg0/src/lib.rs"],
+      "scenario_refs": ["tooling/parity/scenarios/cli.yaml::hidden-arg0-apply-patch-arg1"],
+      "notes": "--codex-run-as-apply-patch compatibility path + exit semantics"
+    },
+    {
+      "id": "arg0-root-hidden-command-surface",
+      "domain": "arg0",
+      "status": "implemented",
+      "cheng_modules": ["src/main.cheng"],
+      "source_refs": ["codex-rs/arg0/src/lib.rs"],
+      "scenario_refs": ["tooling/parity/scenarios/arg0_hooks.yaml::arg0-subcommand-apply-patch-stdin", "tooling/parity/scenarios/arg0_hooks.yaml::arg0-subcommand-applypatch-stdin"],
+      "notes": "root parser accepts hidden apply_patch/applypatch command tokens"
+    },
+    {
+      "id": "arg0-dotenv-filter",
+      "domain": "arg0",
+      "status": "implemented",
+      "cheng_modules": ["src/main.cheng"],
+      "source_refs": ["codex-rs/arg0/src/lib.rs"],
+      "scenario_refs": ["tooling/parity/scenarios/arg0_hooks.yaml::dotenv-loads-non-codex-and-filters-codex-prefix"],
+      "notes": "loads ~/.codex/.env and filters CODEX_* keys"
+    },
+    {
+      "id": "arg0-path-helper-lifecycle",
+      "domain": "arg0",
+      "status": "implemented",
+      "cheng_modules": ["src/main.cheng"],
+      "source_refs": ["codex-rs/arg0/src/lib.rs"],
+      "scenario_refs": ["tooling/parity/scenarios/arg0_hooks.yaml::path-helper-linux-command-v", "tooling/parity/scenarios/arg0_hooks.yaml::path-helper-macos-command-v"],
+      "notes": "prepends CODEX_HOME/tmp/arg0 helper entry and janitor cleanup"
+    },
+    {
+      "id": "hooks-after-agent-legacy-notify",
+      "domain": "hooks",
+      "status": "implemented",
+      "cheng_modules": ["src/hooks.cheng", "src/storage.cheng"],
+      "source_refs": ["codex-rs/hooks/src/user_notification.rs"],
+      "scenario_refs": ["tooling/parity/scenarios/arg0_hooks.yaml::hooks-legacy-notify-wire-shape-source"],
+      "notes": "legacy notify payload type=agent-turn-complete and kebab-case fields"
+    },
+    {
+      "id": "hooks-after-tool-use-payload",
+      "domain": "hooks",
+      "status": "implemented",
+      "cheng_modules": ["src/hooks.cheng", "src/storage.cheng", "src/exec_cmd.cheng", "src/app_server.cheng"],
+      "source_refs": ["codex-rs/hooks/src/types.rs", "codex-rs/core/src/tools/registry.rs"],
+      "scenario_refs": ["tooling/parity/scenarios/arg0_hooks.yaml::hooks-after-tool-use-wire-shape-source"],
+      "notes": "after_tool_use payload shape + trigger points at tool-event persistence"
+    },
+    {
+      "id": "cli-root-help-and-version",
+      "domain": "cli",
+      "status": "implemented",
+      "cheng_modules": ["src/main.cheng"],
+      "source_refs": ["codex-rs/cli/src/main.rs"],
+      "scenario_refs": [
+        "tooling/parity/scenarios/cli.yaml::root-help-long",
+        "tooling/parity/scenarios/cli.yaml::root-help-short",
+        "tooling/parity/scenarios/cli.yaml::version"
+      ],
+      "notes": "root help/short help/version surface and success exit semantics"
+    },
+    {
+      "id": "cli-help-subcommand-routing",
+      "domain": "cli",
+      "status": "implemented",
+      "cheng_modules": ["src/main.cheng"],
+      "source_refs": ["codex-rs/cli/src/main.rs"],
+      "scenario_refs": [
+        "tooling/parity/scenarios/cli.yaml::help-subcommand-exec",
+        "tooling/parity/scenarios/cli.yaml::help-subcommand-unknown-fallback"
+      ],
+      "notes": "help <subcommand> routing and fallback behavior"
+    },
+    {
+      "id": "cli-error-exit-codes",
+      "domain": "cli",
+      "status": "implemented",
+      "cheng_modules": ["src/main.cheng", "src/exec_cmd.cheng"],
+      "source_refs": ["codex-rs/cli/src/main.rs", "codex-rs/cli/src/review.rs"],
+      "scenario_refs": [
+        "tooling/parity/scenarios/cli.yaml::unknown-root-flag",
+        "tooling/parity/scenarios/exec_review.yaml::review-conflict-uncommitted-base"
+      ],
+      "notes": "unknown argument and conflicting argument exit code semantics"
+    },
+    {
+      "id": "exec-review-surface",
+      "domain": "exec-review",
+      "status": "implemented",
+      "cheng_modules": ["src/exec_cmd.cheng", "src/main.cheng"],
+      "source_refs": ["codex-rs/cli/src/exec.rs", "codex-rs/cli/src/review.rs"],
+      "scenario_refs": [
+        "tooling/parity/scenarios/exec_review.yaml::exec-help",
+        "tooling/parity/scenarios/exec_review.yaml::review-help"
+      ],
+      "notes": "exec/review command surface and selector semantics"
+    },
+    {
+      "id": "resume-fork-selection",
+      "domain": "resume-fork",
+      "status": "implemented",
+      "cheng_modules": ["src/main.cheng", "src/interactive.cheng", "src/exec_cmd.cheng"],
+      "source_refs": ["codex-rs/cli/src/resume.rs", "codex-rs/cli/src/fork.rs"],
+      "scenario_refs": [
+        "tooling/parity/scenarios/resume_fork.yaml::resume-help",
+        "tooling/parity/scenarios/resume_fork.yaml::fork-help",
+        "tooling/parity/scenarios/resume_fork.yaml::resume-last-help",
+        "tooling/parity/scenarios/resume_fork.yaml::fork-last-help"
+      ],
+      "notes": "session selection flags and help semantics"
+    },
+    {
+      "id": "auth-features-surface",
+      "domain": "auth-config",
+      "status": "implemented",
+      "cheng_modules": ["src/auth_login.cheng", "src/auth_store.cheng", "src/features.cheng", "src/main.cheng"],
+      "source_refs": ["codex-rs/cli/src/login.rs", "codex-rs/core/src/config.rs"],
+      "scenario_refs": [
+        "tooling/parity/scenarios/auth_features.yaml::login-help",
+        "tooling/parity/scenarios/auth_features.yaml::login-status",
+        "tooling/parity/scenarios/auth_features.yaml::features-help",
+        "tooling/parity/scenarios/auth_features.yaml::root-enable-help"
+      ],
+      "notes": "login/logout/features surface and root override flags"
+    },
+    {
+      "id": "app-server-protocol-generation",
+      "domain": "app-server",
+      "status": "implemented",
+      "cheng_modules": ["src/app_server.cheng", "protocol"],
+      "source_refs": ["codex-rs/app-server-protocol", "codex-rs/cli/src/app_server_cmd.rs"],
+      "scenario_refs": [
+        "tooling/parity/scenarios/app_server.yaml::app-server-generate-ts",
+        "tooling/parity/scenarios/app_server.yaml::app-server-generate-json-schema"
+      ],
+      "notes": "app-server TS/schema generation baseline compatibility"
+    },
+    {
+      "id": "tui-entry-surface",
+      "domain": "tui",
+      "status": "implemented",
+      "cheng_modules": ["src/main.cheng", "src/interactive.cheng", "src/exec_cmd.cheng"],
+      "source_refs": ["codex-rs/cli/src/main.rs", "codex-rs/tui"],
+      "scenario_refs": ["tooling/parity/scenarios/tui_surface.yaml::root-help-includes-interactive-commands"],
+      "notes": "default interactive entry and resume/fork interactive source wiring"
+    },
+    {
+      "id": "plan-mode-runtime",
+      "domain": "app-server",
+      "status": "implemented",
+      "cheng_modules": ["src/app_server.cheng", "src/json_util.cheng"],
+      "source_refs": ["codex-rs/app-server", "codex-rs/app-server-protocol"],
+      "scenario_refs": [
+        "tooling/parity/scenarios/app_server.yaml::app-server-plan-mode-ts-surface",
+        "tooling/parity/scenarios/app_server.yaml::app-server-plan-mode-schema-surface",
+        "tooling/parity/scenarios/app_server.yaml::app-server-plan-mode-runtime-source"
+      ],
+      "notes": "turn/start collaboration_mode + plan item/delta lifecycle"
+    },
+    {
+      "id": "request-user-input-plan-mode",
+      "domain": "app-server",
+      "status": "implemented",
+      "cheng_modules": ["src/app_server.cheng", "src/exec_cmd.cheng", "src/json_util.cheng"],
+      "source_refs": ["codex-rs/app-server-protocol", "codex-rs/core tool registry"],
+      "scenario_refs": [
+        "tooling/parity/scenarios/app_server.yaml::app-server-plan-mode-ts-surface",
+        "tooling/parity/scenarios/app_server.yaml::app-server-plan-mode-runtime-source"
+      ],
+      "notes": "request_user_input protocol shape and validation path"
+    },
+    {
+      "id": "execpolicy-sandbox-matrix",
+      "domain": "sandbox-execpolicy",
+      "status": "implemented",
+      "cheng_modules": ["src/sandbox_runner.cheng", "src/execpolicy_cmd.cheng", "src/execpolicy_runtime.cheng"],
+      "source_refs": ["codex-rs/execpolicy", "codex-rs/linux-sandbox"],
+      "scenario_refs": ["tooling/parity/scenarios/sandbox_execpolicy.yaml::execpolicy-check", "tooling/parity/scenarios/sandbox_execpolicy.yaml::sandbox-help"],
+      "notes": "forbidden/prompt/allow decision semantics + platform wrappers"
+    },
+    {
+      "id": "mcp-lifecycle",
+      "domain": "mcp",
+      "status": "implemented",
+      "cheng_modules": ["src/mcp_cmd.cheng", "src/mcp_server_cmd.cheng", "src/mcp_oauth.cheng"],
+      "source_refs": ["codex-rs/mcp-server", "codex-rs/cli/src/mcp_cmd.rs"],
+      "scenario_refs": ["tooling/parity/scenarios/mcp.yaml::mcp-lifecycle-json", "tooling/parity/scenarios/mcp_server.yaml::mcp-server-initialize"],
+      "notes": "add/list/get/remove/login/logout + stdio initialize handshake"
+    },
+    {
+      "id": "cloud-proxy-relay",
+      "domain": "cloud-proxy-relay",
+      "status": "implemented",
+      "cheng_modules": ["src/cloud_tasks_cmd.cheng", "src/responses_proxy_cmd.cheng", "src/stdio_to_uds_cmd.cheng"],
+      "source_refs": ["codex-rs/cloud-tasks", "codex-rs/responses-api-proxy", "codex-rs/stdio-to-uds"],
+      "scenario_refs": ["tooling/parity/scenarios/cloud_apply_proxy_stdio.yaml::cloud-help", "tooling/parity/scenarios/cloud_apply_proxy_stdio.yaml::responses-proxy-help", "tooling/parity/scenarios/cloud_apply_proxy_stdio.yaml::stdio-to-uds-help"],
+      "notes": "CLI parameter and I/O semantics for cloud/proxy/relay commands"
+    }
+  ]
+}

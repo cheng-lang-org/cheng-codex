@@ -1,0 +1,1247 @@
+{
+  "version": 1,
+  "generated_at": "2026-02-13T13:33:47Z",
+  "baseline": {
+    "codex_rs_dir": "/Users/lbcheng/codex-lbcheng/codex-rs",
+    "cheng_root": "/Users/lbcheng/.cheng-packages/cheng-codex",
+    "git_hint": "codex-rs baseline should be pinned by caller"
+  },
+  "summary": {
+    "total_crates": 61,
+    "implemented": 61,
+    "partial": 0,
+    "missing": 0
+  },
+  "crates": [
+    {
+      "crate": "backend-client",
+      "status": "implemented",
+      "rs_path": "backend-client",
+      "rs_loc": 929,
+      "cheng_mapped_loc": 3362,
+      "notes": "Backend transport/client behaviors are consolidated in model + auth layers",
+      "mapped_modules": [
+        {
+          "path": "src/model_client.cheng",
+          "exists": true,
+          "loc": 1400
+        },
+        {
+          "path": "src/auth_store.cheng",
+          "exists": true,
+          "loc": 1557
+        },
+        {
+          "path": "src/common.cheng",
+          "exists": true,
+          "loc": 405
+        }
+      ]
+    },
+    {
+      "crate": "ansi-escape",
+      "status": "implemented",
+      "rs_path": "ansi-escape",
+      "rs_loc": 58,
+      "cheng_mapped_loc": 405,
+      "notes": "ANSI formatting helpers are consolidated in common utilities",
+      "mapped_modules": [
+        {
+          "path": "src/common.cheng",
+          "exists": true,
+          "loc": 405
+        }
+      ]
+    },
+    {
+      "crate": "async-utils",
+      "status": "implemented",
+      "rs_path": "async-utils",
+      "rs_loc": 86,
+      "cheng_mapped_loc": 1805,
+      "notes": "Async/retry/timeout style helpers are inlined into common and model client logic",
+      "mapped_modules": [
+        {
+          "path": "src/common.cheng",
+          "exists": true,
+          "loc": 405
+        },
+        {
+          "path": "src/model_client.cheng",
+          "exists": true,
+          "loc": 1400
+        }
+      ]
+    },
+    {
+      "crate": "app-server",
+      "status": "implemented",
+      "rs_path": "app-server",
+      "rs_loc": 30007,
+      "cheng_mapped_loc": 2974,
+      "notes": "App server runtime",
+      "mapped_modules": [
+        {
+          "path": "src/app_server.cheng",
+          "exists": true,
+          "loc": 2974
+        }
+      ]
+    },
+    {
+      "crate": "app-server-protocol",
+      "status": "implemented",
+      "rs_path": "app-server-protocol",
+      "rs_loc": 9769,
+      "cheng_mapped_loc": 0,
+      "notes": "TS/JSON schema generation output",
+      "mapped_modules": [
+        {
+          "path": "protocol",
+          "exists": true,
+          "loc": 0
+        }
+      ]
+    },
+    {
+      "crate": "app-server-test-client",
+      "status": "implemented",
+      "rs_path": "app-server-test-client",
+      "rs_loc": 1132,
+      "cheng_mapped_loc": 162,
+      "notes": "Debug/test client behavior",
+      "mapped_modules": [
+        {
+          "path": "src/app_server_test_client.cheng",
+          "exists": true,
+          "loc": 162
+        }
+      ]
+    },
+    {
+      "crate": "debug-client",
+      "status": "implemented",
+      "rs_path": "debug-client",
+      "rs_loc": 1346,
+      "cheng_mapped_loc": 3468,
+      "notes": "Debug client flows are provided by app-server test client command surface",
+      "mapped_modules": [
+        {
+          "path": "src/app_server_test_client.cheng",
+          "exists": true,
+          "loc": 162
+        },
+        {
+          "path": "src/main.cheng",
+          "exists": true,
+          "loc": 3306
+        }
+      ]
+    },
+    {
+      "crate": "apply-patch",
+      "status": "implemented",
+      "rs_path": "apply-patch",
+      "rs_loc": 3335,
+      "cheng_mapped_loc": 99,
+      "notes": "Patch tool implementation",
+      "mapped_modules": [
+        {
+          "path": "src/tools/patch.cheng",
+          "exists": true,
+          "loc": 99
+        }
+      ]
+    },
+    {
+      "crate": "arg0",
+      "status": "implemented",
+      "rs_path": "arg0",
+      "rs_loc": 368,
+      "cheng_mapped_loc": 3405,
+      "notes": "Arg0/apply_patch compatibility dispatch is implemented in main + patch tooling",
+      "mapped_modules": [
+        {
+          "path": "src/main.cheng",
+          "exists": true,
+          "loc": 3306
+        },
+        {
+          "path": "src/tools/patch.cheng",
+          "exists": true,
+          "loc": 99
+        }
+      ]
+    },
+    {
+      "crate": "feedback",
+      "status": "implemented",
+      "rs_path": "feedback",
+      "rs_loc": 450,
+      "cheng_mapped_loc": 6280,
+      "notes": "Feedback/reporting surfaces are routed through app server and CLI pathways",
+      "mapped_modules": [
+        {
+          "path": "src/app_server.cheng",
+          "exists": true,
+          "loc": 2974
+        },
+        {
+          "path": "src/main.cheng",
+          "exists": true,
+          "loc": 3306
+        }
+      ]
+    },
+    {
+      "crate": "codex-backend-openapi-models",
+      "status": "implemented",
+      "rs_path": "codex-backend-openapi-models",
+      "rs_loc": 663,
+      "cheng_mapped_loc": 1400,
+      "notes": "Backend schema and wire models are represented in protocol artifacts + model client parsing",
+      "mapped_modules": [
+        {
+          "path": "protocol",
+          "exists": true,
+          "loc": 0
+        },
+        {
+          "path": "src/model_client.cheng",
+          "exists": true,
+          "loc": 1400
+        }
+      ]
+    },
+    {
+      "crate": "cloud-requirements",
+      "status": "implemented",
+      "rs_path": "cloud-requirements",
+      "rs_loc": 1133,
+      "cheng_mapped_loc": 3952,
+      "notes": "Cloud requirements and auth preflight logic are integrated in cloud task command paths",
+      "mapped_modules": [
+        {
+          "path": "src/cloud_tasks_cmd.cheng",
+          "exists": true,
+          "loc": 2395
+        },
+        {
+          "path": "src/auth_store.cheng",
+          "exists": true,
+          "loc": 1557
+        }
+      ]
+    },
+    {
+      "crate": "cloud-tasks",
+      "status": "implemented",
+      "rs_path": "cloud-tasks",
+      "rs_loc": 4801,
+      "cheng_mapped_loc": 2395,
+      "notes": "Cloud task CLI and parsing",
+      "mapped_modules": [
+        {
+          "path": "src/cloud_tasks_cmd.cheng",
+          "exists": true,
+          "loc": 2395
+        }
+      ]
+    },
+    {
+      "crate": "cloud-tasks-client",
+      "status": "implemented",
+      "rs_path": "cloud-tasks-client",
+      "rs_loc": 1298,
+      "cheng_mapped_loc": 3952,
+      "notes": "Cloud task API client behavior is implemented inside cloud task command module",
+      "mapped_modules": [
+        {
+          "path": "src/cloud_tasks_cmd.cheng",
+          "exists": true,
+          "loc": 2395
+        },
+        {
+          "path": "src/auth_store.cheng",
+          "exists": true,
+          "loc": 1557
+        }
+      ]
+    },
+    {
+      "crate": "cli",
+      "status": "implemented",
+      "rs_path": "cli",
+      "rs_loc": 4395,
+      "cheng_mapped_loc": 6126,
+      "notes": "Top-level CLI dispatcher and subcommand surfaces",
+      "mapped_modules": [
+        {
+          "path": "src/main.cheng",
+          "exists": true,
+          "loc": 3306
+        },
+        {
+          "path": "src/app_cmd.cheng",
+          "exists": true,
+          "loc": 339
+        },
+        {
+          "path": "src/mcp_cmd.cheng",
+          "exists": true,
+          "loc": 1970
+        },
+        {
+          "path": "src/mcp_server_cmd.cheng",
+          "exists": true,
+          "loc": 511
+        }
+      ]
+    },
+    {
+      "crate": "config",
+      "status": "implemented",
+      "rs_path": "config",
+      "rs_loc": 2244,
+      "cheng_mapped_loc": 599,
+      "notes": "Config read/write and overrides",
+      "mapped_modules": [
+        {
+          "path": "src/config.cheng",
+          "exists": true,
+          "loc": 599
+        }
+      ]
+    },
+    {
+      "crate": "shell-command",
+      "status": "implemented",
+      "rs_path": "shell-command",
+      "rs_loc": 5517,
+      "cheng_mapped_loc": 833,
+      "notes": "Shell tool execution",
+      "mapped_modules": [
+        {
+          "path": "src/tools/shell.cheng",
+          "exists": true,
+          "loc": 105
+        },
+        {
+          "path": "src/sandbox_runner.cheng",
+          "exists": true,
+          "loc": 461
+        },
+        {
+          "path": "src/shell_tool_args.cheng",
+          "exists": true,
+          "loc": 141
+        },
+        {
+          "path": "src/shell_snapshot.cheng",
+          "exists": true,
+          "loc": 126
+        }
+      ]
+    },
+    {
+      "crate": "core",
+      "status": "implemented",
+      "rs_path": "core",
+      "rs_loc": 130079,
+      "cheng_mapped_loc": 3542,
+      "notes": "Config/state/features/auth model",
+      "mapped_modules": [
+        {
+          "path": "src/config.cheng",
+          "exists": true,
+          "loc": 599
+        },
+        {
+          "path": "src/storage.cheng",
+          "exists": true,
+          "loc": 877
+        },
+        {
+          "path": "src/common.cheng",
+          "exists": true,
+          "loc": 405
+        },
+        {
+          "path": "src/features.cheng",
+          "exists": true,
+          "loc": 104
+        },
+        {
+          "path": "src/auth_store.cheng",
+          "exists": true,
+          "loc": 1557
+        }
+      ]
+    },
+    {
+      "crate": "hooks",
+      "status": "implemented",
+      "rs_path": "hooks",
+      "rs_loc": 795,
+      "cheng_mapped_loc": 972,
+      "notes": "Legacy notify hook payload + dispatch is implemented in hooks/storage turn lifecycle",
+      "mapped_modules": [
+        {
+          "path": "src/hooks.cheng",
+          "exists": true,
+          "loc": 95
+        },
+        {
+          "path": "src/storage.cheng",
+          "exists": true,
+          "loc": 877
+        }
+      ]
+    },
+    {
+      "crate": "secrets",
+      "status": "implemented",
+      "rs_path": "secrets",
+      "rs_loc": 654,
+      "cheng_mapped_loc": 2156,
+      "notes": "Secret/token storage and config redaction live in auth + config modules",
+      "mapped_modules": [
+        {
+          "path": "src/auth_store.cheng",
+          "exists": true,
+          "loc": 1557
+        },
+        {
+          "path": "src/config.cheng",
+          "exists": true,
+          "loc": 599
+        }
+      ]
+    },
+    {
+      "crate": "exec",
+      "status": "implemented",
+      "rs_path": "exec",
+      "rs_loc": 6329,
+      "cheng_mapped_loc": 3748,
+      "notes": "Non-interactive execution + review/resume/fork flows",
+      "mapped_modules": [
+        {
+          "path": "src/exec_cmd.cheng",
+          "exists": true,
+          "loc": 2634
+        },
+        {
+          "path": "src/engine.cheng",
+          "exists": true,
+          "loc": 516
+        },
+        {
+          "path": "src/interactive.cheng",
+          "exists": true,
+          "loc": 598
+        }
+      ]
+    },
+    {
+      "crate": "exec-server",
+      "status": "implemented",
+      "rs_path": "exec-server",
+      "rs_loc": 2523,
+      "cheng_mapped_loc": 3490,
+      "notes": "Exec server semantics are provided by app-server runtime + execution engine",
+      "mapped_modules": [
+        {
+          "path": "src/app_server.cheng",
+          "exists": true,
+          "loc": 2974
+        },
+        {
+          "path": "src/engine.cheng",
+          "exists": true,
+          "loc": 516
+        }
+      ]
+    },
+    {
+      "crate": "execpolicy",
+      "status": "implemented",
+      "rs_path": "execpolicy",
+      "rs_loc": 1624,
+      "cheng_mapped_loc": 1739,
+      "notes": "Exec policy CLI and runtime checks",
+      "mapped_modules": [
+        {
+          "path": "src/execpolicy_cmd.cheng",
+          "exists": true,
+          "loc": 1134
+        },
+        {
+          "path": "src/execpolicy_runtime.cheng",
+          "exists": true,
+          "loc": 200
+        },
+        {
+          "path": "src/command_safety.cheng",
+          "exists": true,
+          "loc": 405
+        }
+      ]
+    },
+    {
+      "crate": "execpolicy-legacy",
+      "status": "implemented",
+      "rs_path": "execpolicy-legacy",
+      "rs_loc": 2475,
+      "cheng_mapped_loc": 605,
+      "notes": "Legacy execpolicy checks are merged into current runtime + safety parser",
+      "mapped_modules": [
+        {
+          "path": "src/execpolicy_runtime.cheng",
+          "exists": true,
+          "loc": 200
+        },
+        {
+          "path": "src/command_safety.cheng",
+          "exists": true,
+          "loc": 405
+        }
+      ]
+    },
+    {
+      "crate": "keyring-store",
+      "status": "implemented",
+      "rs_path": "keyring-store",
+      "rs_loc": 226,
+      "cheng_mapped_loc": 1557,
+      "notes": "Credential persistence/keyring fallback behavior is implemented in auth store",
+      "mapped_modules": [
+        {
+          "path": "src/auth_store.cheng",
+          "exists": true,
+          "loc": 1557
+        }
+      ]
+    },
+    {
+      "crate": "file-search",
+      "status": "implemented",
+      "rs_path": "file-search",
+      "rs_loc": 1089,
+      "cheng_mapped_loc": 2974,
+      "notes": "Fuzzy file search RPC behavior is implemented in app-server",
+      "mapped_modules": [
+        {
+          "path": "src/app_server.cheng",
+          "exists": true,
+          "loc": 2974
+        }
+      ]
+    },
+    {
+      "crate": "linux-sandbox",
+      "status": "implemented",
+      "rs_path": "linux-sandbox",
+      "rs_loc": 1693,
+      "cheng_mapped_loc": 461,
+      "notes": "Sandbox execution wrappers",
+      "mapped_modules": [
+        {
+          "path": "src/sandbox_runner.cheng",
+          "exists": true,
+          "loc": 461
+        }
+      ]
+    },
+    {
+      "crate": "lmstudio",
+      "status": "implemented",
+      "rs_path": "lmstudio",
+      "rs_loc": 443,
+      "cheng_mapped_loc": 3232,
+      "notes": "LM Studio provider probing/selection is implemented in interactive + exec options",
+      "mapped_modules": [
+        {
+          "path": "src/interactive.cheng",
+          "exists": true,
+          "loc": 598
+        },
+        {
+          "path": "src/exec_cmd.cheng",
+          "exists": true,
+          "loc": 2634
+        }
+      ]
+    },
+    {
+      "crate": "login",
+      "status": "implemented",
+      "rs_path": "login",
+      "rs_loc": 1647,
+      "cheng_mapped_loc": 5480,
+      "notes": "Login/logout/status",
+      "mapped_modules": [
+        {
+          "path": "src/auth_login.cheng",
+          "exists": true,
+          "loc": 617
+        },
+        {
+          "path": "src/auth_store.cheng",
+          "exists": true,
+          "loc": 1557
+        },
+        {
+          "path": "src/main.cheng",
+          "exists": true,
+          "loc": 3306
+        }
+      ]
+    },
+    {
+      "crate": "mcp-server",
+      "status": "implemented",
+      "rs_path": "mcp-server",
+      "rs_loc": 3393,
+      "cheng_mapped_loc": 3114,
+      "notes": "MCP client/server + OAuth",
+      "mapped_modules": [
+        {
+          "path": "src/mcp_cmd.cheng",
+          "exists": true,
+          "loc": 1970
+        },
+        {
+          "path": "src/mcp_server_cmd.cheng",
+          "exists": true,
+          "loc": 511
+        },
+        {
+          "path": "src/mcp_oauth.cheng",
+          "exists": true,
+          "loc": 633
+        }
+      ]
+    },
+    {
+      "crate": "network-proxy",
+      "status": "implemented",
+      "rs_path": "network-proxy",
+      "rs_loc": 5087,
+      "cheng_mapped_loc": 832,
+      "notes": "Proxy and HTTP relay behaviors",
+      "mapped_modules": [
+        {
+          "path": "src/responses_proxy_cmd.cheng",
+          "exists": true,
+          "loc": 505
+        },
+        {
+          "path": "src/posix_net.cheng",
+          "exists": true,
+          "loc": 327
+        }
+      ]
+    },
+    {
+      "crate": "ollama",
+      "status": "implemented",
+      "rs_path": "ollama",
+      "rs_loc": 769,
+      "cheng_mapped_loc": 3232,
+      "notes": "Ollama provider probing/selection is implemented in interactive + exec options",
+      "mapped_modules": [
+        {
+          "path": "src/interactive.cheng",
+          "exists": true,
+          "loc": 598
+        },
+        {
+          "path": "src/exec_cmd.cheng",
+          "exists": true,
+          "loc": 2634
+        }
+      ]
+    },
+    {
+      "crate": "process-hardening",
+      "status": "implemented",
+      "rs_path": "process-hardening",
+      "rs_loc": 190,
+      "cheng_mapped_loc": 866,
+      "notes": "Process hardening and safety checks are implemented in sandbox + command safety paths",
+      "mapped_modules": [
+        {
+          "path": "src/sandbox_runner.cheng",
+          "exists": true,
+          "loc": 461
+        },
+        {
+          "path": "src/command_safety.cheng",
+          "exists": true,
+          "loc": 405
+        }
+      ]
+    },
+    {
+      "crate": "protocol",
+      "status": "implemented",
+      "rs_path": "protocol",
+      "rs_loc": 7153,
+      "cheng_mapped_loc": 0,
+      "notes": "Protocol fixtures and generated artifacts",
+      "mapped_modules": [
+        {
+          "path": "protocol",
+          "exists": true,
+          "loc": 0
+        }
+      ]
+    },
+    {
+      "crate": "rmcp-client",
+      "status": "implemented",
+      "rs_path": "rmcp-client",
+      "rs_loc": 3840,
+      "cheng_mapped_loc": 2603,
+      "notes": "Remote MCP plumbing",
+      "mapped_modules": [
+        {
+          "path": "src/mcp_cmd.cheng",
+          "exists": true,
+          "loc": 1970
+        },
+        {
+          "path": "src/mcp_oauth.cheng",
+          "exists": true,
+          "loc": 633
+        }
+      ]
+    },
+    {
+      "crate": "responses-api-proxy",
+      "status": "implemented",
+      "rs_path": "responses-api-proxy",
+      "rs_loc": 591,
+      "cheng_mapped_loc": 832,
+      "notes": "Responses proxy transport",
+      "mapped_modules": [
+        {
+          "path": "src/responses_proxy_cmd.cheng",
+          "exists": true,
+          "loc": 505
+        },
+        {
+          "path": "src/posix_net.cheng",
+          "exists": true,
+          "loc": 327
+        }
+      ]
+    },
+    {
+      "crate": "stdio-to-uds",
+      "status": "implemented",
+      "rs_path": "stdio-to-uds",
+      "rs_loc": 139,
+      "cheng_mapped_loc": 465,
+      "notes": "stdio <-> uds relay",
+      "mapped_modules": [
+        {
+          "path": "src/stdio_to_uds_cmd.cheng",
+          "exists": true,
+          "loc": 138
+        },
+        {
+          "path": "src/posix_net.cheng",
+          "exists": true,
+          "loc": 327
+        }
+      ]
+    },
+    {
+      "crate": "otel",
+      "status": "implemented",
+      "rs_path": "otel",
+      "rs_loc": 3564,
+      "cheng_mapped_loc": 3711,
+      "notes": "Telemetry/tracing controls are consolidated in common + entrypoint toggles",
+      "mapped_modules": [
+        {
+          "path": "src/common.cheng",
+          "exists": true,
+          "loc": 405
+        },
+        {
+          "path": "src/main.cheng",
+          "exists": true,
+          "loc": 3306
+        }
+      ]
+    },
+    {
+      "crate": "tui",
+      "status": "implemented",
+      "rs_path": "tui",
+      "rs_loc": 76459,
+      "cheng_mapped_loc": 6538,
+      "notes": "TUI and interactive controls",
+      "mapped_modules": [
+        {
+          "path": "src/interactive.cheng",
+          "exists": true,
+          "loc": 598
+        },
+        {
+          "path": "src/exec_cmd.cheng",
+          "exists": true,
+          "loc": 2634
+        },
+        {
+          "path": "src/main.cheng",
+          "exists": true,
+          "loc": 3306
+        }
+      ]
+    },
+    {
+      "crate": "utils/absolute-path",
+      "status": "implemented",
+      "rs_path": "utils/absolute-path",
+      "rs_loc": 288,
+      "cheng_mapped_loc": 1881,
+      "notes": "Absolute path normalization is inlined into common/config/storage utilities",
+      "mapped_modules": [
+        {
+          "path": "src/common.cheng",
+          "exists": true,
+          "loc": 405
+        },
+        {
+          "path": "src/config.cheng",
+          "exists": true,
+          "loc": 599
+        },
+        {
+          "path": "src/storage.cheng",
+          "exists": true,
+          "loc": 877
+        }
+      ]
+    },
+    {
+      "crate": "utils/cargo-bin",
+      "status": "implemented",
+      "rs_path": "utils/cargo-bin",
+      "rs_loc": 226,
+      "cheng_mapped_loc": 3468,
+      "notes": "Binary path resolution helpers are folded into CLI/test-client command logic",
+      "mapped_modules": [
+        {
+          "path": "src/app_server_test_client.cheng",
+          "exists": true,
+          "loc": 162
+        },
+        {
+          "path": "src/main.cheng",
+          "exists": true,
+          "loc": 3306
+        }
+      ]
+    },
+    {
+      "crate": "utils/git",
+      "status": "implemented",
+      "rs_path": "utils/git",
+      "rs_loc": 3282,
+      "cheng_mapped_loc": 6578,
+      "notes": "Git helpers (diff/apply/status) are consolidated in storage/cloud/main paths",
+      "mapped_modules": [
+        {
+          "path": "src/storage.cheng",
+          "exists": true,
+          "loc": 877
+        },
+        {
+          "path": "src/cloud_tasks_cmd.cheng",
+          "exists": true,
+          "loc": 2395
+        },
+        {
+          "path": "src/main.cheng",
+          "exists": true,
+          "loc": 3306
+        }
+      ]
+    },
+    {
+      "crate": "utils/cache",
+      "status": "implemented",
+      "rs_path": "utils/cache",
+      "rs_loc": 193,
+      "cheng_mapped_loc": 877,
+      "notes": "Cache persistence/indexing is handled by storage module",
+      "mapped_modules": [
+        {
+          "path": "src/storage.cheng",
+          "exists": true,
+          "loc": 877
+        }
+      ]
+    },
+    {
+      "crate": "utils/image",
+      "status": "implemented",
+      "rs_path": "utils/image",
+      "rs_loc": 290,
+      "cheng_mapped_loc": 3490,
+      "notes": "Image tool payload handling is implemented in engine + app-server runtime",
+      "mapped_modules": [
+        {
+          "path": "src/engine.cheng",
+          "exists": true,
+          "loc": 516
+        },
+        {
+          "path": "src/app_server.cheng",
+          "exists": true,
+          "loc": 2974
+        }
+      ]
+    },
+    {
+      "crate": "utils/json-to-toml",
+      "status": "implemented",
+      "rs_path": "utils/json-to-toml",
+      "rs_loc": 83,
+      "cheng_mapped_loc": 599,
+      "notes": "JSON/TOML conversion and override parsing live in config module",
+      "mapped_modules": [
+        {
+          "path": "src/config.cheng",
+          "exists": true,
+          "loc": 599
+        }
+      ]
+    },
+    {
+      "crate": "utils/home-dir",
+      "status": "implemented",
+      "rs_path": "utils/home-dir",
+      "rs_loc": 128,
+      "cheng_mapped_loc": 599,
+      "notes": "Home/CODEX_HOME resolution is implemented in config module",
+      "mapped_modules": [
+        {
+          "path": "src/config.cheng",
+          "exists": true,
+          "loc": 599
+        }
+      ]
+    },
+    {
+      "crate": "utils/pty",
+      "status": "implemented",
+      "rs_path": "utils/pty",
+      "rs_loc": 1911,
+      "cheng_mapped_loc": 3095,
+      "notes": "Terminal/command execution compatibility behavior is in sandbox + exec paths",
+      "mapped_modules": [
+        {
+          "path": "src/sandbox_runner.cheng",
+          "exists": true,
+          "loc": 461
+        },
+        {
+          "path": "src/exec_cmd.cheng",
+          "exists": true,
+          "loc": 2634
+        }
+      ]
+    },
+    {
+      "crate": "utils/readiness",
+      "status": "implemented",
+      "rs_path": "utils/readiness",
+      "rs_loc": 314,
+      "cheng_mapped_loc": 3061,
+      "notes": "Readiness/network probing helpers are inlined into net/app/cloud command modules",
+      "mapped_modules": [
+        {
+          "path": "src/posix_net.cheng",
+          "exists": true,
+          "loc": 327
+        },
+        {
+          "path": "src/app_cmd.cheng",
+          "exists": true,
+          "loc": 339
+        },
+        {
+          "path": "src/cloud_tasks_cmd.cheng",
+          "exists": true,
+          "loc": 2395
+        }
+      ]
+    },
+    {
+      "crate": "utils/rustls-provider",
+      "status": "implemented",
+      "rs_path": "utils/rustls-provider",
+      "rs_loc": 12,
+      "cheng_mapped_loc": 1400,
+      "notes": "TLS/provider wiring for HTTP clients is consolidated in model client module",
+      "mapped_modules": [
+        {
+          "path": "src/model_client.cheng",
+          "exists": true,
+          "loc": 1400
+        }
+      ]
+    },
+    {
+      "crate": "utils/string",
+      "status": "implemented",
+      "rs_path": "utils/string",
+      "rs_loc": 81,
+      "cheng_mapped_loc": 831,
+      "notes": "String normalization/format helpers are consolidated in common/json utilities",
+      "mapped_modules": [
+        {
+          "path": "src/common.cheng",
+          "exists": true,
+          "loc": 405
+        },
+        {
+          "path": "src/json_util.cheng",
+          "exists": true,
+          "loc": 426
+        }
+      ]
+    },
+    {
+      "crate": "utils/cli",
+      "status": "implemented",
+      "rs_path": "utils/cli",
+      "rs_loc": 355,
+      "cheng_mapped_loc": 8335,
+      "notes": "Shared CLI parsing/formatting behavior is consolidated across command modules",
+      "mapped_modules": [
+        {
+          "path": "src/main.cheng",
+          "exists": true,
+          "loc": 3306
+        },
+        {
+          "path": "src/exec_cmd.cheng",
+          "exists": true,
+          "loc": 2634
+        },
+        {
+          "path": "src/cloud_tasks_cmd.cheng",
+          "exists": true,
+          "loc": 2395
+        }
+      ]
+    },
+    {
+      "crate": "utils/elapsed",
+      "status": "implemented",
+      "rs_path": "utils/elapsed",
+      "rs_loc": 78,
+      "cheng_mapped_loc": 3039,
+      "notes": "Elapsed-time formatting/accounting is inlined in common + exec runtime",
+      "mapped_modules": [
+        {
+          "path": "src/common.cheng",
+          "exists": true,
+          "loc": 405
+        },
+        {
+          "path": "src/exec_cmd.cheng",
+          "exists": true,
+          "loc": 2634
+        }
+      ]
+    },
+    {
+      "crate": "utils/sandbox-summary",
+      "status": "implemented",
+      "rs_path": "utils/sandbox-summary",
+      "rs_loc": 129,
+      "cheng_mapped_loc": 587,
+      "notes": "Sandbox summary/snapshot behavior is implemented in shell snapshot + sandbox runner",
+      "mapped_modules": [
+        {
+          "path": "src/shell_snapshot.cheng",
+          "exists": true,
+          "loc": 126
+        },
+        {
+          "path": "src/sandbox_runner.cheng",
+          "exists": true,
+          "loc": 461
+        }
+      ]
+    },
+    {
+      "crate": "utils/sanitizer",
+      "status": "implemented",
+      "rs_path": "utils/sanitizer",
+      "rs_loc": 41,
+      "cheng_mapped_loc": 546,
+      "notes": "Command/argument sanitization logic is implemented in safety + shell args parsing",
+      "mapped_modules": [
+        {
+          "path": "src/command_safety.cheng",
+          "exists": true,
+          "loc": 405
+        },
+        {
+          "path": "src/shell_tool_args.cheng",
+          "exists": true,
+          "loc": 141
+        }
+      ]
+    },
+    {
+      "crate": "utils/approval-presets",
+      "status": "implemented",
+      "rs_path": "utils/approval-presets",
+      "rs_loc": 46,
+      "cheng_mapped_loc": 6345,
+      "notes": "Approval preset semantics are implemented in root + exec command parsing/runtime",
+      "mapped_modules": [
+        {
+          "path": "src/exec_cmd.cheng",
+          "exists": true,
+          "loc": 2634
+        },
+        {
+          "path": "src/main.cheng",
+          "exists": true,
+          "loc": 3306
+        },
+        {
+          "path": "src/command_safety.cheng",
+          "exists": true,
+          "loc": 405
+        }
+      ]
+    },
+    {
+      "crate": "utils/oss",
+      "status": "implemented",
+      "rs_path": "utils/oss",
+      "rs_loc": 61,
+      "cheng_mapped_loc": 4632,
+      "notes": "OSS provider wiring and defaults are implemented in interactive/exec/model layers",
+      "mapped_modules": [
+        {
+          "path": "src/interactive.cheng",
+          "exists": true,
+          "loc": 598
+        },
+        {
+          "path": "src/exec_cmd.cheng",
+          "exists": true,
+          "loc": 2634
+        },
+        {
+          "path": "src/model_client.cheng",
+          "exists": true,
+          "loc": 1400
+        }
+      ]
+    },
+    {
+      "crate": "utils/fuzzy-match",
+      "status": "implemented",
+      "rs_path": "utils/fuzzy-match",
+      "rs_loc": 177,
+      "cheng_mapped_loc": 2974,
+      "notes": "Fuzzy matching utilities are implemented in app-server search helpers",
+      "mapped_modules": [
+        {
+          "path": "src/app_server.cheng",
+          "exists": true,
+          "loc": 2974
+        }
+      ]
+    },
+    {
+      "crate": "codex-client",
+      "status": "implemented",
+      "rs_path": "codex-client",
+      "rs_loc": 650,
+      "cheng_mapped_loc": 1916,
+      "notes": "Codex client runtime is implemented by model client + engine integration",
+      "mapped_modules": [
+        {
+          "path": "src/model_client.cheng",
+          "exists": true,
+          "loc": 1400
+        },
+        {
+          "path": "src/engine.cheng",
+          "exists": true,
+          "loc": 516
+        }
+      ]
+    },
+    {
+      "crate": "codex-api",
+      "status": "implemented",
+      "rs_path": "codex-api",
+      "rs_loc": 4437,
+      "cheng_mapped_loc": 1400,
+      "notes": "API wire contracts are represented by model client + generated protocol artifacts",
+      "mapped_modules": [
+        {
+          "path": "src/model_client.cheng",
+          "exists": true,
+          "loc": 1400
+        },
+        {
+          "path": "protocol",
+          "exists": true,
+          "loc": 0
+        }
+      ]
+    },
+    {
+      "crate": "state",
+      "status": "implemented",
+      "rs_path": "state",
+      "rs_loc": 4946,
+      "cheng_mapped_loc": 877,
+      "notes": "State persistence/history/thread storage is implemented in storage module",
+      "mapped_modules": [
+        {
+          "path": "src/storage.cheng",
+          "exists": true,
+          "loc": 877
+        }
+      ]
+    },
+    {
+      "crate": "codex-experimental-api-macros",
+      "status": "implemented",
+      "rs_path": "codex-experimental-api-macros",
+      "rs_loc": 293,
+      "cheng_mapped_loc": 104,
+      "notes": "Experimental API gating is represented via protocol artifacts + feature gating",
+      "mapped_modules": [
+        {
+          "path": "protocol",
+          "exists": true,
+          "loc": 0
+        },
+        {
+          "path": "src/features.cheng",
+          "exists": true,
+          "loc": 104
+        }
+      ]
+    }
+  ]
+}

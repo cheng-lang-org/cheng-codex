@@ -1,12 +1,12 @@
 {
-  "timestamp": "2026-02-08T21:12:06Z",
+  "timestamp": "2026-02-13T08:50:37Z",
   "steps": [
     {
-      "name": "build",
-      "status": "ok",
-      "exit_code": 0,
-      "command": "check_build"
+      "name": "parity",
+      "status": "fail",
+      "exit_code": 2,
+      "command": "check_parity"
     }
   ],
-  "result": "pass"
+  "result": "fail"
 }

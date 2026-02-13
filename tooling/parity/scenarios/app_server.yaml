@@ -1,0 +1,112 @@
+{
+  "suite": "app_server",
+  "cases": [
+    {
+      "id": "app-server-help",
+      "description": "app-server --help should include generate-ts and generate-json-schema",
+      "args": ["app-server", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["app-server", "generate-ts", "generate-json-schema"]
+      }
+    },
+    {
+      "id": "app-server-generate-ts",
+      "description": "app-server generate-ts should emit TypeScript output",
+      "args": ["app-server", "generate-ts", "--out", "{{CASE_TMP}}/ts"],
+      "expect": {
+        "exit_code": 0,
+        "baseline_paths_exist": ["{{CASE_TMP}}/ts"],
+        "cheng_paths_exist": ["{{CASE_TMP}}/ts"]
+      }
+    },
+    {
+      "id": "app-server-generate-json-schema",
+      "description": "app-server generate-json-schema should emit JSON schema output",
+      "args": ["app-server", "generate-json-schema", "--out", "{{CASE_TMP}}/json"],
+      "expect": {
+        "exit_code": 0,
+        "baseline_paths_exist": ["{{CASE_TMP}}/json"],
+        "cheng_paths_exist": ["{{CASE_TMP}}/json"]
+      }
+    },
+    {
+      "id": "app-server-plan-mode-ts-surface",
+      "description": "generate-ts should include plan mode + request_user_input protocol types",
+      "args": ["app-server", "generate-ts", "--out", "{{CASE_TMP}}/ts"],
+      "expect": {
+        "exit_code": 0,
+        "baseline_paths_exist": [
+          "{{CASE_TMP}}/ts/CollaborationMode.ts",
+          "{{CASE_TMP}}/ts/ModeKind.ts",
+          "{{CASE_TMP}}/ts/v2/TurnStartParams.ts",
+          "{{CASE_TMP}}/ts/v2/ThreadItem.ts",
+          "{{CASE_TMP}}/ts/v2/PlanDeltaNotification.ts",
+          "{{CASE_TMP}}/ts/v2/ToolRequestUserInputParams.ts",
+          "{{CASE_TMP}}/ts/v2/ToolRequestUserInputQuestion.ts",
+          "{{CASE_TMP}}/ts/v2/ToolRequestUserInputOption.ts",
+          "{{CASE_TMP}}/ts/v2/ToolRequestUserInputAnswer.ts",
+          "{{CASE_TMP}}/ts/v2/ToolRequestUserInputResponse.ts"
+        ],
+        "cheng_paths_exist": [
+          "{{CASE_TMP}}/ts/CollaborationMode.ts",
+          "{{CASE_TMP}}/ts/ModeKind.ts",
+          "{{CASE_TMP}}/ts/v2/TurnStartParams.ts",
+          "{{CASE_TMP}}/ts/v2/ThreadItem.ts",
+          "{{CASE_TMP}}/ts/v2/PlanDeltaNotification.ts",
+          "{{CASE_TMP}}/ts/v2/ToolRequestUserInputParams.ts",
+          "{{CASE_TMP}}/ts/v2/ToolRequestUserInputQuestion.ts",
+          "{{CASE_TMP}}/ts/v2/ToolRequestUserInputOption.ts",
+          "{{CASE_TMP}}/ts/v2/ToolRequestUserInputAnswer.ts",
+          "{{CASE_TMP}}/ts/v2/ToolRequestUserInputResponse.ts"
+        ]
+      }
+    },
+    {
+      "id": "app-server-plan-mode-schema-surface",
+      "description": "generate-json-schema should include plan delta + request_user_input schemas",
+      "args": ["app-server", "generate-json-schema", "--out", "{{CASE_TMP}}/json"],
+      "expect": {
+        "exit_code": 0,
+        "baseline_paths_exist": [
+          "{{CASE_TMP}}/json/v2/PlanDeltaNotification.json",
+          "{{CASE_TMP}}/json/ToolRequestUserInputParams.json",
+          "{{CASE_TMP}}/json/ToolRequestUserInputResponse.json",
+          "{{CASE_TMP}}/json/v2/TurnStartParams.json"
+        ],
+        "cheng_paths_exist": [
+          "{{CASE_TMP}}/json/v2/PlanDeltaNotification.json",
+          "{{CASE_TMP}}/json/ToolRequestUserInputParams.json",
+          "{{CASE_TMP}}/json/ToolRequestUserInputResponse.json",
+          "{{CASE_TMP}}/json/v2/TurnStartParams.json"
+        ]
+      }
+    },
+    {
+      "id": "app-server-plan-mode-runtime-source",
+      "description": "runtime keeps proposed_plan split and plan-mode tool validation semantics",
+      "args": ["app-server", "--help"],
+      "expect": {
+        "exit_code": 0
+      },
+      "source_checks": [
+        {
+          "path": "src/app_server.cheng",
+          "contains": "const PROPOSED_PLAN_OPEN_TAG = \"<proposed_plan>\""
+        },
+        {
+          "path": "src/app_server.cheng",
+          "contains": "sendEvent(\"item/plan/delta\""
+        },
+        {
+          "path": "src/app_server.cheng",
+          "contains": "request_user_input requires non-empty options for every question"
+        },
+        {
+          "path": "src/app_server.cheng",
+          "contains": "update_plan is a TODO/checklist tool and is not allowed in Plan mode"
+        }
+      ]
+    }
+  ]
+}

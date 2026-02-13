@@ -80,7 +80,7 @@ fn renderChatTuiInteractive(execOpts: ExecOptions, threadId: str, cwd: str, stat
         printUi(ansiDim("Commands: /help, /quit, /new, /resume, /last, /fork, /archive, /rollback N"))
         printUi("")
         return
-    let lines: seq[str] = threadHistoryLines(threadId)
+    let lines: str[] = threadHistoryLines(threadId)
     var start: int32 = 0
     if len(lines) > maxLines:
         start = len(lines) - maxLines
@@ -92,7 +92,7 @@ fn renderChatTuiInteractive(execOpts: ExecOptions, threadId: str, cwd: str, stat
     printUi(ansiDim("Commands: /help, /quit, /new, /resume, /last, /fork, /archive, /rollback N"))
     printUi("")
 
-fn threadInfoAtInteractive(infos: seq[ThreadInfo], idx: int32): ThreadInfo =
+fn threadInfoAtInteractive(infos: ThreadInfo[], idx: int32): ThreadInfo =
     if idx < 0 || idx >= len(infos):
         return ThreadInfo(id: "", preview: "", createdAt: 0, cwd: "")
     return get[ThreadInfo](infos, idx)
@@ -233,7 +233,7 @@ fn interactiveMenuChoice(hasThreads: bool): int32 =
             return 3
     return 1
 
-fn interactiveMenuChoiceTui(infos: seq[ThreadInfo]): MenuChoice =
+fn interactiveMenuChoiceTui(infos: ThreadInfo[]): MenuChoice =
     let useAlt = tuiAltScreenEnabledLocal()
     tuiEnterAltScreenLocal(useAlt)
     let maxCount: int32 = 5
@@ -300,7 +300,7 @@ fn maybeRunUpdateAction() =
         return
     printUi("Update ran successfully. Please restart Codex.")
 
-fn runInteractive(args: seq[str], start: int32): int32 =
+fn runInteractive(args: str[], start: int32): int32 =
     var opts = parseExecArgs(args, start)
     let requestedCwd = parseResumeCwdLocal(args, start)
     if len(requestedCwd) > 0:
@@ -517,7 +517,7 @@ fn runInteractiveWithOpts(opts: ExecOptions, presetThreadId: str): int32 =
                     statusMsg = "Running review..."
                     renderChatTuiInteractive(execOpts, threadId, cwd, statusMsg)
                     let ctxItems = threadContextItems(threadId)
-                    var combinedCtx: seq[str] = newSeq[str]()
+                    var combinedCtx: str[] = newSeq[str]()
                     var cidx: int32 = 0
                     while cidx < len(ctxItems):
                         seqAdd(combinedCtx, argAt(ctxItems, cidx))
@@ -543,7 +543,7 @@ fn runInteractiveWithOpts(opts: ExecOptions, presetThreadId: str): int32 =
                 let preview = buildPreview(trimmed)
                 threadId = createThread(preview, cwd, "cli")
             let contextItems = threadContextItems(threadId)
-            var combinedContext: seq[str] = newSeq[str]()
+            var combinedContext: str[] = newSeq[str]()
             var idx: int32 = 0
             while idx < len(contextItems):
                 seqAdd(combinedContext, argAt(contextItems, idx))
@@ -577,7 +577,7 @@ fn runInteractiveWithOpts(opts: ExecOptions, presetThreadId: str): int32 =
                 let preview = buildPreview(pendingPrompt)
                 threadId = createThread(preview, cwd, "cli")
             let contextItems = threadContextItems(threadId)
-            var combinedContext: seq[str] = newSeq[str]()
+            var combinedContext: str[] = newSeq[str]()
             var idx: int32 = 0
             while idx < len(contextItems):
                 seqAdd(combinedContext, argAt(contextItems, idx))

@@ -88,7 +88,7 @@ fn wrapCommandForShell(commandText: str, useLogin: bool): str =
 fn runShellTool(command: str, workingDir: str): ToolResult =
     return runRawCommand(command, workingDir, -1)
 
-fn runShellCommand(commandText: str, commandTokens: seq[str], workingDir: str, sandboxMode: str, sandboxPermissions: str, bypassSandbox: bool, extraWritableRoots: seq[str], timeoutMs: int32, useLogin: bool): ToolResult =
+fn runShellCommand(commandText: str, commandTokens: str[], workingDir: str, sandboxMode: str, sandboxPermissions: str, bypassSandbox: bool, extraWritableRoots: str[], timeoutMs: int32, useLogin: bool): ToolResult =
     var cmdText: str = commandText
     if len(cmdText) == 0 && len(commandTokens) > 0:
         cmdText = buildCommandTextFromTokens(commandTokens)

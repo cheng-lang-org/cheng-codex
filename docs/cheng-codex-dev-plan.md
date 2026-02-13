@@ -112,6 +112,10 @@
 - `config` 支持 `auth.token`/`model`/`review_model`/`approval_policy`/`sandbox_mode`，`config/read` 返回运行态配置
 - 事件覆盖 `thread/started`、`turn/started/completed`、`item/*`、`turn/diff/updated`，含审批请求 `item/commandExecution|fileChange/requestApproval`
 - `update_plan` 工具支持，触发 `turn/plan/updated`，并在 exec JSONL 输出 `todo_list` 项
+- Plan mode 已落地：`<proposed_plan>` 解析、`item/plan/delta` 事件、`agentMessage/plan` item 生命周期、`request_user_input` 协议字段与 schema 产物对齐
+- parity manifest 已收口：当前 `61/61` crate 映射为 implemented（`tooling/parity/parity_manifest.yaml`）
+- arg0 apply_patch 兼容已补齐：支持 `--codex-run-as-apply-patch` 与 `apply_patch` / `applypatch` 入口
+- hooks/notify 已落地：支持 `notify=[...]` legacy 外部通知命令与 `agent-turn-complete` JSON payload
 - CLI 全局覆盖与特性开关：支持 `-c/--config` 与 `--enable/--disable`，`features list` 输出特性列表
 - `exec` 对齐 review/resume 子命令与 `--ask-for-approval`/`--search`，支持 JSON schema 输出与 last-message 文件
 - `login status` 子命令已补齐，状态输出区分 ChatGPT/API key（含脱敏）
@@ -164,8 +168,8 @@
 | `login` | 默认浏览器 OAuth；`--device-auth`、`--with-api-key`；`login status` 子命令；隐藏 `--experimental_issuer`/`--experimental_client-id` | 默认浏览器 OAuth；`--device-auth`、`--with-api-key`、`--token`；`login status`；`--experimental_issuer`/`--experimental_client-id` | 新增 `--token`（直写 token） |
 | `logout` | `codex logout` | `codex-cheng logout` | 提示文案不同 |
 | `app-server` | `codex app-server` / `generate-ts --out --prettier` / `generate-json-schema --out` | `codex-cheng app-server` / `generate-ts --out --prettier` / `generate-json-schema --out` | 默认输出完整协议（`codex-app-server-protocol`），资源缺失时回退最小骨架 |
-| `mcp` | `list/get/add/remove/login/logout` + OAuth（streamable_http） | `mcp` stub | 未实现 |
-| `mcp-server` | 运行 MCP server（stdio） | `mcp-server` stub | 未实现 |
+| `mcp` | `list/get/add/remove/login/logout` + OAuth（streamable_http） | `mcp` Cheng 原生实现 | 已实现（含 lifecycle 与 OAuth） |
+| `mcp-server` | 运行 MCP server（stdio） | `mcp-server` Cheng 原生实现 | 已实现（含 initialize 握手） |
 | `completion` | `codex completion --shell <bash|zsh|fish|...>` | `codex-cheng completion <bash|zsh|fish|powershell>` | 参数形式不同 |
 | `sandbox` | `codex sandbox <macos|linux|windows> [--full-auto] [--log-denials] -- <cmd>` | 同名用法 | 基本对齐 |
 | `execpolicy` | `codex execpolicy check`（隐藏） | `codex-cheng execpolicy check` | 语法/输出仍需对齐 |

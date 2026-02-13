@@ -10,7 +10,7 @@ fn ord(ch: char): int32 =
 type
     WritableRoot =
         root: str
-        readOnlySubpaths: seq[str]
+        readOnlySubpaths: str[]
 
 const
     SANDBOX_DENIAL_REASON = "command failed; retry without sandbox?"
@@ -62,7 +62,7 @@ fn normalizeSandboxModeValue(mode: str): str =
         return "danger-full-access"
     return normalized
 
-fn buildCommandTextFromTokens(tokens: seq[str]): str =
+fn buildCommandTextFromTokens(tokens: str[]): str =
     var out = ""
     var i: int32 = 0
     while i < len(tokens):
@@ -75,8 +75,8 @@ fn buildCommandTextFromTokens(tokens: seq[str]): str =
         i = i + 1
     return out
 
-fn collectWritableRoots(cwd: str, extraRoots: seq[str]): seq[WritableRoot] =
-    var roots: seq[str] = newSeq[str]()
+fn collectWritableRoots(cwd: str, extraRoots: str[]): WritableRoot[] =
+    var roots: str[] = newSeq[str]()
     var i: int32 = 0
     while i < len(extraRoots):
         let root = extraRoots[i]
@@ -90,11 +90,11 @@ fn collectWritableRoots(cwd: str, extraRoots: seq[str]): seq[WritableRoot] =
     let tmpdir = os.getEnv("TMPDIR")
     if len(tmpdir) > 0:
         seqAdd(roots, os.absolutePath(tmpdir))
-    var result: seq[WritableRoot] = newSeq[WritableRoot]()
+    var result: WritableRoot[] = newSeq[WritableRoot]()
     i = 0
     while i < len(roots):
         let root = roots[i]
-        var readOnly: seq[str] = newSeq[str]()
+        var readOnly: str[] = newSeq[str]()
         let gitPath = os.joinPath(root, ".git")
         if os.dirExists(gitPath):
             seqAdd(readOnly, gitPath)
@@ -108,7 +108,7 @@ fn collectWritableRoots(cwd: str, extraRoots: seq[str]): seq[WritableRoot] =
         i = i + 1
     return result
 
-fn joinWithSpace(items: seq[str]): str =
+fn joinWithSpace(items: str[]): str =
     var out = ""
     var i: int32 = 0
     while i < len(items):
@@ -214,7 +214,7 @@ fn wrapCommandWithTimeout(commandText: str, timeoutMs: int32, outApplied: var bo
 
 fn findSeatbeltPolicyFile(fileName: str): str =
     let cwd = os.getCurrentDir()
-    var candidates: seq[str] = newSeq[str]()
+    var candidates: str[] = newSeq[str]()
     seqAdd(candidates, os.joinPath(cwd, fileName))
     seqAdd(candidates, os.joinPath(os.joinPath(os.joinPath(cwd, "codex-cheng"), "src"), fileName))
     seqAdd(candidates, os.joinPath(os.joinPath(cwd, "src"), fileName))
@@ -245,7 +245,7 @@ fn ensureSeatbeltPoliciesLoaded(): bool =
             seatbeltNetworkPolicyCache = os.readFile(networkPath)
     return len(seatbeltBasePolicyCache) > 0
 
-fn buildSeatbeltPolicy(sandboxMode: str, cwd: str, extraRoots: seq[str], allowNetwork: bool, outParams: var seq[str]): str =
+fn buildSeatbeltPolicy(sandboxMode: str, cwd: str, extraRoots: str[], allowNetwork: bool, outParams: var str[]): str =
     outParams = newSeq[str]()
     ensureSeatbeltPoliciesLoaded()
     if len(seatbeltBasePolicyCache) == 0:
@@ -255,7 +255,7 @@ fn buildSeatbeltPolicy(sandboxMode: str, cwd: str, extraRoots: seq[str], allowNe
     if mode == "workspace-write" || mode == "workspacewrite":
         let roots = collectWritableRoots(cwd, extraRoots)
         if len(roots) > 0:
-            var policyParts: seq[str] = newSeq[str]()
+            var policyParts: str[] = newSeq[str]()
             var idx: int32 = 0
             while idx < len(roots):
                 let root = roots[idx]
@@ -271,7 +271,7 @@ fn buildSeatbeltPolicy(sandboxMode: str, cwd: str, extraRoots: seq[str], allowNe
                     part = part + "\"))"
                     seqAdd(policyParts, part)
                 else:
-                    var requireParts: seq[str] = newSeq[str]()
+                    var requireParts: str[] = newSeq[str]()
                     var basePart = "(subpath (param \""
                     basePart = basePart + rootParam
                     basePart = basePart + "\"))"
@@ -341,11 +341,11 @@ fn runRawCommand(commandText: str, workingDir: str, timeoutMs: int32): ToolResul
         ok = false
     return makeToolResult(ok, output, exitCode)
 
-fn runSeatbeltSandbox(commandText: str, commandTokens: seq[str], workingDir: str, sandboxMode: str, extraRoots: seq[str], timeoutMs: int32): ToolResult =
+fn runSeatbeltSandbox(commandText: str, commandTokens: str[], workingDir: str, sandboxMode: str, extraRoots: str[], timeoutMs: int32): ToolResult =
     var cmd: str = commandText
     if len(cmd) == 0:
         cmd = buildCommandTextFromTokens(commandTokens)
-    var params: seq[str]
+    var params: str[]
     let policyText = buildSeatbeltPolicy(sandboxMode, workingDir, extraRoots, false, params)
     if len(policyText) == 0:
         return makeToolResult(false, "missing seatbelt policy", -1)
@@ -384,19 +384,19 @@ fn findLinuxSandboxExe(): str =
         i = i + 1
     return ""
 
-fn buildLinuxSandboxPolicyJson(sandboxMode: str, extraRoots: seq[str]): str =
+fn buildLinuxSandboxPolicyJson(sandboxMode: str, extraRoots: str[]): str =
     let mode = normalizePolicy(trimLine(sandboxMode))
     if mode == "read-only" || mode == "readonly":
         return "{\"type\":\"read-only\"}"
     if mode == "workspace-write" || mode == "workspacewrite":
-        var rootsJson: seq[str] = newSeq[str]()
+        var rootsJson: str[] = newSeq[str]()
         var i: int32 = 0
         while i < len(extraRoots):
             let root = extraRoots[i]
             if len(root) > 0:
                 seqAdd(rootsJson, jstrString(os.absolutePath(root)))
             i = i + 1
-        var fields: seq[str] = newSeq[str]()
+        var fields: str[] = newSeq[str]()
         seqAdd(fields, jstrPair("type", jstrString("workspace-write")))
         if len(rootsJson) > 0:
             seqAdd(fields, jstrPair("writable_roots", jstrArray(rootsJson)))
@@ -406,7 +406,7 @@ fn buildLinuxSandboxPolicyJson(sandboxMode: str, extraRoots: seq[str]): str =
         return jstrObject(fields)
     return "{\"type\":\"danger-full-access\"}"
 
-fn runLinuxSandbox(commandText: str, commandTokens: seq[str], workingDir: str, sandboxMode: str, extraRoots: seq[str], timeoutMs: int32): ToolResult =
+fn runLinuxSandbox(commandText: str, commandTokens: str[], workingDir: str, sandboxMode: str, extraRoots: str[], timeoutMs: int32): ToolResult =
     let exe = findLinuxSandboxExe()
     if len(exe) == 0:
         return makeToolResult(false, "missing codex-linux-sandbox executable path", -1)
@@ -425,7 +425,7 @@ fn runLinuxSandbox(commandText: str, commandTokens: seq[str], workingDir: str, s
     fullCmd = fullCmd + wrappedCmd
     return runRawCommand(fullCmd, workingDir, timeoutMs)
 
-fn runSandboxedCommand(commandText: str, commandTokens: seq[str], workingDir: str, sandboxMode: str, extraRoots: seq[str], timeoutMs: int32): ToolResult =
+fn runSandboxedCommand(commandText: str, commandTokens: str[], workingDir: str, sandboxMode: str, extraRoots: str[], timeoutMs: int32): ToolResult =
     let mode = normalizePolicy(trimLine(sandboxMode))
     let osKind = detectOsKind()
     if osKind == "macos":

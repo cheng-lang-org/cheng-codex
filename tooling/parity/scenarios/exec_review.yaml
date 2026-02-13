@@ -1,0 +1,41 @@
+{
+  "suite": "exec_review",
+  "cases": [
+    {
+      "id": "exec-help",
+      "description": "exec --help should expose non-interactive command options",
+      "args": ["exec", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex exec", "--json", "--output-last-message"]
+      }
+    },
+    {
+      "id": "exec-json-help",
+      "description": "exec --json --help should still show help surface",
+      "args": ["exec", "--json", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex exec"]
+      }
+    },
+    {
+      "id": "review-help",
+      "description": "review --help should expose selector flags",
+      "args": ["review", "--help"],
+      "expect": {
+        "exit_code": 0,
+        "stdout_contains": ["Usage: codex review", "--uncommitted", "--base", "--commit"]
+      }
+    },
+    {
+      "id": "review-conflict-uncommitted-base",
+      "description": "review selector flags are mutually exclusive",
+      "args": ["review", "--uncommitted", "--base", "main"],
+      "expect": {
+        "both_nonzero": true,
+        "stderr_regex": ["conflict|cannot|unexpected|unrecognized|exclusive"]
+      }
+    }
+  ]
+}
