@@ -45,11 +45,10 @@ const
     ARG0_LOCK_FILENAME = ".lock"
 
 var arg0PathEntryDir: str = ""
+var arg0PathSetupError: str = ""
 
-fn collectArgsFromArgv(argc: int32, argv: str*): str[] =
-    argc
-    argv
-    var out: str[] = newSeq[str]()
+fn collectArgsFromCmdline(): str[] =
+    var out: str[]
     let total: int32 = cmdline.paramCount()
     if total <= 0:
         return out
@@ -344,8 +343,8 @@ fn streqSafe(a: str, b: str): bool =
 
 fn parseGlobalOverrides(args: str[]): ParsedArgs =
     var res: ParsedArgs
-    var outArgs: str[] = newSeq[str]()
-    var overrides: str[] = newSeq[str]()
+    var outArgs: str[]
+    var overrides: str[]
     var err = ""
     var i: int32 = 0
     while i < len(args):
@@ -889,7 +888,7 @@ fn sandboxKnownRootSubcommand(name: str): bool =
 fn runSandboxPlatform(platform: str, args: str[], start: int32): int32 =
     var fullAuto = false
     var logDenials = false
-    var cmdParts: str[] = newSeq[str]()
+    var cmdParts: str[]
     var optionsEnded = false
     var i: int32 = start
     while i < len(args):
@@ -977,7 +976,7 @@ fn runSandboxPlatform(platform: str, args: str[], start: int32): int32 =
         wrapped = wrapped + "rm -f $LOG_FILE; exit $STATUS"
         cmdText = wrapped
 
-    var res: ToolResult = runShellCommand(cmdText, cmdParts, os.getCurrentDir(), sandboxMode, "use_default", false, newSeq[str](), -1, false)
+    var res: ToolResult = runShellCommand(cmdText, cmdParts, os.getCurrentDir(), sandboxMode, "use_default", false, [], -1, false)
     let output = toolResultOutput(res)
     if len(output) > 0:
         os.write(os.get_stdout(), output)
@@ -1130,8 +1129,8 @@ fn closedLoopWriteReports(steps: ClosedLoopStep[], reportDir: str) =
     let tsvPath = os.joinPath(reportDir, "report.tsv")
     let jsonPath = os.joinPath(reportDir, "report.json")
     let txtPath = os.joinPath(reportDir, "report.txt")
-    var tsvParts: str[] = newSeq[str]()
-    var stepObjs: str[] = newSeq[str]()
+    var tsvParts: str[]
+    var stepObjs: str[]
     var anyFail = false
     var i: int32 = 0
     while i < len(steps):
@@ -1178,7 +1177,7 @@ fn closedLoopWriteReports(steps: ClosedLoopStep[], reportDir: str) =
     os.writeFile(txtPath, summary)
 
 fn closedLoopCheckPreflight(workDir: str, detail: var str): int32 =
-    var missing: str[] = newSeq[str]()
+    var missing: str[]
     var files = seqStr4("SPEC.md", "CONTRACT.md", "ACCEPTANCE.md", "TASK_MATRIX.yaml")
     var i: int32 = 0
     while i < len(files):
@@ -1197,7 +1196,7 @@ fn closedLoopCheckPreflight(workDir: str, detail: var str): int32 =
     return 0
 
 fn closedLoopCheckBuild(workDir: str, detail: var str): int32 =
-    let res = runShellCommand("./build.sh", newSeq[str](), workDir, readConfigValue("sandbox_mode"), "use_default", false, newSeq[str](), -1, true)
+    let res = runShellCommand("./build.sh", [], workDir, readConfigValue("sandbox_mode"), "use_default", false, [], -1, true)
     detail = "./build.sh"
     if toolResultExitCode(res) != 0:
         detail = toolResultOutput(res)
@@ -1209,7 +1208,7 @@ fn closedLoopCheckExecpolicy(workDir: str, detail: var str): int32 =
     let rulesPath = os.joinPath(tmpDir, "policy.rules")
     let rulesText = "prefix_rule(\\n    pattern = [\\\"git\\\", \\\"push\\\"],\\n    decision = \\\"forbidden\\\",\\n)\\n"
     os.writeFile(rulesPath, rulesText)
-    var args: str[] = newSeq[str]()
+    var args: str[]
     seqAdd(args, "check")
     seqAdd(args, "--rules")
     seqAdd(args, rulesPath)
@@ -1226,7 +1225,7 @@ fn closedLoopCheckCompletion(workDir: str, detail: var str): int32 =
         detail = "codex-cheng binary not found"
         return 1
     let cmd = shellQuote(bin) + " completion bash"
-    let res = runShellCommand(cmd, newSeq[str](), workDir, readConfigValue("sandbox_mode"), "use_default", false, newSeq[str](), -1, true)
+    let res = runShellCommand(cmd, [], workDir, readConfigValue("sandbox_mode"), "use_default", false, [], -1, true)
     detail = cmd
     if toolResultExitCode(res) != 0:
         detail = toolResultOutput(res)
@@ -1240,7 +1239,7 @@ fn closedLoopCheckLogin(detail: var str): int32 =
 fn closedLoopCheckExecSmoke(workDir: str, detail: var str): int32 =
     let tmpDir = closedLoopTempDir()
     let lastMsg = os.joinPath(tmpDir, "last_message.txt")
-    var args: str[] = newSeq[str]()
+    var args: str[]
     seqAdd(args, "--json")
     seqAdd(args, "--cd")
     seqAdd(args, workDir)
@@ -1265,7 +1264,7 @@ fn closedLoopCheckExecSmoke(workDir: str, detail: var str): int32 =
 fn runClosedLoop(opts: ClosedLoopOptions): int32 =
     let workDir = closedLoopWorkDir(opts.workDir)
     let reportDir = closedLoopReportDir(workDir)
-    var steps: ClosedLoopStep[] = newSeq[ClosedLoopStep]()
+    var steps: ClosedLoopStep[]
     var failures = false
     var detail = ""
     var code = 0
@@ -1367,7 +1366,7 @@ fn runShip(args: str[], start: int32): int32 =
     return 2
 
 fn appServerMethodNames(): str[] =
-    var names: str[] = newSeq[str]()
+    var names: str[]
     seqAdd(names, "initialize")
     seqAdd(names, "initialized")
     seqAdd(names, "thread/start")
@@ -1690,22 +1689,21 @@ fn runApply(args: str[], start: int32): int32 =
     return applyCloudTaskDiff(taskId, 1)
 
 fn runApplyPatchTextCompat(patchText: str): int32 =
-    if len(trimLine(patchText)) == 0:
-        printErr("Error: apply_patch requires patch input.")
-        return 1
     let root = currentDirSafe()
-    let result = runPatchTool(patchText, root)
-    if len(result.output) > 0:
-        if result.ok:
-            printLine(result.output)
+    let patchRes = runPatchTool(patchText, root)
+    let outText = toolResultOutput(patchRes)
+    if len(outText) > 0:
+        if toolResultOk(patchRes):
+            printLine(outText)
         else:
-            printErr(result.output)
-    elif ! result.ok:
+            printErr(outText)
+    elif ! toolResultOk(patchRes):
         printErr("apply_patch failed")
-    if result.ok:
+    if toolResultOk(patchRes):
         return 0
-    if result.exitCode > 0:
-        return result.exitCode
+    let exitCode = toolResultExitCode(patchRes)
+    if exitCode > 0:
+        return exitCode
     return 1
 
 fn printApplyPatchStandaloneUsage(): int32 =
@@ -1802,6 +1800,10 @@ fn arg0SetEnv(key: str, value: str) =
         return
     cSetEnv(key, value, 1)
 
+fn arg0SetPathSetupError(msg: str): bool =
+    arg0PathSetupError = trimLine(msg)
+    return false
+
 fn arg0EnsureDir(path: str) =
     if len(path) == 0 || os.dirExists(path):
         return
@@ -1891,19 +1893,11 @@ fn arg0ReadLockPid(lockPath: str): int32 =
 fn arg0PidSeemsAlive(pid: int32): bool =
     if pid <= 0:
         return false
-    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
     if detectOsKind() == "windows":
         let filter = "PID eq " + intToStr(pid)
-        let cmd = "tasklist /FI " + shellQuote(filter) + " /NH"
-        let res = os.execCmdEx(cmd, opts, os.getCurrentDir())
-        if int32(res.exitCode) != 0:
-            return false
-        let out = normalizePolicy(trimLine(res.output))
-        if len(out) == 0:
-            return false
-        return indexOfSubstr(out, "no tasks are running", 0) < 0
-    let probe = os.execCmdEx("kill -0 " + intToStr(pid), opts, os.getCurrentDir())
-    return int32(probe.exitCode) == 0
+        let cmd = "tasklist /FI " + shellQuote(filter) + " /NH | findstr /I /V \"No tasks are running\" >NUL"
+        return os.execCmd(cmd) == 0
+    return os.execCmd("kill -0 " + intToStr(pid) + " >/dev/null 2>&1") == 0
 
 fn arg0ShellDeleteDir(path: str) =
     if len(path) == 0:
@@ -1914,31 +1908,39 @@ fn arg0ShellDeleteDir(path: str) =
     else:
         os.execCmd("rm -rf " + shellQuote(path))
 
-fn arg0JanitorCleanup(tempRoot: str, keepPath: str) =
+fn arg0JanitorCleanup(tempRoot: str, keepPath: str): str =
     if len(tempRoot) == 0 || ! os.dirExists(tempRoot):
-        return
-    let entries: seq_WalkDirEntry = os.walkDir(tempRoot)
+        return ""
+    let paths = os.walkDirRec(tempRoot)
+    var warning = ""
     var idx: int32 = 0
-    while idx < entries.len:
-        let entry: WalkDirEntry = get_WalkDirEntry(entries, idx)
-        if entry.kind == pcDir || entry.kind == pcLinkToDir:
-            let path = entry.path
-            if len(path) > 0 && path != keepPath:
-                if os.parentDir(path) != tempRoot:
-                    idx = idx + 1
-                    continue
-                let base = os.extractFilename(path)
-                if hasPrefix(base, "codex-arg0"):
-                    let lockPath = os.joinPath(path, ARG0_LOCK_FILENAME)
-                    if ! os.fileExists(lockPath):
-                        idx = idx + 1
-                        continue
-                    let lockPid = arg0ReadLockPid(lockPath)
-                    if arg0PidSeemsAlive(lockPid):
-                        idx = idx + 1
-                        continue
-                    arg0ShellDeleteDir(path)
+    while idx < len(paths):
+        let path = trimLine(paths[idx])
+        if len(path) == 0 || path == keepPath:
+            idx = idx + 1
+            continue
+        if ! os.dirExists(path):
+            idx = idx + 1
+            continue
+        if os.parentDir(path) != tempRoot:
+            idx = idx + 1
+            continue
+        if ! hasPrefix(os.extractFilename(path), "codex-arg0"):
+            idx = idx + 1
+            continue
+        let lockPath = os.joinPath(path, ARG0_LOCK_FILENAME)
+        if ! os.fileExists(lockPath):
+            idx = idx + 1
+            continue
+        let lockPid = arg0ReadLockPid(lockPath)
+        if arg0PidSeemsAlive(lockPid):
+            idx = idx + 1
+            continue
+        arg0ShellDeleteDir(path)
+        if os.dirExists(path) && len(warning) == 0:
+            warning = path
         idx = idx + 1
+    return warning
 
 fn arg0WriteAliasScript(path: str, exePath: str, commandMode: str) =
     if len(path) == 0 || len(exePath) == 0:
@@ -1982,23 +1984,39 @@ fn arg0PathSeparator(): str =
         return ";"
     return ":"
 
-fn arg0PrependPathEntryForAliases() =
+fn arg0PrependPathEntryForAliases(): bool =
+    arg0PathSetupError = ""
     let home = codexHomeDir()
     if len(home) == 0:
-        return
-    arg0EnsureDir(home)
+        return arg0SetPathSetupError("empty codex home")
+    let envHome = trimLine(os.getEnv("CODEX_HOME"))
+    if len(envHome) > 0:
+        # Match codex-rs find_codex_home behavior for explicit CODEX_HOME:
+        # do not auto-create missing directories.
+        if ! os.dirExists(home):
+            return arg0SetPathSetupError("CODEX_HOME does not exist: " + home)
+    else:
+        arg0EnsureDir(home)
+        if ! os.dirExists(home):
+            return arg0SetPathSetupError("failed to create codex home: " + home)
     let tempRoot = os.joinPath(os.joinPath(home, "tmp"), "arg0")
     arg0EnsureDir(tempRoot)
+    if ! os.dirExists(tempRoot):
+        return arg0SetPathSetupError("failed to create arg0 temp root: " + tempRoot)
     if detectOsKind() != "windows":
         os.execCmd("chmod 700 " + shellQuote(tempRoot))
     let entryName = "codex-arg0-" + int64ToStr(times.toUnix(times.now())) + "-" + intToStr(c_getpid())
     let entryDir = os.joinPath(tempRoot, entryName)
     arg0EnsureDir(entryDir)
+    if ! os.dirExists(entryDir):
+        return arg0SetPathSetupError("failed to create arg0 entry: " + entryDir)
     os.writeFile(os.joinPath(entryDir, ARG0_LOCK_FILENAME), intToStr(c_getpid()) + "\n")
-    arg0JanitorCleanup(tempRoot, entryDir)
+    let janitorWarning = arg0JanitorCleanup(tempRoot, entryDir)
+    if len(janitorWarning) > 0:
+        printErr("WARNING: failed to clean up stale arg0 temp dirs: " + janitorWarning)
     let exePath = arg0CurrentExePath()
     if len(exePath) == 0:
-        return
+        return arg0SetPathSetupError("failed to resolve current executable")
     # Keep three entry points aligned:
     # 1) argv0 alias (`apply_patch`/`applypatch`)
     # 2) hidden argument (`--codex-run-as-apply-patch`)
@@ -2013,6 +2031,7 @@ fn arg0PrependPathEntryForAliases() =
     else:
         arg0SetEnv("PATH", entryDir + arg0PathSeparator() + oldPath)
     arg0PathEntryDir = entryDir
+    return true
 
 fn runArg0CompatAliasDispatch(args: str[]): int32 =
     let exeName = arg0CurrentExeName()
@@ -2095,25 +2114,18 @@ fn maskApiKey(key: str): str =
     return prefix + "***" + suffix
 
 fn loginStdinIsTerminalLocal(): bool =
-    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
     let osEnv = normalizePolicy(trimLine(os.getEnv("OS")))
     if osEnv == "windows_nt" || indexOfSubstr(detectPlatform(), "windows", 0) >= 0:
-        let res = os.execCmdEx("powershell -NoProfile -Command \"[Console]::IsInputRedirected\"", opts, os.getCurrentDir())
-        let text = normalizePolicy(trimLine(res.output))
-        if text == "false":
-            return true
-        if text == "true":
-            return false
-        return false
-    let res = os.execCmdEx("test -t 0", opts, os.getCurrentDir())
-    return res.exitCode == 0
+        let cmd = "powershell -NoProfile -Command \"if([Console]::IsInputRedirected){exit 1}else{exit 0}\""
+        return os.execCmd(cmd) == 0
+    return os.execCmd("test -t 0") == 0
 
 fn loginHasStoredCredentialsLocal(): bool =
     var apiKey = ""
     if readAuthJsonApiKey(apiKey) && len(apiKey) > 0 && ! isChatgptPlaceholderToken(apiKey):
         return true
     var tokens: AuthTokens
-    if readChatgptTokens(tokens) && (len(tokens.accessToken) > 0 || len(tokens.idToken) > 0):
+    if readChatgptTokens(tokens):
         return true
     return false
 
@@ -2146,7 +2158,7 @@ fn runLoginStatusLocal(): int32 =
     var tokens: AuthTokens
     if debug == "1" || debug == "true" || debug == "yes":
         printErr("[debug] login status before auth.json chatgpt tokens")
-    if readChatgptTokens(tokens) && (len(tokens.accessToken) > 0 || len(tokens.idToken) > 0):
+    if readChatgptTokens(tokens):
         if debug == "1" || debug == "true" || debug == "yes":
             printErr("[debug] login status via auth.json chatgpt tokens")
         printErr("Logged in using ChatGPT")
@@ -2440,7 +2452,7 @@ fn isRootCommandTokenLocal(tok: str): bool =
     return false
 
 fn splitByCharLocal(text: str, sep: char): str[] =
-    var outVal: str[] = newSeq[str]()
+    var outVal: str[]
     if text == nil:
         return outVal
     var start: int32 = 0
@@ -3397,7 +3409,7 @@ fn runDebugAppServerSendMessage(args: str[], start: int32): int32 =
         let tip = "to pass '" + message + "' as a value, use '-- " + message + "'"
         return debugUnexpectedArgWithUsage(message, "codex debug app-server send-message-v2 [OPTIONS] <USER_MESSAGE>", tip)
 
-    var localArgs: str[] = newSeq[str]()
+    var localArgs: str[]
     seqAdd(localArgs, "app-server-test")
     seqAdd(localArgs, "send-message-v2")
     seqAdd(localArgs, message)
@@ -3589,11 +3601,9 @@ fn dispatchCommand(args: str[]): int32 =
     printUsage()
     return 2
 
-fn main(argc: int32, argv: str*): int32 =
+fn main(): int32 =
     traceMainLocal("main.begin")
-    cmdline.__cheng_setCmdLine(argc, void*(argv))
-    traceMainLocal("main.cmdline.set")
-    let rawArgs = collectArgsFromArgv(argc, argv)
+    let rawArgs = collectArgsFromCmdline()
     traceMainLocal("main.args.collected=" + intToStr(len(rawArgs)))
     let arg0AliasDispatch = runArg0CompatAliasDispatch(rawArgs)
     if arg0AliasDispatch >= 0:
@@ -3603,7 +3613,11 @@ fn main(argc: int32, argv: str*): int32 =
         return applyPatchArg0
     # Keep codex-rs ordering: load dotenv and prepend helper PATH before runtime work.
     arg0LoadDotenvFiltered()
-    arg0PrependPathEntryForAliases()
+    if ! arg0PrependPathEntryForAliases():
+        if len(arg0PathSetupError) > 0:
+            printErr("WARNING: proceeding, even though we could not update PATH: " + arg0PathSetupError)
+        else:
+            printErr("WARNING: proceeding, even though we could not update PATH")
     let parsed = parseGlobalOverrides(rawArgs)
     traceMainLocal("main.overrides.parsed")
     if len(parsed.err) > 0:

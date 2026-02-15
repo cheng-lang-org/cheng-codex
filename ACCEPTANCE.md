@@ -9,6 +9,7 @@
   - `tooling/parity/behavior_manifest.yaml` 已落盘并覆盖关键行为域。
   - `tooling/parity/coverage_table.md` 已落盘并汇总 crate + behavior 双视角覆盖。
   - `tooling/parity/scenarios/` 已包含 arg0/hooks 行为场景定义。
+  - `tooling/parity/check_hard_gate.py` 已硬约束 `src/main.cheng` 入口使用 `std/cmdline`，并禁止 `main(argc, argv: str*)` / `__cheng_setCmdLine` 指针路径。
 
 ## 离线门禁 (必须全绿)
 1) 规格文件齐全
@@ -21,6 +22,7 @@
 - `python3 tooling/parity/generate_manifest.py --codex-rs-dir <path> --cheng-root .` 成功输出 `tooling/parity/parity_manifest.yaml`。
 - `tooling/parity/parity_manifest.yaml` summary 必须满足：`implemented == total_crates` 且 `missing == 0`（当前基线为 61/61）。
 - `tooling/parity/behavior_manifest.yaml` summary 必须满足：`implemented == total_behaviors` 且 `scenarized == total_behaviors`。
+- `python3 tooling/parity/check_hard_gate.py --cheng-root .` 必须通过，并输出 `build/parity/hard_gate_report.{txt,json}`，`status=pass`。
 - `python3 tooling/parity/run_parity.py --codex-rs-dir <path> --cheng-root . --cheng-bin ./build/codex-cheng` 成功输出 `build/parity/report.{txt,json}`。
 - parity 报告 summary: `fail == 0`。
 
@@ -97,20 +99,31 @@
   - When: 缺少 PATCH 参数
   - Then: 退出码非 0 且输出 `--codex-run-as-apply-patch requires a UTF-8 PATCH argument.`
 
+- Scenario: apply_patch standalone usage
+  - Given: 通过 argv0 或隐藏根命令调用 `apply_patch` 且无参数/空 stdin
+  - When: 运行命令
+  - Then: 返回退出码 `2`，并输出 `Usage: apply_patch 'PATCH'`
+
 - Scenario: arg0 argv0 alias dispatch
   - Given: 以 `apply_patch` / `applypatch` 作为 argv0 调起进程
   - When: 从 stdin 输入 patch
   - Then: 不进入 interactive/root parser，直接执行 patch，退出码与基线一致
 
 - Scenario: arg0 dotenv filtering
-  - Given: `~/.codex/.env` 或 `~/.codex-cheng/.env` 含 `CODEX_HOME=...`
+  - Given: `~/.codex/.env` 含 `CODEX_HOME=...`
   - When: 运行命令读取配置 home
   - Then: 非 `CODEX_*` 键可生效，`CODEX_*` 键被过滤不注入
+
+- Scenario: codex home default path
+  - Given: 未设置 `CODEX_HOME`
+  - When: 解析默认配置根目录
+  - Then: 默认路径为 `~/.codex`（不使用 `~/.codex-cheng`）
 
 - Scenario: arg0 PATH helper lifecycle
   - Given: 启动时注入 `CODEX_HOME`
   - When: 子进程执行 `command -v apply_patch`（Linux 额外 `codex-linux-sandbox`）
   - Then: helper 可发现且位于 `CODEX_HOME/tmp/arg0` 语义路径
+  - Then: helper 初始化失败时输出 warning 但不阻断主命令执行
 
 - Scenario: legacy notify hook payload
   - Given: config 设置 `notify = ["<program>", ...]`
@@ -121,10 +134,12 @@
   - Given: 任一工具调用完成并写入 thread event
   - When: hook dispatcher 触发 `after_tool_use`
   - Then: payload 包含 `session_id/cwd/triggered_at/hook_event`，且 `hook_event.event_type=after_tool_use`
+  - Then: `triggered_at` 为 UTC RFC3339（秒精度）
 
 ## 门禁工具
 - `codex-cheng ship "<需求>"` (原生 Cheng 闭环入口)
 - `--no-closed-loop` 可跳过闭环
 - 设置 `CODEX_CHENG_ONLINE=1` 开启在线门禁
 - `tooling/closed_loop.sh` 仅作为遗留脚本
+- `tooling/closed_loop.sh --check hard-gate` 可单独执行 1:1 重写硬门限
 - `tooling/closed_loop.sh --check parity` 可单独执行双实现差分门禁

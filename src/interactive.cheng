@@ -86,7 +86,7 @@ fn renderChatTuiInteractive(execOpts: ExecOptions, threadId: str, cwd: str, stat
         start = len(lines) - maxLines
     var i: int32 = start
     while i < len(lines):
-        printUi(argAt(lines, i))
+        printUi(lines[i])
         i = i + 1
     printUi("")
     printUi(ansiDim("Commands: /help, /quit, /new, /resume, /last, /fork, /archive, /rollback N"))
@@ -95,7 +95,7 @@ fn renderChatTuiInteractive(execOpts: ExecOptions, threadId: str, cwd: str, stat
 fn threadInfoAtInteractive(infos: ThreadInfo[], idx: int32): ThreadInfo =
     if idx < 0 || idx >= len(infos):
         return ThreadInfo(id: "", preview: "", createdAt: 0, cwd: "")
-    return get[ThreadInfo](infos, idx)
+    return infos[idx]
 
 fn parseIntChoice(text: str): int32 =
     let trimmed = trimLine(text)
@@ -520,7 +520,7 @@ fn runInteractiveWithOpts(opts: ExecOptions, presetThreadId: str): int32 =
                     var combinedCtx: str[] = newSeq[str]()
                     var cidx: int32 = 0
                     while cidx < len(ctxItems):
-                        seqAdd(combinedCtx, argAt(ctxItems, cidx))
+                        seqAdd(combinedCtx, ctxItems[cidx])
                         cidx = cidx + 1
                     statusMsg = ""
                     let result = runExecTurn(execOpts, threadId, reviewPrompt, combinedCtx, "review")
@@ -546,7 +546,7 @@ fn runInteractiveWithOpts(opts: ExecOptions, presetThreadId: str): int32 =
             var combinedContext: str[] = newSeq[str]()
             var idx: int32 = 0
             while idx < len(contextItems):
-                seqAdd(combinedContext, argAt(contextItems, idx))
+                seqAdd(combinedContext, contextItems[idx])
                 idx = idx + 1
             var imgIdx: int32 = 0
             while imgIdx < len(execOpts.images):
@@ -580,7 +580,7 @@ fn runInteractiveWithOpts(opts: ExecOptions, presetThreadId: str): int32 =
             var combinedContext: str[] = newSeq[str]()
             var idx: int32 = 0
             while idx < len(contextItems):
-                seqAdd(combinedContext, argAt(contextItems, idx))
+                seqAdd(combinedContext, contextItems[idx])
                 idx = idx + 1
             var imgIdx: int32 = 0
             while imgIdx < len(execOpts.images):

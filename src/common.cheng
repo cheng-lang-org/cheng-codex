@@ -177,66 +177,50 @@ fn endsWithSuffix(s: str, suffix: str): bool =
     return true
 
 fn joinPartsBalanced(parts: str[]): str =
-    # Balanced join avoids O(n^2) growth when concatenating many pieces.
-    if len(parts) == 0:
+    # Keep this path monomorphize-friendly: use seq_string-specialized access.
+    let n: int32 = parts.len
+    if n <= 0:
         return ""
-    if len(parts) == 1:
-        let only: str = get[str](parts, 0)
-        if only == nil:
-            return ""
-        return "" + only
-    var work: str[] = newSeq[str]()
+    var out: str = ""
     var i: int32 = 0
-    while i < len(parts):
-        let part: str = get[str](parts, i)
-        if part == nil:
-            seqAdd(work, "")
-        else:
-            seqAdd(work, part)
+    while i < n:
+        let part: str = get_string(parts, i)
+        if part != nil:
+            out = out + part
         i = i + 1
-    while len(work) > 1:
-        var next: str[] = newSeq[str]()
-        var j: int32 = 0
-        while j < len(work):
-            if j + 1 < len(work):
-                var merged: str = get[str](work, j)
-                merged = merged + get[str](work, j + 1)
-                seqAdd(next, merged)
-                j = j + 2
-            else:
-                seqAdd(next, get[str](work, j))
-                j = j + 1
-        work = next
-    let out: str = get[str](work, 0)
-    if out == nil:
-        return ""
-    return "" + out
+    return out
 
 fn joinArgs(args: str[], start: int32): str =
-    var out = ""
+    var out: str = ""
+    let n: int32 = args.len
     var i: int32 = start
-    while i < len(args):
-        if len(out) == 0:
-            out = args[i]
-        else:
-            out = out + " " + args[i]
+    while i < n:
+        let part: str = get_string(args, i)
+        if part != nil:
+            if len(out) == 0:
+                out = part
+            else:
+                out = out + " " + part
         i = i + 1
     return out
 
 fn argAt(args: str[], idx: int32): str =
-    if idx < 0 || idx >= len(args):
+    let n: int32 = args.len
+    if idx < 0 || idx >= n:
         return ""
-    let value = get[str](args, idx)
+    let value: str = get_string(args, idx)
     if value == nil:
         return ""
-    return "" + value
+    return value
 
 fn argListContains(args: str[], start: int32, needle: str): bool =
     if len(needle) == 0:
         return false
+    let n: int32 = args.len
     var i: int32 = start
-    while i < len(args):
-        if argAt(args, i) == needle:
+    while i < n:
+        let value: str = get_string(args, i)
+        if value != nil && value == needle:
             return true
         i = i + 1
     return false

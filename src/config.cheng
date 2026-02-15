@@ -59,7 +59,7 @@ fn addConfigOverride(key: str, value: str) =
 fn findConfigOverrideIndex(key: str): int32 =
     var idx: int32 = 0
     while idx < len(configOverrideKeys):
-        if get(configOverrideKeys, idx) == key:
+        if configOverrideKeys[idx] == key:
             return idx
         idx = idx + 1
     return -1
@@ -68,7 +68,7 @@ fn setConfigOverrides(overrides: str[]) =
     clearConfigOverrides()
     var idx: int32 = 0
     while idx < len(overrides):
-        let raw = get(overrides, idx)
+        let raw = overrides[idx]
         let eq = findChar(raw, '=')
         if eq > 0:
             let keyText = trimLine(__cheng_slice_string(raw, 0, eq - 1, false))
@@ -84,8 +84,8 @@ fn configOverrideValue(key: str, outValue: var str): bool =
         return false
     var idx: int32 = len(configOverrideKeys) - 1
     while idx >= 0:
-        if get(configOverrideKeys, idx) == key:
-            outValue = get(configOverrideValues, idx)
+        if configOverrideKeys[idx] == key:
+            outValue = configOverrideValues[idx]
             return true
         idx = idx - 1
     return false
@@ -153,19 +153,7 @@ fn codexHomeDir(): str =
         return envHome
     let home = os.getEnv("HOME")
     if len(home) > 0:
-        let preferred = os.joinPath(home, ".codex-cheng")
-        let legacy = os.joinPath(home, ".codex")
-        let preferredCfg = os.joinPath(preferred, "config.toml")
-        let preferredAuth = os.joinPath(preferred, "auth.json")
-        let legacyCfg = os.joinPath(legacy, "config.toml")
-        let legacyAuth = os.joinPath(legacy, "auth.json")
-        # If the user has explicitly configured `.codex-cheng`, use it. Otherwise,
-        # prefer existing Codex state under `.codex` for 1:1 parity.
-        if os.fileExists(preferredCfg) || os.fileExists(preferredAuth):
-            return preferred
-        if os.fileExists(legacyCfg) || os.fileExists(legacyAuth) || os.dirExists(legacy):
-            return legacy
-        return preferred
+        return os.joinPath(home, ".codex")
     return os.joinPath(currentDirSafe(), ".codex")
 
 fn codexThreadsDir(): str =
@@ -215,7 +203,7 @@ fn readConfigValueRaw(key: str, outValue: var str): bool =
     let lines = splitLinesSimple(content)
     var idx: int32 = 0
     while idx < len(lines):
-        let line = trimLine(get(lines, idx))
+        let line = trimLine(lines[idx])
         if len(line) == 0 || line[0] == '#':
             idx = idx + 1
             continue
@@ -289,7 +277,7 @@ fn writeConfigValue(key: str, value: str): bool =
     let encoded = "\"" + escapeConfigValue(value) + "\""
     let newLine = key + " = " + encoded
     while idx < len(lines):
-        let rawLine = get(lines, idx)
+        let rawLine = lines[idx]
         let trimmed = trimLine(rawLine)
         if len(trimmed) == 0 || trimmed[0] == '#':
             out = out + rawLine + "\n"
@@ -338,7 +326,7 @@ fn clearConfigValue(key: str): bool =
     var out = ""
     var idx: int32 = 0
     while idx < len(lines):
-        let rawLine = get(lines, idx)
+        let rawLine = lines[idx]
         let trimmed = trimLine(rawLine)
         if len(trimmed) == 0 || trimmed[0] == '#':
             out = out + rawLine + "\n"
@@ -494,8 +482,8 @@ fn addUniqueString(items: var str[], value: str) =
     if len(value) == 0:
         return
     var idx: int32 = 0
-    while idx < len(items):
-        if get(items, idx) == value:
+    while idx < items.len:
+        if items[idx] == value:
             return
         idx = idx + 1
     seqAdd(items, value)
@@ -522,7 +510,7 @@ fn parseRequirementsToml(content: str, outApproval: var str[], outSandbox: var s
     let lines = splitLinesSimple(content)
     var idx: int32 = 0
     while idx < len(lines):
-        let line = stripInlineComment(get(lines, idx))
+        let line = stripInlineComment(lines[idx])
         if len(line) == 0:
             idx = idx + 1
             continue
@@ -537,18 +525,18 @@ fn parseRequirementsToml(content: str, outApproval: var str[], outSandbox: var s
         var valueText: str = ""
         if eq + 1 <= len(line) - 1:
             valueText = trimLine(__cheng_slice_string(line, eq + 1, len(line) - 1, false))
-        if keyText == "allowed_approval_policies" && len(outApproval) == 0:
+        if keyText == "allowed_approval_policies" && outApproval.len == 0:
             let items = parseTomlStringArray(valueText)
             var itemIdx: int32 = 0
             while itemIdx < len(items):
-                let normalized = normalizeApprovalPolicyValue(get(items, itemIdx))
+                let normalized = normalizeApprovalPolicyValue(items[itemIdx])
                 addUniqueString(outApproval, normalized)
                 itemIdx = itemIdx + 1
-        elif keyText == "allowed_sandbox_modes" && len(outSandbox) == 0:
+        elif keyText == "allowed_sandbox_modes" && outSandbox.len == 0:
             let items = parseTomlStringArray(valueText)
             var itemIdx: int32 = 0
             while itemIdx < len(items):
-                let normalized = normalizeSandboxModeValue(get(items, itemIdx))
+                let normalized = normalizeSandboxModeValue(items[itemIdx])
                 addUniqueString(outSandbox, normalized)
                 itemIdx = itemIdx + 1
         idx = idx + 1
@@ -557,7 +545,7 @@ fn parseLegacyManagedConfig(content: str, outApproval: var str[], outSandbox: va
     let lines = splitLinesSimple(content)
     var idx: int32 = 0
     while idx < len(lines):
-        let line = stripInlineComment(get(lines, idx))
+        let line = stripInlineComment(lines[idx])
         if len(line) == 0:
             idx = idx + 1
             continue
@@ -572,10 +560,10 @@ fn parseLegacyManagedConfig(content: str, outApproval: var str[], outSandbox: va
         var valueText: str = ""
         if eq + 1 <= len(line) - 1:
             valueText = trimLine(__cheng_slice_string(line, eq + 1, len(line) - 1, false))
-        if keyText == "approval_policy" && len(outApproval) == 0:
+        if keyText == "approval_policy" && outApproval.len == 0:
             let normalized = normalizeApprovalPolicyValue(parseTomlStringValue(valueText))
             addUniqueString(outApproval, normalized)
-        elif keyText == "sandbox_mode" && len(outSandbox) == 0:
+        elif keyText == "sandbox_mode" && outSandbox.len == 0:
             let normalized = normalizeSandboxModeValue(parseTomlStringValue(valueText))
             if len(normalized) > 0:
                 addUniqueString(outSandbox, "read-only")
@@ -592,8 +580,8 @@ fn readConfigRequirements(outApproval: var str[], outSandbox: var str[]): bool =
         if len(content) > 0:
             parseRequirementsToml(content, outApproval, outSandbox)
     let managedPath = managedConfigTomlPath()
-    if (len(outApproval) == 0 || len(outSandbox) == 0) && len(managedPath) > 0:
+    if (outApproval.len == 0 || outSandbox.len == 0) && len(managedPath) > 0:
         let content = os.readFile(managedPath)
         if len(content) > 0:
             parseLegacyManagedConfig(content, outApproval, outSandbox)
-    return len(outApproval) > 0 || len(outSandbox) > 0
+    return outApproval.len > 0 || outSandbox.len > 0

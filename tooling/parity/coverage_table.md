@@ -17,9 +17,9 @@ Source: `tooling/parity/parity_manifest.yaml`
 
 | Metric | Value |
 | --- | --- |
-| total_behaviors | 20 |
-| implemented | 20 |
-| scenarized | 20 |
+| total_behaviors | 22 |
+| implemented | 22 |
+| scenarized | 22 |
 | verification_status | pending_execution |
 
 Source: `tooling/parity/behavior_manifest.yaml`
@@ -28,7 +28,7 @@ Source: `tooling/parity/behavior_manifest.yaml`
 
 | Domain | Behavior Count | Status |
 | --- | --- | --- |
-| arg0 | 5 | implemented + scenarized |
+| arg0 | 7 | implemented + scenarized |
 | hooks | 2 | implemented + scenarized |
 | cli | 3 | implemented + scenarized |
 | exec-review | 1 | implemented + scenarized |

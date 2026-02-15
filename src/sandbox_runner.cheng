@@ -101,9 +101,6 @@ fn collectWritableRoots(cwd: str, extraRoots: str[]): WritableRoot[] =
         let codexPath = os.joinPath(root, ".codex")
         if os.dirExists(codexPath):
             seqAdd(readOnly, codexPath)
-        let codexChengPath = os.joinPath(root, ".codex-cheng")
-        if os.dirExists(codexChengPath):
-            seqAdd(readOnly, codexChengPath)
         seqAdd(result, WritableRoot(root: root, readOnlySubpaths: readOnly))
         i = i + 1
     return result
@@ -121,22 +118,7 @@ fn joinWithSpace(items: str[]): str =
     return out
 
 fn findExecutableInPath(name: str): str =
-    let pathEnv = os.getEnv("PATH")
-    if len(pathEnv) == 0:
-        return ""
-    var start: int32 = 0
-    var i: int32 = 0
-    while i <= len(pathEnv):
-        if i == len(pathEnv) || pathEnv[i] == ':':
-            var part: str = ""
-            if i > start:
-                part = __cheng_slice_string(pathEnv, start, i - 1, false)
-            if len(part) > 0:
-                let candidate = os.joinPath(part, name)
-                if os.fileExists(candidate):
-                    return candidate
-            start = i + 1
-        i = i + 1
+    name
     return ""
 
 fn findTimeoutExecutable(): str =

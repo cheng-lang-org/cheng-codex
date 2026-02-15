@@ -3,8 +3,12 @@
   "cases": [
     {
       "id": "arg0-subcommand-apply-patch-stdin",
-      "description": "root hidden apply_patch command should apply patch from stdin",
-      "args": ["apply_patch"],
+      "description": "cheng hidden root apply_patch should match baseline argv0 apply_patch behavior",
+      "requires_direct_bin": true,
+      "platforms": ["macos", "linux"],
+      "baseline_argv0": "apply_patch",
+      "baseline_args": [],
+      "cheng_args": ["apply_patch"],
       "cwd": "{{CASE_TMP}}",
       "stdin": "*** Begin Patch\n*** Add File: arg0-subcommand-apply-patch.txt\n+ok\n*** End Patch\n",
       "expect": {
@@ -15,14 +19,46 @@
     },
     {
       "id": "arg0-subcommand-applypatch-stdin",
-      "description": "root hidden applypatch command should apply patch from stdin",
-      "args": ["applypatch"],
+      "description": "cheng hidden root applypatch should match baseline argv0 applypatch behavior",
+      "requires_direct_bin": true,
+      "platforms": ["macos", "linux"],
+      "baseline_argv0": "applypatch",
+      "baseline_args": [],
+      "cheng_args": ["applypatch"],
       "cwd": "{{CASE_TMP}}",
       "stdin": "*** Begin Patch\n*** Add File: arg0-subcommand-applypatch.txt\n+ok\n*** End Patch\n",
       "expect": {
         "exit_code": 0,
         "baseline_paths_exist": ["{{CASE_TMP}}/arg0-subcommand-applypatch.txt"],
         "cheng_paths_exist": ["{{CASE_TMP}}/arg0-subcommand-applypatch.txt"]
+      }
+    },
+    {
+      "id": "arg0-subcommand-apply-patch-empty-stdin",
+      "description": "cheng hidden root apply_patch usage should match baseline argv0 apply_patch usage",
+      "requires_direct_bin": true,
+      "platforms": ["macos", "linux"],
+      "baseline_argv0": "apply_patch",
+      "baseline_args": [],
+      "cheng_args": ["apply_patch"],
+      "cwd": "{{CASE_TMP}}",
+      "expect": {
+        "exit_code": 2,
+        "stderr_contains": ["Usage: apply_patch 'PATCH'"]
+      }
+    },
+    {
+      "id": "arg0-subcommand-apply-patch-extra-args",
+      "description": "cheng hidden root apply_patch argc checks should match baseline argv0 argc checks",
+      "requires_direct_bin": true,
+      "platforms": ["macos", "linux"],
+      "baseline_argv0": "apply_patch",
+      "baseline_args": ["first", "second"],
+      "cheng_args": ["apply_patch", "first", "second"],
+      "cwd": "{{CASE_TMP}}",
+      "expect": {
+        "exit_code": 2,
+        "stderr_contains": ["Error: apply_patch accepts exactly one argument."]
       }
     },
     {
@@ -56,15 +92,24 @@
       }
     },
     {
+      "id": "arg0-argv0-apply-patch-empty-stdin",
+      "description": "argv0 apply_patch alias without stdin should show usage and exit 2",
+      "requires_direct_bin": true,
+      "platforms": ["macos", "linux"],
+      "argv0": "apply_patch",
+      "args": [],
+      "cwd": "{{CASE_TMP}}",
+      "expect": {
+        "exit_code": 2,
+        "stderr_contains": ["Usage: apply_patch 'PATCH'"]
+      }
+    },
+    {
       "id": "dotenv-loads-non-codex-and-filters-codex-prefix",
       "description": "dotenv should load HOME but must ignore CODEX_HOME override",
       "files": [
         {
           "path": "{{HOME}}/.codex/.env",
-          "content": "HOME={{CASE_TMP}}/dotenv-home\nCODEX_HOME={{CASE_TMP}}/blocked-codex-home\n"
-        },
-        {
-          "path": "{{HOME}}/.codex-cheng/.env",
           "content": "HOME={{CASE_TMP}}/dotenv-home\nCODEX_HOME={{CASE_TMP}}/blocked-codex-home\n"
         }
       ],
@@ -74,6 +119,20 @@
         "stdout_contains": ["dotenv-home"],
         "stdout_not_contains": ["blocked-codex-home"]
       }
+    },
+    {
+      "id": "codex-home-default-path-source",
+      "description": "default codex home path should align to ~/.codex",
+      "args": ["--help"],
+      "expect": {
+        "exit_code": 0
+      },
+      "source_checks": [
+        {
+          "path": "src/config.cheng",
+          "contains": "return os.joinPath(home, \".codex\")"
+        }
+      ]
     },
     {
       "id": "path-helper-linux-command-v",
@@ -104,6 +163,44 @@
         "baseline_paths_exist": ["{{CASE_TMP}}/codex-home/tmp/arg0"],
         "cheng_paths_exist": ["{{CASE_TMP}}/codex-home/tmp/arg0"]
       }
+    },
+    {
+      "id": "path-helper-warning-on-failure-source",
+      "description": "arg0 startup should warn and continue if PATH helper setup fails",
+      "args": ["--help"],
+      "expect": {
+        "exit_code": 0
+      },
+      "source_checks": [
+        {
+          "path": "src/main.cheng",
+          "contains": "if ! arg0PrependPathEntryForAliases():"
+        },
+        {
+          "path": "src/main.cheng",
+          "contains": "if len(envHome) > 0:"
+        },
+        {
+          "path": "src/main.cheng",
+          "contains": "if ! os.dirExists(home):"
+        },
+        {
+          "path": "src/main.cheng",
+          "contains": "WARNING: proceeding, even though we could not update PATH"
+        },
+        {
+          "path": "src/main.cheng",
+          "contains": "WARNING: proceeding, even though we could not update PATH: "
+        },
+        {
+          "path": "src/main.cheng",
+          "contains": "WARNING: failed to clean up stale arg0 temp dirs: "
+        },
+        {
+          "path": "src/main.cheng",
+          "contains": "let paths = os.walkDirRec(tempRoot)"
+        }
+      ]
     },
     {
       "id": "hooks-legacy-notify-wire-shape-source",
@@ -144,8 +241,38 @@
           "contains": "\"tool_input\""
         },
         {
+          "path": "src/hooks.cheng",
+          "contains": "jstrPair(\"triggered_at\", jstrString(hooksCurrentUtcRfc3339()))"
+        },
+        {
+          "path": "src/hooks.cheng",
+          "contains": "+%Y-%m-%dT%H:%M:%SZ"
+        },
+        {
           "path": "src/storage.cheng",
           "contains": "dispatchAfterToolUseInternal(threadId, turnId, callId"
+        }
+      ]
+    },
+    {
+      "id": "arg0-windows-helper-hidden-arg-source",
+      "description": "windows helper script should use hidden apply_patch arg1 compatibility flag",
+      "args": ["--help"],
+      "expect": {
+        "exit_code": 0
+      },
+      "source_checks": [
+        {
+          "path": "src/main.cheng",
+          "contains": "ARG0_APPLY_PATCH_ARG1 = \"--codex-run-as-apply-patch\""
+        },
+        {
+          "path": "src/main.cheng",
+          "contains": "if commandMode == ARG0_APPLY_PATCH || commandMode == ARG0_APPLYPATCH"
+        },
+        {
+          "path": "src/main.cheng",
+          "contains": "ARG0_APPLY_PATCH_ARG1 + \" %*\\r\\n\""
         }
       ]
     }

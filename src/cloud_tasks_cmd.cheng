@@ -742,7 +742,7 @@ fn jstrArrayLen(node: json.JsonNode): int32 =
 
 fn jstrArrayItem(node: json.JsonNode, idx: int32): json.JsonNode =
     if jsonIsArray(node) && idx >= 0 && idx < len(node.a):
-        return get[json.JsonNode](node.a, idx)
+        return node.a[idx]
     return json.newJNull()
 
 fn loadCloudAuthInfo(): ChatgptAuthInfo =
@@ -1242,7 +1242,7 @@ fn selectAttemptLocal(attempts: CloudAttemptDiff[], desired: int32): CloudAttemp
         out.err = msg
         return out
     out.ok = true
-    out.attempt = get[CloudAttemptDiff](attempts, idx)
+    out.attempt = attempts[idx]
     out.err = ""
     return out
 
@@ -1519,7 +1519,7 @@ fn renderCloudTaskList(tasks: CloudTaskSummary[]) =
     printErr("")
     var i: int32 = 0
     while i < len(tasks):
-        let task = get[CloudTaskSummary](tasks, i)
+        let task = tasks[i]
         # Build incrementally to avoid deep temporary chains.
         var label: str = "["
         label = label + statusLabel(task.status)
@@ -1555,7 +1555,7 @@ fn selectCloudTask(tasks: CloudTaskSummary[]): str =
         return ""
     let picked = cloudParseIntLocal(choice, -1)
     if picked > 0 && picked <= len(tasks):
-        let task = get[CloudTaskSummary](tasks, picked - 1)
+        let task = tasks[picked - 1]
         return task.id
     return parseTaskIdLocal(choice)
 
@@ -1612,7 +1612,7 @@ fn cloudPrettyTaskListJson(page: CloudTaskListPage, baseUrl: str): str =
         seqAdd(parts, "  \"tasks\": [\n")
         var i: int32 = 0
         while i < len(page.tasks):
-            let task = get[CloudTaskSummary](page.tasks, i)
+            let task = page.tasks[i]
             seqAdd(parts, "    {\n")
             let indent = "      "
             # id
@@ -1848,7 +1848,7 @@ fn runCloudListCommand(args: str[], start: int32): int32 =
         return 0
     var idx: int32 = 0
     while idx < len(page.tasks):
-        let task = get[CloudTaskSummary](page.tasks, idx)
+        let task = page.tasks[idx]
         printLine(cloudBrowserTaskUrl(baseUrl, task.id))
         cloudPrintTaskStatusLines(task, "  ")
         if idx + 1 < len(page.tasks):
@@ -2273,15 +2273,15 @@ fn cloudEditDistanceLocal(a: str, b: str): int32 =
         j = 0
         while j < len(s2):
             let cost = if s1[i] == s2[j]: 0 else: 1
-            let del = get[int32](prev, j + 1) + 1
-            let ins = get[int32](curr, j) + 1
-            let sub = get[int32](prev, j) + cost
+            let del = prev[j + 1] + 1
+            let ins = curr[j] + 1
+            let sub = prev[j] + cost
             let v = cloudMin3Local(del, ins, sub)
             seqAdd(curr, v)
             j = j + 1
         prev = curr
         i = i + 1
-    return get[int32](prev, len(s2))
+    return prev[len(s2)]
 
 fn cloudSuggestCloudSubcommandLocal(name: str): str =
     var candidates: str[] = newSeq[str]()

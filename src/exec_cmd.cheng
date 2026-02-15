@@ -951,7 +951,7 @@ fn minInt32Local(a: int32, b: int32): int32 =
 fn threadInfoAtLocal(infos: ThreadInfo[], idx: int32): ThreadInfo =
     if idx < 0 || idx >= len(infos):
         return ThreadInfo(id: "", preview: "", createdAt: 0, cwd: "")
-    return get[ThreadInfo](infos, idx)
+    return infos[idx]
 
 fn formatThreadAgeLocal(createdAt: int32): str =
     if createdAt <= 0:

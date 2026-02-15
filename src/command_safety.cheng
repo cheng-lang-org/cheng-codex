@@ -98,7 +98,7 @@ fn splitCommandTokens(text: str, outTokens: var str[], err: var str): bool =
         return false
     if len(current) > 0:
         seqAdd(outTokens, current)
-    if len(outTokens) == 0:
+    if outTokens.len == 0:
         err = "empty command"
         return false
     return true
@@ -204,11 +204,11 @@ fn parseWordOnlyCommandsSequence(script: str, outCommands: var str[][], err: var
         err = "unterminated quote"
         return false
     current = flushSegmentLocal(segments, current)
-    if len(segments) == 0:
+    if segments.len == 0:
         err = "empty script"
         return false
     var sidx: int32 = 0
-    while sidx < len(segments):
+    while sidx < segments.len:
         var tokens: str[]
         var splitErr = ""
         if ! splitCommandTokens(segments[sidx], tokens, splitErr):
@@ -216,11 +216,11 @@ fn parseWordOnlyCommandsSequence(script: str, outCommands: var str[][], err: var
             return false
         seqAdd(outCommands, tokens)
         sidx = sidx + 1
-    return len(outCommands) > 0
+    return outCommands.len > 0
 
 fn parseShellLcPlainCommands(commandTokens: str[]): str[][] =
     var empty: str[][] = newSeq[str[]]()
-    if len(commandTokens) < 3:
+    if commandTokens.len < 3:
         return empty
     let program = extractProgramName(commandTokens[0])
     if program != "bash" && program != "zsh" && program != "sh":
@@ -252,10 +252,10 @@ fn isValidSedNArg(arg: str): bool =
                 seqAdd(parts, __cheng_slice_string(core, start, i - 1, false))
             start = i + 1
         i = i + 1
-    if len(parts) == 0 || len(parts) > 2:
+    if parts.len == 0 || parts.len > 2:
         return false
     var pidx: int32 = 0
-    while pidx < len(parts):
+    while pidx < parts.len:
         let part = parts[pidx]
         if len(part) == 0:
             return false
@@ -269,7 +269,7 @@ fn isValidSedNArg(arg: str): bool =
     return true
 
 fn isSafeToCallWithExec(commandTokens: str[]): bool =
-    if len(commandTokens) == 0:
+    if commandTokens.len == 0:
         return false
     let cmd0 = extractProgramName(commandTokens[0])
     if len(cmd0) == 0:
@@ -280,7 +280,7 @@ fn isSafeToCallWithExec(commandTokens: str[]): bool =
         return true
     if cmd0 == "base64":
         var i: int32 = 1
-        while i < len(commandTokens):
+        while i < commandTokens.len:
             let arg = commandTokens[i]
             if arg == "-o" || arg == "--output" || hasPrefix(arg, "--output=") || (hasPrefix(arg, "-o") && arg != "-o"):
                 return false
@@ -288,7 +288,7 @@ fn isSafeToCallWithExec(commandTokens: str[]): bool =
         return true
     if cmd0 == "find":
         var i: int32 = 0
-        while i < len(commandTokens):
+        while i < commandTokens.len:
             let arg = commandTokens[i]
             if arg == "-exec" || arg == "-execdir" || arg == "-ok" || arg == "-okdir" || arg == "-delete" || arg == "-fls" || arg == "-fprint" || arg == "-fprint0" || arg == "-fprintf":
                 return false
@@ -296,7 +296,7 @@ fn isSafeToCallWithExec(commandTokens: str[]): bool =
         return true
     if cmd0 == "rg":
         var i: int32 = 0
-        while i < len(commandTokens):
+        while i < commandTokens.len:
             let arg = commandTokens[i]
             if arg == "--search-zip" || arg == "-z":
                 return false
@@ -305,24 +305,24 @@ fn isSafeToCallWithExec(commandTokens: str[]): bool =
             i = i + 1
         return true
     if cmd0 == "git":
-        if len(commandTokens) > 1:
+        if commandTokens.len > 1:
             let sub = commandTokens[1]
             return sub == "branch" || sub == "status" || sub == "log" || sub == "diff" || sub == "show"
         return false
     if cmd0 == "cargo":
-        return len(commandTokens) > 1 && commandTokens[1] == "check"
+        return commandTokens.len > 1 && commandTokens[1] == "check"
     if cmd0 == "sed":
-        if len(commandTokens) <= 4 && len(commandTokens) >= 3 && commandTokens[1] == "-n" && isValidSedNArg(commandTokens[2]):
+        if commandTokens.len <= 4 && commandTokens.len >= 3 && commandTokens[1] == "-n" && isValidSedNArg(commandTokens[2]):
             return true
         return false
     return false
 
 fn isKnownSafeCommand(commandTokens: str[]): bool =
-    if len(commandTokens) == 0:
+    if commandTokens.len == 0:
         return false
     var tokens: str[] = newSeq[str]()
     var i: int32 = 0
-    while i < len(commandTokens):
+    while i < commandTokens.len:
         let token = commandTokens[i]
         if i == 0 && token == "zsh":
             seqAdd(tokens, "bash")
@@ -332,11 +332,11 @@ fn isKnownSafeCommand(commandTokens: str[]): bool =
     if isSafeToCallWithExec(tokens):
         return true
     let scriptCommands = parseShellLcPlainCommands(tokens)
-    if len(scriptCommands) == 0:
+    if scriptCommands.len == 0:
         return false
     var allSafe = true
     i = 0
-    while i < len(scriptCommands):
+    while i < scriptCommands.len:
         if ! isSafeToCallWithExec(scriptCommands[i]):
             allSafe = false
             break
@@ -344,24 +344,24 @@ fn isKnownSafeCommand(commandTokens: str[]): bool =
     return allSafe
 
 fn isDangerousToCallWithExec(commandTokens: str[]): bool =
-    if len(commandTokens) == 0:
+    if commandTokens.len == 0:
         return false
     let cmd0 = extractProgramName(commandTokens[0])
     if cmd0 == "git":
-        if len(commandTokens) > 1:
+        if commandTokens.len > 1:
             let sub = commandTokens[1]
             return sub == "reset" || sub == "rm"
         return false
     if cmd0 == "rm":
-        if len(commandTokens) > 1:
+        if commandTokens.len > 1:
             let sub = commandTokens[1]
             return sub == "-f" || sub == "-rf"
         return false
     if cmd0 == "sudo":
-        if len(commandTokens) > 1:
+        if commandTokens.len > 1:
             var rest: str[] = newSeq[str]()
             var i: int32 = 1
-            while i < len(commandTokens):
+            while i < commandTokens.len:
                 seqAdd(rest, commandTokens[i])
                 i = i + 1
             return isDangerousToCallWithExec(rest)
@@ -369,13 +369,13 @@ fn isDangerousToCallWithExec(commandTokens: str[]): bool =
     return false
 
 fn commandMightBeDangerous(commandTokens: str[]): bool =
-    if len(commandTokens) == 0:
+    if commandTokens.len == 0:
         return true
     if isDangerousToCallWithExec(commandTokens):
         return true
     let scriptCommands = parseShellLcPlainCommands(commandTokens)
     var i: int32 = 0
-    while i < len(scriptCommands):
+    while i < scriptCommands.len:
         if isDangerousToCallWithExec(scriptCommands[i]):
             return true
         i = i + 1

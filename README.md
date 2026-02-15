@@ -37,11 +37,15 @@ You can also use the helper script:
 - MCP / MCP Server / debug paths are all implemented natively in Cheng.
 - Plan mode parity is landed: `<proposed_plan>` parsing, `item/plan/delta`, and `request_user_input` protocol surface are implemented.
 - `arg0` parity is tightened to codex-rs semantics: argv0 dispatch (`apply_patch` / `applypatch` / `codex-linux-sandbox`), dotenv filtering (`CODEX_*` blocked), and PATH helper aliases under `CODEX_HOME/tmp/arg0`.
+- `arg0` failure warnings now include path-setup error details and stale-helper janitor warnings (`failed to clean up stale arg0 temp dirs`).
 - `apply_patch` supports all three parity paths: argv0 aliases, hidden `--codex-run-as-apply-patch`, and hidden root command tokens (`apply_patch` / `applypatch`).
+- `apply_patch` standalone semantics are aligned to codex-rs shape: empty stdin prints usage and exits `2`, extra args are rejected, and Windows helper scripts use `--codex-run-as-apply-patch`.
 - Legacy `notify` hook parity is implemented (`notify=[...]` appends `agent-turn-complete` JSON payload).
 - Tool lifecycle hook channel is wired with `after_tool_use` internal payload shape and turn/call context propagation.
 - Parity manifest currently reports `61/61` workspace crates mapped as implemented.
 - Behavior manifest is added at `tooling/parity/behavior_manifest.yaml` to track behavior-level (not only crate-level) coverage.
 - Final dual-view coverage snapshot is available at `tooling/parity/coverage_table.md`.
+- Rewrite hard gate is enforced by `tooling/parity/check_hard_gate.py`.
+- Hard gate also enforces Cheng CLI entry constraints in `src/main.cheng`: `std/cmdline` arg collection only, no pointer-style `main(argc, argv: str*)` path.
 - Dual-run parity framework in `tooling/parity/` (manifest + scenario diff reports).
 - Closed-loop gate runner: `tooling/closed_loop.sh` (preflight/build/parity/execpolicy/completion/app-server/debug/mcp + optional online smoke).

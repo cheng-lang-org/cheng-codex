@@ -59,6 +59,7 @@ cells:
     depends_on:
       - global.contract
     done_checks:
+      - ./tooling/closed_loop.sh --check hard-gate
       - ./tooling/closed_loop.sh --check parity
     outputs:
       - crate parity manifest + behavior parity manifest available
@@ -79,6 +80,8 @@ cells:
       - ./tooling/closed_loop.sh --check parity
     outputs:
       - argv0/apply_patch/dotenv/PATH-helper semantics aligned
+      - main entry uses std/cmdline without pointer-style argv injection path
+      - apply_patch standalone usage/argc semantics aligned
       - hooks legacy notify + after_tool_use internal payload wired
 
   - id: arg0_hooks.tests

@@ -183,7 +183,7 @@ fn isSystemScope(scope: str): bool =
 fn hasStringItem(items: str[], value: str): bool =
     var idx: int32 = 0
     while idx < len(items):
-        if argAt(items, idx) == value:
+        if items[idx] == value:
             return true
         idx = idx + 1
     return false
@@ -191,7 +191,7 @@ fn hasStringItem(items: str[], value: str): bool =
 fn findStringIndex(items: str[], value: str): int32 =
     var idx: int32 = 0
     while idx < len(items):
-        if argAt(items, idx) == value:
+        if items[idx] == value:
             return idx
         idx = idx + 1
     return -1
@@ -419,7 +419,7 @@ fn parseSkillFrontmatter(content: str, outName: var str, outDescription: var str
     let searchKeys = seqStr4("name", "description", "short-description", "short_description")
     var keyIdx: int32 = 0
     while keyIdx < len(searchKeys):
-        let key = argAt(searchKeys, keyIdx)
+        let key = searchKeys[keyIdx]
         let pattern = "\n" + key + ":"
         var pos = indexOfSubstr(header, pattern, 0)
         if pos < 0 && hasPrefix(header, key + ":"):
@@ -519,7 +519,7 @@ fn discoverSkillsUnderPath(rootPath: str, scope: str, outOutcome: var SkillLoadO
     while idx < len(files):
         if loaded >= SKILLS_MAX_DIRS:
             break
-        let path = argAt(files, idx)
+        let path = files[idx]
         if idx < 3:
             traceSkillsLocal("discoverSkillsUnderPath.path=" + path)
         if len(path) > 0 && !isHiddenPath(path):
@@ -616,8 +616,8 @@ fn loadSkillsForCwd(cwd: str, forceReload: bool): SkillLoadOutcome =
     traceSkillsLocal("loadSkillsForCwd.after.roots count=" + intToStr(len(rootPaths)))
     var idx: int32 = 0
     while idx < len(rootPaths):
-        let rootPath = argAt(rootPaths, idx)
-        let rootScope = argAt(rootScopes, idx)
+        let rootPath = rootPaths[idx]
+        let rootScope = rootScopes[idx]
         discoverSkillsUnderPath(rootPath, rootScope, outcome)
         idx = idx + 1
     dedupeSkills(outcome)
@@ -705,7 +705,7 @@ fn discoverProjectDocPaths(cwd: str): str[] =
     let candidates = projectDocCandidates()
     var c: int32 = 0
     while c < len(candidates):
-        let name = argAt(candidates, c)
+        let name = candidates[c]
         if len(name) > 0:
             let candidate = os.joinPath(rootDir, name)
             if os.fileExists(candidate):
@@ -721,7 +721,7 @@ fn readProjectDocs(cwd: str): str =
     var parts: str[] = newSeq[str]()
     var idx: int32 = 0
     while idx < len(paths) && remaining > 0:
-        let path = argAt(paths, idx)
+        let path = paths[idx]
         if os.fileExists(path):
             let content = os.readFile(path)
             if len(content) > 0:

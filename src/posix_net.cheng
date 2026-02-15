@@ -262,18 +262,16 @@ fn createTcpListener(port: int32, outPort: int32*): int32 =
     return fd
 
 fn createTcpListenerWithPort(port: int32): TcpListenerInfo =
-    let portPtr = alloc(4)
-    store[int32](portPtr, 0)
-    let fd = createTcpListener(port, int32*(portPtr))
-    let bound = load[int32](portPtr)
-    dealloc(portPtr)
+    var bound: int32 = 0
+    let fd = createTcpListener(port, &bound)
     return TcpListenerInfo(fd: fd, port: bound)
 
 fn acceptClient(fd: int32): int32 =
     return c_accept(fd, nil, nil)
 
 fn connectUnixSocket(path: str): int32 =
-    path
+    if len(path) == 0:
+        return -1
     let fd = c_socket(AF_UNIX, SOCK_STREAM, 0)
     if fd < 0:
         return -1
@@ -301,19 +299,14 @@ fn forkProcess(): int32 =
 
 fn waitChild(pid: int32) =
     var status: int32 = 0
-    let statusPtr = alloc(4)
-    store[int32](statusPtr, status)
-    c_waitpid(pid, statusPtr, 0)
-    dealloc(statusPtr)
+    c_waitpid(pid, &status, 0)
 
 fn reapChildrenNoHang() =
     var status: int32 = 0
-    let statusPtr = alloc(4)
     while true:
-        let res = c_waitpid(-1, statusPtr, WNOHANG)
+        let res = c_waitpid(-1, &status, WNOHANG)
         if res <= 0:
             break
-    dealloc(statusPtr)
 
 fn currentPid(): int32 =
     return c_getpid()

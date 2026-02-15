@@ -11,6 +11,8 @@
 - 语义 1:1: 命令行为、参数冲突、退出码、协议字段、副作用一致；非关键排版差异可接受。
 - 差分验收: 离线门禁必须包含 codex-rs vs cheng-codex 双实现场景对比 (`tooling/parity/run_parity.py`)。
 - parity 覆盖契约: 同时维护 crate 级 `tooling/parity/parity_manifest.yaml` 与行为级 `tooling/parity/behavior_manifest.yaml`。
+- 硬门限契约: `tooling/parity/check_hard_gate.py` 必须通过，未通过时视为“1:1 重写未完成”。
+- 默认配置根目录对齐 codex-rs: 未设置 `CODEX_HOME` 时使用 `~/.codex`。
 
 ## arg0 / argv0 兼容
 - `argv0` 分发必须与 codex-rs 对齐:
@@ -21,6 +23,8 @@
 - 隐藏根命令 `apply_patch` / `applypatch` 可达，并与 argv0/隐藏参数共享同一 patch 语义与退出码约束。
 - 启动阶段加载 `.env` 时必须过滤所有 `CODEX_*` 键，避免注入覆盖运行时受保护环境。
 - 启动阶段必须将 `CODEX_HOME/tmp/arg0` helper 目录 prepend 到 `PATH`，并生成 `apply_patch`/`applypatch`（Linux 额外 `codex-linux-sandbox`）helper 入口。
+- 若 PATH helper 初始化失败，必须输出 warning 并继续主流程（不阻断启动），warning 保留 `...could not update PATH: <err>` 细节形态。
+- `src/main.cheng` 命令行入口必须走 `std/cmdline`，禁止 `main(argc, argv: str*)` 与 `__cheng_setCmdLine` 指针注入路径。
 
 ## hooks (legacy notify)
 - 配置 `notify = ["<program>", "<arg1>", ...]` 时，agent turn 完成后必须触发一次通知命令。
@@ -32,6 +36,7 @@
 - tool 生命周期内部事件 `after_tool_use` 必须记录并保持字段语义稳定:
   - 顶层字段: `session_id`、`cwd`、`triggered_at`、`hook_event`
   - `hook_event` 字段至少包含: `event_type`、`turn_id`、`call_id`、`tool_name`、`tool_kind`、`tool_input`、`executed`、`success`、`duration_ms`、`mutating`、`sandbox`、`sandbox_policy`、`output_preview`
+- `triggered_at` 必须使用 UTC RFC3339（秒精度，形如 `2025-01-01T00:00:00Z`）。
 
 ## exec
 `codex exec [OPTIONS] [PROMPT]`

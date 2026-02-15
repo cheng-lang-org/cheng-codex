@@ -7,6 +7,7 @@
 - 所有关键输出可机器验收 (JSON/文件落盘)，并可在 CI 里非交互运行。
 - Plan mode 优先落地: `<proposed_plan>` 语义、`item/plan/delta` 事件、`request_user_input` 协议与 app-server schema 同步。
 - parity 验收从“crate 映射”升级为“双清单”: crate 级 `parity_manifest` + 行为级 `behavior_manifest`。
+- 1:1 重写完成定义写入硬门限: `tooling/parity/check_hard_gate.py` 不通过则视为未完成。
 
 ## 非目标 (Non-goals)
 - IDE/插件市场/调试器等 UI 生态。
@@ -29,7 +30,7 @@
 - mcp / mcp-server
 
 ## 约束 (Constraints)
-- 兼容配置与凭据路径: ~/.codex-cheng 优先, 不存在时回退 ~/.codex。
+- 配置与凭据默认路径与 codex-rs 对齐: `~/.codex`。
 - prompt 读取规则、exit code、flag 冲突规则要与 codex-rs/cli 一致。
 - 不新增/修改与 CODEX_SANDBOX_* 环境变量相关的实现细节。
 - 对齐严格度为语义 1:1: 行为/副作用/错误类型/退出码一致，非关键空白与排版允许差异。
@@ -55,11 +56,12 @@
 2. Plan mode 协议面已落地: `protocol/` 已包含 `CollaborationMode/ModeKind/Settings`、`ToolRequestUserInput*`、`PlanDeltaNotification`、`TurnStartParams.collaborationMode`。
 3. Parity 场景已接入: `tooling/parity/scenarios/app_server.yaml` 已覆盖 Plan mode 协议产物检查。
 4. crate 映射已收口: `tooling/parity/parity_manifest.yaml` 当前为 `implemented=61, missing=0`。
-5. 行为清单已收口: `tooling/parity/behavior_manifest.yaml` 当前为 `implemented=20, scenarized=20, verification_status=pending_execution`。
-6. arg0/apply_patch 兼容已落地: `src/main.cheng` 支持 argv0 分发 (`apply_patch` / `applypatch` / `codex-linux-sandbox`)、隐藏参数 `--codex-run-as-apply-patch`、隐藏根命令 `apply_patch` / `applypatch`。
+5. 行为清单已收口: `tooling/parity/behavior_manifest.yaml` 当前为 `implemented=22, scenarized=22, verification_status=pending_execution`。
+6. arg0/apply_patch 兼容已落地: `src/main.cheng` 支持 argv0 分发 (`apply_patch` / `applypatch` / `codex-linux-sandbox`)、隐藏参数 `--codex-run-as-apply-patch`、隐藏根命令 `apply_patch` / `applypatch`，并对齐 standalone usage/argc 语义。
 7. arg0 启动语义已落地: 启动阶段加载 `.env` 且过滤 `CODEX_*` 注入，创建 `CODEX_HOME/tmp/arg0` PATH helper 并进行 janitor 清理。
-8. hooks 收口已落地: legacy notify (`agent-turn-complete`) 与 tool 生命周期 `after_tool_use` 内部事件都已接通 turn/call 上下文。
-9. 本轮边界锁定为“代码重写 + parity 场景补齐”，编译/测试门禁留待下一轮执行验证。
+8. Cheng 入口约束已落地: `src/main.cheng` 使用 `std/cmdline` 收集参数，移除 `main(argc, argv: str*)` / `__cheng_setCmdLine` 指针路径，并将 PATH helper 失败 warning 扩展为带错误详情。
+9. hooks 收口已落地: legacy notify (`agent-turn-complete`) 与 tool 生命周期 `after_tool_use` 内部事件都已接通 turn/call 上下文。
+10. 本轮边界锁定为“代码重写 + parity 场景补齐”，编译/测试门禁留待下一轮执行验证。
 
 ## 发布 / 回滚
 - 发布前必须通过离线 closed-loop 全部门禁 (含 parity)。

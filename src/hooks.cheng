@@ -18,6 +18,39 @@ import cheng/codex/config
 
 var hooksInternalEvents: str[] = newSeq[str]()
 
+fn hooksCurrentUtcRfc3339(): str =
+    let secs = times.toUnix(times.now())
+    let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
+    if detectOsKind() == "windows":
+        var cmd = "powershell -NoProfile -Command "
+        cmd = cmd + shellQuote("[DateTimeOffset]::FromUnixTimeSeconds(" + int64ToStr(secs) + ").UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')")
+        let res = os.execCmdEx(cmd, opts, os.getCurrentDir())
+        if int32(res.exitCode) == 0:
+            let text = trimLine(res.output)
+            if len(text) > 0:
+                return text
+        return int64ToStr(secs)
+    let fmt = "+%Y-%m-%dT%H:%M:%SZ"
+    var cmd1 = "date -u -r "
+    cmd1 = cmd1 + int64ToStr(secs)
+    cmd1 = cmd1 + " "
+    cmd1 = cmd1 + shellQuote(fmt)
+    let res1 = os.execCmdEx(cmd1, opts, os.getCurrentDir())
+    if int32(res1.exitCode) == 0:
+        let text = trimLine(res1.output)
+        if len(text) > 0:
+            return text
+    var cmd2 = "date -u -d @"
+    cmd2 = cmd2 + int64ToStr(secs)
+    cmd2 = cmd2 + " "
+    cmd2 = cmd2 + shellQuote(fmt)
+    let res2 = os.execCmdEx(cmd2, opts, os.getCurrentDir())
+    if int32(res2.exitCode) == 0:
+        let text = trimLine(res2.output)
+        if len(text) > 0:
+            return text
+    return int64ToStr(secs)
+
 fn hooksNotifyArgv(): str[] =
     var out: str[] = newSeq[str]()
     let raw = readConfigValue("notify")
@@ -212,7 +245,7 @@ fn dispatchAfterToolUseInternal(
     let payloadFields = seqStr4(
         jstrPair("session_id", jstrString(sessionId)),
         jstrPair("cwd", jstrString(payloadCwd)),
-        jstrPair("triggered_at", jstrString(int64ToStr(times.toUnix(times.now())))),
+        jstrPair("triggered_at", jstrString(hooksCurrentUtcRfc3339())),
         jstrPair("hook_event", jstrObject(eventFields))
     )
     hooksRecordInternalEvent(jstrObject(payloadFields))

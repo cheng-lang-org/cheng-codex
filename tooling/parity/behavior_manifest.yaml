@@ -5,9 +5,9 @@
     "commit": "ebe359b8"
   },
   "summary": {
-    "total_behaviors": 20,
-    "implemented": 20,
-    "scenarized": 20,
+    "total_behaviors": 22,
+    "implemented": 22,
+    "scenarized": 22,
     "verification_status": "pending_execution"
   },
   "behaviors": [
@@ -39,13 +39,26 @@
       "notes": "root parser accepts hidden apply_patch/applypatch command tokens"
     },
     {
+      "id": "arg0-apply-patch-standalone-usage",
+      "domain": "arg0",
+      "status": "implemented",
+      "cheng_modules": ["src/main.cheng"],
+      "source_refs": ["codex-rs/apply-patch/src/standalone_executable.rs"],
+      "scenario_refs": [
+        "tooling/parity/scenarios/arg0_hooks.yaml::arg0-subcommand-apply-patch-empty-stdin",
+        "tooling/parity/scenarios/arg0_hooks.yaml::arg0-subcommand-apply-patch-extra-args",
+        "tooling/parity/scenarios/arg0_hooks.yaml::arg0-argv0-apply-patch-empty-stdin"
+      ],
+      "notes": "standalone apply_patch usage/argc semantics align with codex-rs"
+    },
+    {
       "id": "arg0-dotenv-filter",
       "domain": "arg0",
       "status": "implemented",
       "cheng_modules": ["src/main.cheng"],
       "source_refs": ["codex-rs/arg0/src/lib.rs"],
-      "scenario_refs": ["tooling/parity/scenarios/arg0_hooks.yaml::dotenv-loads-non-codex-and-filters-codex-prefix"],
-      "notes": "loads ~/.codex/.env and filters CODEX_* keys"
+      "scenario_refs": ["tooling/parity/scenarios/arg0_hooks.yaml::dotenv-loads-non-codex-and-filters-codex-prefix", "tooling/parity/scenarios/arg0_hooks.yaml::codex-home-default-path-source"],
+      "notes": "loads ~/.codex/.env, defaults home path to ~/.codex, and filters CODEX_* keys"
     },
     {
       "id": "arg0-path-helper-lifecycle",
@@ -53,8 +66,17 @@
       "status": "implemented",
       "cheng_modules": ["src/main.cheng"],
       "source_refs": ["codex-rs/arg0/src/lib.rs"],
-      "scenario_refs": ["tooling/parity/scenarios/arg0_hooks.yaml::path-helper-linux-command-v", "tooling/parity/scenarios/arg0_hooks.yaml::path-helper-macos-command-v"],
-      "notes": "prepends CODEX_HOME/tmp/arg0 helper entry and janitor cleanup"
+      "scenario_refs": ["tooling/parity/scenarios/arg0_hooks.yaml::path-helper-linux-command-v", "tooling/parity/scenarios/arg0_hooks.yaml::path-helper-macos-command-v", "tooling/parity/scenarios/arg0_hooks.yaml::path-helper-warning-on-failure-source"],
+      "notes": "prepends CODEX_HOME/tmp/arg0 helper entry, janitor cleanup (walkDirRec direct-child scan), and warning-on-failure semantics including error detail"
+    },
+    {
+      "id": "arg0-windows-helper-hidden-arg",
+      "domain": "arg0",
+      "status": "implemented",
+      "cheng_modules": ["src/main.cheng"],
+      "source_refs": ["codex-rs/arg0/src/lib.rs"],
+      "scenario_refs": ["tooling/parity/scenarios/arg0_hooks.yaml::arg0-windows-helper-hidden-arg-source"],
+      "notes": "windows helper script uses --codex-run-as-apply-patch compatibility flag"
     },
     {
       "id": "hooks-after-agent-legacy-notify",
@@ -72,7 +94,7 @@
       "cheng_modules": ["src/hooks.cheng", "src/storage.cheng", "src/exec_cmd.cheng", "src/app_server.cheng"],
       "source_refs": ["codex-rs/hooks/src/types.rs", "codex-rs/core/src/tools/registry.rs"],
       "scenario_refs": ["tooling/parity/scenarios/arg0_hooks.yaml::hooks-after-tool-use-wire-shape-source"],
-      "notes": "after_tool_use payload shape + trigger points at tool-event persistence"
+      "notes": "after_tool_use payload shape + trigger points at tool-event persistence, with RFC3339 triggered_at"
     },
     {
       "id": "cli-root-help-and-version",

@@ -24,6 +24,7 @@ Usage: tooling/closed_loop.sh [--check <name>]
 Checks:
   preflight     Verify SPEC/CONTRACT/ACCEPTANCE/TASK_MATRIX exist
   build         Build codex-cheng binary
+  hard-gate     Enforce rewrite hard gate from parity manifests + scenarios
   parity        Generate parity manifest and run codex-rs vs cheng parity scenarios
   tui           Run TUI interactive smoke check (offline)
   execpolicy    Run execpolicy smoke check (offline)
@@ -222,10 +223,27 @@ PY
   )
   (
     cd "$codex_dir" && \
+    python3 tooling/parity/check_hard_gate.py \
+      --cheng-root "$codex_dir"
+  )
+  (
+    cd "$codex_dir" && \
     python3 tooling/parity/run_parity.py \
       --codex-rs-dir "$rs_dir" \
       --cheng-root "$codex_dir" \
       --cheng-bin "$bin"
+  )
+}
+
+check_hard_gate() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 not found" 1>&2
+    return 2
+  fi
+  (
+    cd "$codex_dir" && \
+    python3 tooling/parity/check_hard_gate.py \
+      --cheng-root "$codex_dir"
   )
 }
 
@@ -376,6 +394,7 @@ run_selected() {
   case "$1" in
     preflight) run_step "preflight" check_preflight ;;
     build) run_step "build" check_build ;;
+    hard-gate) run_step "hard-gate" check_hard_gate ;;
     parity) run_step "parity" check_parity ;;
     tui) run_step "tui" check_tui_surface ;;
     execpolicy) run_step "execpolicy" check_execpolicy ;;
@@ -400,6 +419,7 @@ if [ -n "$check_only" ]; then
 else
   run_selected preflight
   run_selected build
+  run_selected hard-gate
   run_selected parity
   run_selected tui
   run_selected execpolicy

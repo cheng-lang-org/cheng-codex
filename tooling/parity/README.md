@@ -23,6 +23,9 @@ python3 tooling/parity/generate_manifest.py \
   --codex-rs-dir /path/to/codex-rs \
   --cheng-root .
 
+python3 tooling/parity/check_hard_gate.py \
+  --cheng-root .
+
 python3 tooling/parity/run_parity.py \
   --codex-rs-dir /path/to/codex-rs \
   --cheng-root . \
@@ -33,11 +36,13 @@ Outputs:
 
 - `tooling/parity/parity_manifest.yaml`
 - `tooling/parity/behavior_manifest.yaml`
+- `build/parity/hard_gate_report.json`
+- `build/parity/hard_gate_report.txt`
 - `build/parity/report.json`
 - `build/parity/report.txt`
 
 Current baseline snapshot (codex-rs `main@ebe359b8`): manifest summary is `61/61 implemented`.
-Behavior snapshot: `behavior_manifest.yaml` is `implemented=20`, `scenarized=20`, `verification_status=pending_execution`.
+Behavior snapshot: `behavior_manifest.yaml` is `implemented=22`, `scenarized=22`, `verification_status=pending_execution`.
 
 ## Environment overrides
 

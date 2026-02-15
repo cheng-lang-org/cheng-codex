@@ -61,7 +61,14 @@ fn patchCurrentExeName(): str =
     let raw = trimLine($ cmdline.paramStr(0))
     if len(raw) == 0:
         return ""
-    return normalizePolicy(os.extractFilename(raw))
+    var exe = normalizePolicy(os.extractFilename(raw))
+    if len(exe) > 4 && endsWithSuffix(exe, ".exe"):
+        exe = __cheng_slice_string(exe, 0, len(exe) - 5, false)
+    if len(exe) > 4 && endsWithSuffix(exe, ".bat"):
+        exe = __cheng_slice_string(exe, 0, len(exe) - 5, false)
+    if len(exe) > 4 && endsWithSuffix(exe, ".cmd"):
+        exe = __cheng_slice_string(exe, 0, len(exe) - 5, false)
+    return exe
 
 fn patchRunningAsApplyPatchAlias(): bool =
     let exe = patchCurrentExeName()

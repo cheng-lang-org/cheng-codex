@@ -58,14 +58,8 @@ fn authLogPath(): str =
             return os.joinPath(envHome, "login.log")
         let home = os.getEnv("HOME")
         if len(home) > 0:
-            let preferred = os.joinPath(home, ".codex-cheng")
-            let legacy = os.joinPath(home, ".codex")
-            if os.dirExists(preferred) || os.fileExists(os.joinPath(preferred, "config.toml")):
-                return os.joinPath(preferred, "login.log")
-            if os.dirExists(legacy) || os.fileExists(os.joinPath(legacy, "config.toml")):
-                return os.joinPath(legacy, "login.log")
-            return os.joinPath(preferred, "login.log")
-        return os.joinPath(os.getCurrentDir(), ".codex-cheng/login.log")
+            return os.joinPath(os.joinPath(home, ".codex"), "login.log")
+        return os.joinPath(os.getCurrentDir(), ".codex/login.log")
     return path
 
 fn authLogSanitize(text: str): str =
@@ -392,7 +386,7 @@ fn jwtPayload(token: str): json.JsonNode =
     let parts = splitByCharLocal(token, '.')
     if len(parts) < 2:
         return json.newJNull()
-    let payloadPart = get[str](parts, 1)
+    let payloadPart = parts[1]
     if payloadPart == nil || len(payloadPart) == 0:
         return json.newJNull()
     let payload = decodeBase64Url(payloadPart)
@@ -802,7 +796,7 @@ fn loadAuthJson(tokens: var AuthTokens, apiKey: var str): bool =
     let paths = authJsonCandidatePaths()
     var i: int32 = 0
     while i < len(paths):
-        let path = get[str](paths, i)
+        let path = paths[i]
         if path != nil && readAuthJsonTokens(path, tokens, apiKey):
             return true
         i = i + 1
@@ -854,7 +848,7 @@ fn readAuthJsonMode(mode: var str): bool =
     let paths = authJsonCandidatePaths()
     var i: int32 = 0
     while i < len(paths):
-        let path = get[str](paths, i)
+        let path = paths[i]
         if path == nil || len(path) == 0 || ! os.fileExists(path):
             i = i + 1
             continue

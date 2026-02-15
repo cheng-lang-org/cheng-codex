@@ -35,6 +35,7 @@ CODEX_CHENG_ONLINE=1 ./build/codex-cheng ship "你的需求"
 ```bash
 ./tooling/closed_loop.sh --check preflight
 ./tooling/closed_loop.sh --check build
+./tooling/closed_loop.sh --check hard-gate
 ./tooling/closed_loop.sh --check parity
 ./tooling/closed_loop.sh --check execpolicy
 ./tooling/closed_loop.sh --check completion
@@ -45,11 +46,13 @@ CODEX_CHENG_ONLINE=1 ./build/codex-cheng ship "你的需求"
 - `tooling/parity/parity_manifest.yaml`: codex-rs crate 到 cheng 模块映射与完成度。
 - `tooling/parity/behavior_manifest.yaml`: 行为级覆盖（arg0/hooks/plan-mode/...）与场景绑定状态。
 - `tooling/parity/coverage_table.md`: crate + behavior 双视角最终覆盖表。
+- `build/parity/hard_gate_report.{json,txt}`: 1:1 重写硬门限结果。
 - `build/parity/report.{json,txt}`: 双实现差分执行结果与失败归因。
+- 硬门限包含 `src/main.cheng` 的 Cheng 入口约束: 使用 `std/cmdline` 参数路径，禁止 `main(argc, argv: str*)` / `__cheng_setCmdLine` 指针入口。
 - `tooling/parity/scenarios/app_server.yaml`: 包含 Plan mode 协议面检查 (`collaborationMode`, `item/plan/delta`, `ToolRequestUserInput*`)。
 - `tooling/parity/scenarios/arg0_hooks.yaml`: 覆盖 argv0 dispatch、dotenv 过滤、PATH helper、hooks payload 关键语义。
 - 当前 crate 映射结果: `total_crates=61`, `implemented=61`, `missing=0`。
-- 当前行为映射结果: `implemented=20`, `scenarized=20`, `verification_status=pending_execution`。
+- 当前行为映射结果: `implemented=22`, `scenarized=22`, `verification_status=pending_execution`。
 
 ## 关联规范
 

@@ -31,11 +31,20 @@ if [ "${CODEX_BUILD_VERBOSE:-1}" != "0" ]; then
 fi
 export CHENG_BACKEND_LINKER="${CHENG_BACKEND_LINKER:-self}"
 export CHENG_BACKEND_FRONTEND="${CHENG_BACKEND_FRONTEND:-mvp}"
+if [ "$CHENG_BACKEND_FRONTEND" = "stage1" ] && [ "${CODEX_BUILD_ALLOW_STAGE1:-0}" != "1" ]; then
+  if [ "${CODEX_BUILD_VERBOSE:-1}" != "0" ]; then
+    echo "[cheng-codex] warn: frontend=stage1 is slow/unstable for this workspace; fallback to mvp"
+    echo "[cheng-codex] tip: set CODEX_BUILD_ALLOW_STAGE1=1 if you need strict stage1."
+  fi
+  export CHENG_BACKEND_FRONTEND="mvp"
+fi
 if [ "${CODEX_BUILD_FAST:-0}" = "1" ]; then
   export CFLAGS="${CFLAGS:--O0}"
 fi
 TRACE_INTERVAL="${CODEX_BUILD_TRACE_INTERVAL:-5}"
 TRACE_HEARTBEAT="${CODEX_BUILD_TRACE_HEARTBEAT:-60}"
+STAGE1_TIMEOUT="${CODEX_BUILD_STAGE1_TIMEOUT:-360}"
+STAGE1_FALLBACK_TO_MVP="${CODEX_BUILD_STAGE1_FALLBACK_TO_MVP:-0}"
 
 file_size_bytes() {
   local path="$1"
@@ -165,6 +174,11 @@ if [ -z "${CHENG_BACKEND_DRIVER:-}" ]; then
     "$CHENG_ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2"
     "$CHENG_ROOT/bin/cheng-stage0"
   )
+  shopt -s nullglob
+  for cand in "$CHENG_ROOT"/chengcache/backend_seed*/cheng; do
+    driver_candidates+=("$cand")
+  done
+  shopt -u nullglob
   for cand in "${driver_candidates[@]}"; do
     if probe_backend_driver "$cand"; then
       export CHENG_BACKEND_DRIVER="$cand"
@@ -186,8 +200,57 @@ spawn_chengc() {
   "$CHENGC_SCRIPT" "$SRC" --name:"$NAME"
 }
 
+run_with_timeout() {
+  local seconds="$1"
+  shift
+  perl -e '
+    use POSIX qw(setsid WNOHANG);
+    my $timeout = shift;
+    my $pid = fork();
+    if (!defined $pid) { exit 127; }
+    if ($pid == 0) {
+      setsid();
+      exec @ARGV;
+      exit 127;
+    }
+    my $end = time + $timeout;
+    while (1) {
+      my $res = waitpid($pid, WNOHANG);
+      if ($res == $pid) {
+        my $status = $?;
+        if (($status & 127) != 0) {
+          exit(128 + ($status & 127));
+        }
+        exit($status >> 8);
+      }
+      if (time >= $end) {
+        kill "TERM", -$pid;
+        kill "TERM", $pid;
+        my $grace_end = time + 1;
+        while (time < $grace_end) {
+          my $r = waitpid($pid, WNOHANG);
+          if ($r == $pid) {
+            my $status = $?;
+            if (($status & 127) != 0) {
+              exit(128 + ($status & 127));
+            }
+            exit($status >> 8);
+          }
+          select(undef, undef, undef, 0.1);
+        }
+        kill "KILL", -$pid;
+        kill "KILL", $pid;
+        exit 124;
+      }
+      select(undef, undef, undef, 0.1);
+    }
+  ' "$seconds" "$@"
+}
+
 run_chengc() {
   if [ "${CODEX_BUILD_TRACE:-0}" = "1" ]; then
+    local timeout_flag="$CHENG_ROOT/chengcache/.codex_stage1_timeout.$$.$RANDOM.flag"
+    rm -f "$timeout_flag"
     "$CHENGC_SCRIPT" "$SRC" --name:"$NAME" &
     CHENGC_PID=$!
     {
@@ -206,6 +269,13 @@ run_chengc() {
           stage="backend obj done"
         fi
         now_ts="$(date +%s)"
+        elapsed="$((now_ts - start_ts))"
+        if [ "$CHENG_BACKEND_FRONTEND" = "stage1" ] && [ "$stage" = "frontend running" ] && [ "$STAGE1_TIMEOUT" -gt 0 ] 2>/dev/null && [ "$elapsed" -ge "$STAGE1_TIMEOUT" ]; then
+          echo "[cheng-codex] warn: stage1 frontend exceeded ${STAGE1_TIMEOUT}s; terminating for fallback"
+          : > "$timeout_flag"
+          kill "$CHENGC_PID" 2>/dev/null || true
+          break
+        fi
         if [ "$stage" != "$last_stage" ] || [ "$((now_ts - last_log_ts))" -ge "$TRACE_HEARTBEAT" ]; then
           stamp_path="$CHENG_ROOT/${NAME}.o.stamp"
           stamp_size="$(file_size_bytes "$stamp_path")"
@@ -214,7 +284,6 @@ run_chengc() {
           if [ -d "$objs_dir" ]; then
             objs_count="$(find "$objs_dir" -type f -name '*.o' 2>/dev/null | wc -l | tr -d ' ')"
           fi
-          elapsed="$((now_ts - start_ts))"
           echo "[cheng-codex] build stage: $stage (t+${elapsed}s, stamp=${stamp_size}B, objs=${objs_count})"
           last_stage="$stage"
           last_log_ts="$now_ts"
@@ -223,11 +292,19 @@ run_chengc() {
       done
     } &
     TRACE_PID=$!
-    wait "$CHENGC_PID"
-    CHENGC_STATUS=$?
+    CHENGC_STATUS=0
+    wait "$CHENGC_PID" || CHENGC_STATUS=$?
+    if [ -f "$timeout_flag" ]; then
+      CHENGC_STATUS=124
+      rm -f "$timeout_flag"
+    fi
     kill "$TRACE_PID" 2>/dev/null || true
     wait "$TRACE_PID" 2>/dev/null || true
     return "$CHENGC_STATUS"
+  fi
+  if [ "$CHENG_BACKEND_FRONTEND" = "stage1" ] && [ "$STAGE1_TIMEOUT" -gt 0 ] 2>/dev/null; then
+    run_with_timeout "$STAGE1_TIMEOUT" "$CHENGC_SCRIPT" "$SRC" --name:"$NAME"
+    return $?
   fi
   spawn_chengc
 }
@@ -271,7 +348,24 @@ SRC="$WORKSPACE_SRC/main.cheng"
 
 cd "$CHENG_ROOT"
 reset_build_outputs
+set +e
 run_chengc
+build_status=$?
+set -e
+if [ "$build_status" -ne 0 ]; then
+  if [ "$build_status" -eq 124 ] && [ "$CHENG_BACKEND_FRONTEND" = "stage1" ] && [ "$STAGE1_FALLBACK_TO_MVP" != "0" ]; then
+    echo "[cheng-codex] warn: stage1 timed out after ${STAGE1_TIMEOUT}s; retrying with frontend=mvp"
+    export CHENG_BACKEND_FRONTEND="mvp"
+    reset_build_outputs
+    run_chengc
+  else
+    if [ "$build_status" -eq 124 ] && [ "$CHENG_BACKEND_FRONTEND" = "stage1" ]; then
+      echo "[cheng-codex] error: stage1 timed out after ${STAGE1_TIMEOUT}s"
+      echo "[cheng-codex] hint: increase CODEX_BUILD_STAGE1_TIMEOUT or set CODEX_BUILD_STAGE1_FALLBACK_TO_MVP=1"
+    fi
+    exit "$build_status"
+  fi
+fi
 
 BUILT_BIN=""
 if [ -f "$CHENG_ROOT/$NAME" ]; then
@@ -288,6 +382,12 @@ if [ -n "$BUILT_BIN" ] && [ -f "$BUILT_BIN" ]; then
   # macOS can SIGKILL newly-built adhoc binaries unless explicitly re-signed.
   if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
     codesign --force --sign - "$OUT_DIR/$OUT_NAME" >/dev/null 2>&1 || true
+  fi
+  if ! "$OUT_DIR/$OUT_NAME" --version >/dev/null 2>&1; then
+    echo "[cheng-codex] built binary is not runnable: $OUT_DIR/$OUT_NAME" 1>&2
+    echo "[cheng-codex] hint: rebuild a healthy backend driver/toolchain before closed-loop" 1>&2
+    "$OUT_DIR/$OUT_NAME" --version >/dev/null
+    exit 1
   fi
   echo "[cheng-codex] built: $OUT_DIR/$OUT_NAME"
 fi
