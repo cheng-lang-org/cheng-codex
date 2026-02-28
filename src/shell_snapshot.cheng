@@ -16,43 +16,38 @@ fn isValidEnvKey(key: str): bool =
     let first = key[0]
     if ! ((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first == '_'):
         return false
-    var i: int32 = 1
-    while i < len(key):
+    for i in 1..<len(key):
         let ch = key[i]
         if ! ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_'):
             return false
-        i = i + 1
     return true
 
 fn splitLinesSnapshot(text: str): str[] =
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     if text == nil:
         return out
     var start: int32 = 0
-    var i: int32 = 0
-    while i < len(text):
+    for i in 0..<len(text):
         if text[i] == '\n':
             var endIdx: int32 = i - 1
             if endIdx >= start && text[endIdx] == '\r':
                 endIdx = endIdx - 1
             if endIdx >= start:
-                seqAdd(out, __cheng_slice_string(text, start, endIdx, false))
+                add(out, __cheng_slice_string(text, start, endIdx, false))
             else:
-                seqAdd(out, "")
+                add(out, "")
             start = i + 1
-        i = i + 1
     if start <= len(text) - 1:
-        seqAdd(out, __cheng_slice_string(text, start, len(text) - 1, false))
+        add(out, __cheng_slice_string(text, start, len(text) - 1, false))
     elif start == len(text):
-        seqAdd(out, "")
+        add(out, "")
     return out
 
 fn buildSnapshotScript(envText: str): str =
     var lines: str[] = splitLinesSnapshot(envText)
-    var exportsParts: str[] = newSeq[str]()
+    var exportsParts: str[] = []
     var exportsCount: int32 = 0
-    var idx: int32 = 0
-    while idx < len(lines):
+    for idx in 0..<len(lines):
         let line: str = lines[idx]
         let eq: int32 = indexOfSubstr(line, "=", 0)
         if eq > 0:
@@ -61,13 +56,12 @@ fn buildSnapshotScript(envText: str): str =
             if eq + 1 <= len(line) - 1:
                 value = __cheng_slice_string(line, eq + 1, len(line) - 1, false)
             if isValidEnvKey(key):
-                seqAdd(exportsParts, "export ")
-                seqAdd(exportsParts, key)
-                seqAdd(exportsParts, "=")
-                seqAdd(exportsParts, shellQuote(value))
-                seqAdd(exportsParts, "\n")
+                add(exportsParts, "export ")
+                add(exportsParts, key)
+                add(exportsParts, "=")
+                add(exportsParts, shellQuote(value))
+                add(exportsParts, "\n")
                 exportsCount = exportsCount + 1
-        idx = idx + 1
     let exportsBody: str = joinPartsBalanced(exportsParts)
     # Build incrementally to avoid deep temporary chains.
     var header: str = "# Snapshot file\n# exports "

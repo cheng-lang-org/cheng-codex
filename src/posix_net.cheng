@@ -152,10 +152,8 @@ fn makeSockaddrIn(port: int32): SockAddrBuf =
     let p = alloc(size)
     # Avoid zeroMem here: some builds show memory corruption around zeroMem/copyMem
     # in small FFI buffers, leading to crashes later during process teardown.
-    var z: int32 = 0
-    while z < size:
+    for z in 0..<size:
         writeByte(p, z, uint8(0))
-        z = z + 1
     if isDarwin():
         writeByte(p, 0, uint8(size))
         writeByte(p, 1, uint8(AF_INET))
@@ -169,10 +167,8 @@ fn makeSockaddrIn(port: int32): SockAddrBuf =
 fn makeSockaddrInAny(port: int32): SockAddrBuf =
     let size: int32 = 16
     let p = alloc(size)
-    var z: int32 = 0
-    while z < size:
+    for z in 0..<size:
         writeByte(p, z, uint8(0))
-        z = z + 1
     if isDarwin():
         writeByte(p, 0, uint8(size))
         writeByte(p, 1, uint8(AF_INET))
@@ -197,19 +193,15 @@ fn makeSockaddrUn(path: str): SockAddrBuf =
         pathLen = maxPath - 1
     let size: int32 = 2 + pathLen + 1
     let p = alloc(size)
-    var z: int32 = 0
-    while z < size:
+    for z in 0..<size:
         writeByte(p, z, uint8(0))
-        z = z + 1
     if isDarwin():
         writeByte(p, 0, uint8(size))
         writeByte(p, 1, uint8(AF_UNIX))
     else:
         storeUInt16(p, 0, uint16(AF_UNIX))
-    var j: int32 = 0
-    while j < pathLen:
+    for j in 0..<pathLen:
         writeByte(p, 2 + j, uint8(int32(pathOwned[j])))
-        j = j + 1
     SockAddrBuf(data: p, len: size)
 
 fn closeFd(fd: int32) =

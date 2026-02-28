@@ -97,20 +97,19 @@ fn printResponsesApiProxyHelpLong(): int32 =
 fn parseInt32Simple(text: str, defaultValue: int32): int32 =
     if len(text) == 0:
         return defaultValue
-    var i: int32 = 0
+    var start: int32 = 0
     var sign = 1
     if text[0] == '-':
         sign = -1
-        i = i + 1
+        start = start + 1
     var value: int32 = 0
     var saw = false
-    while i < len(text):
+    for i in start..<len(text):
         let ch = text[i]
         if ch < '0' || ch > '9':
             break
         value = value * 10 + (ord(ch) - ord('0'))
         saw = true
-        i = i + 1
     if ! saw:
         return defaultValue
     return value * sign
@@ -135,27 +134,28 @@ fn nextTempPath(prefix: str, suffix: str): str =
 
 fn parseResponsesProxyArgs(args: str[], start: int32): ResponsesProxyArgs =
     var opts = defaultResponsesProxyArgs()
-    var i: int32 = start
-    while i < len(args):
+    var skipUntil: int32 = start - 1
+    for i in start..<len(args):
+        if i <= skipUntil:
+            continue
         let arg = args[i]
         if arg == "--port" && i + 1 < len(args):
             opts.port = parseInt32Simple(args[i + 1], 0)
-            i = i + 1
+            skipUntil = i + 1
         elif hasPrefix(arg, "--port:"):
             opts.port = parseInt32Simple(dropPrefix(arg, "--port:"), 0)
         elif arg == "--server-info" && i + 1 < len(args):
             opts.serverInfo = args[i + 1]
-            i = i + 1
+            skipUntil = i + 1
         elif hasPrefix(arg, "--server-info:"):
             opts.serverInfo = dropPrefix(arg, "--server-info:")
         elif arg == "--http-shutdown":
             opts.httpShutdown = true
         elif arg == "--upstream-url" && i + 1 < len(args):
             opts.upstreamUrl = args[i + 1]
-            i = i + 1
+            skipUntil = i + 1
         elif hasPrefix(arg, "--upstream-url:"):
             opts.upstreamUrl = dropPrefix(arg, "--upstream-url:")
-        i = i + 1
     return opts
 
 fn readAuthHeaderFromStdin(): str =
@@ -170,33 +170,30 @@ fn readAuthHeaderFromStdin(): str =
     return "Bearer " + token
 
 fn splitLinesRaw(text: str): str[] =
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     if text == nil:
         return out
     var start: int32 = 0
-    var i: int32 = 0
-    while i < len(text):
+    for i in 0..<len(text):
         if text[i] == '\n':
             var endIdx: int32 = i - 1
             if endIdx >= start && text[endIdx] == '\r':
                 endIdx = endIdx - 1
             if endIdx >= start:
-                seqAdd(out, __cheng_slice_string(text, start, endIdx, false))
+                add(out, __cheng_slice_string(text, start, endIdx, false))
             else:
-                seqAdd(out, "")
+                add(out, "")
             start = i + 1
-        i = i + 1
     if start <= len(text) - 1:
-        seqAdd(out, __cheng_slice_string(text, start, len(text) - 1, false))
+        add(out, __cheng_slice_string(text, start, len(text) - 1, false))
     elif start == len(text):
-        seqAdd(out, "")
+        add(out, "")
     return out
 
 fn parseHeaderValue(headersText: str, key: str): str =
     let keyLower = normalizePolicy(key)
     let lines = splitLinesRaw(headersText)
-    var i: int32 = 0
-    while i < len(lines):
+    for i in 0..<len(lines):
         let line = lines[i]
         let colon = indexOfSubstr(line, ":", 0)
         if colon > 0:
@@ -204,7 +201,6 @@ fn parseHeaderValue(headersText: str, key: str): str =
             if k == keyLower:
                 let value = trimLine(__cheng_slice_string(line, colon + 1, len(line) - 1, false))
                 return value
-        i = i + 1
     return ""
 
 fn parseStatusCode(headersText: str): int32 =
@@ -226,22 +222,20 @@ fn shouldForwardHeader(key: str): bool =
     return true
 
 fn buildForwardHeaderArgs(headers: HttpHeaders): str =
-    var parts: str[] = newSeq[str]()
-    var i: int32 = 0
-    while i < len(headers.items):
+    var parts: str[] = []
+    for i in 0..<len(headers.items):
         let item = headers.items[i]
         if shouldForwardHeader(item.key):
-            seqAdd(parts, " -H ")
+            add(parts, " -H ")
             var headerLine: str = item.key
             headerLine = headerLine + ": "
             headerLine = headerLine + item.value
-            seqAdd(parts, shellQuote(headerLine))
-        i = i + 1
+            add(parts, shellQuote(headerLine))
     return joinPartsBalanced(parts)
 
 fn readHttpRequest(fd: int32, maxHeader: int32, maxBody: int32): str =
     # Avoid repeated `raw = raw + chunk` growth (quadratic for long payloads).
-    var parts: str[] = newSeq[str]()
+    var parts: str[] = []
     var totalLen: int32 = 0
     var headerEnd: int32 = -1
     var contentLen: int32 = -1
@@ -250,7 +244,7 @@ fn readHttpRequest(fd: int32, maxHeader: int32, maxBody: int32): str =
         let chunk: str = readChunk(fd, 4096)
         if len(chunk) == 0:
             break
-        seqAdd(parts, chunk)
+        add(parts, chunk)
         totalLen = totalLen + len(chunk)
         if headerEnd < 0:
             let priorTailLen: int32 = len(tail)
@@ -264,8 +258,8 @@ fn readHttpRequest(fd: int32, maxHeader: int32, maxBody: int32): str =
                 headerEnd = (totalLen - len(chunk) - priorTailLen) + idx
                 # Compact so we can slice/parse headers without re-joining every chunk.
                 let joined: str = joinPartsBalanced(parts)
-                parts = newSeq[str]()
-                seqAdd(parts, joined)
+                parts = []
+                add(parts, joined)
                 totalLen = len(joined)
                 tail = ""
                 var head: str = ""
@@ -398,22 +392,22 @@ fn runResponsesApiProxyLocal(args: str[], start: int32): int32 =
     # Ensure `--help/-h` doesn't touch networking or stdin (prevents crashes/hangs).
     var sawLongHelp = false
     var sawShortHelp = false
-    var i: int32 = start
-    while i < len(args):
+    for i in start..<len(args):
         let tok = args[i]
         if tok == "--help":
             sawLongHelp = true
         elif tok == "-h":
             sawShortHelp = true
-        i = i + 1
     if sawLongHelp:
         return printResponsesApiProxyHelpLong()
     if sawShortHelp:
         return printResponsesApiProxyHelpShort()
 
     var opts = defaultResponsesProxyArgs()
-    i = start
-    while i < len(args):
+    var skipUntil: int32 = start - 1
+    for i in start..<len(args):
+        if i <= skipUntil:
+            continue
         let arg = args[i]
         if arg == "--":
             if i + 1 < len(args):
@@ -423,35 +417,31 @@ fn runResponsesApiProxyLocal(args: str[], start: int32): int32 =
             if i + 1 >= len(args):
                 return responsesProxyMissingValue("--port <PORT>")
             opts.port = parseInt32Simple(args[i + 1], 0)
-            i = i + 2
+            skipUntil = i + 1
             continue
         if hasPrefix(arg, "--port:"):
             opts.port = parseInt32Simple(dropPrefix(arg, "--port:"), 0)
-            i = i + 1
             continue
         if arg == "--server-info":
             if i + 1 >= len(args):
                 return responsesProxyMissingValue("--server-info <FILE>")
             opts.serverInfo = args[i + 1]
-            i = i + 2
+            skipUntil = i + 1
             continue
         if hasPrefix(arg, "--server-info:"):
             opts.serverInfo = dropPrefix(arg, "--server-info:")
-            i = i + 1
             continue
         if arg == "--http-shutdown":
             opts.httpShutdown = true
-            i = i + 1
             continue
         if arg == "--upstream-url":
             if i + 1 >= len(args):
                 return responsesProxyMissingValue("--upstream-url <UPSTREAM_URL>")
             opts.upstreamUrl = args[i + 1]
-            i = i + 2
+            skipUntil = i + 1
             continue
         if hasPrefix(arg, "--upstream-url:"):
             opts.upstreamUrl = dropPrefix(arg, "--upstream-url:")
-            i = i + 1
             continue
         return responsesProxyUnexpectedArgWithUsage(arg)
 

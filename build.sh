@@ -9,42 +9,42 @@ if [ ! -f "$SRC" ]; then
   SRC="$ROOT/cheng-codex/src/main.cheng"
   OUT_DIR="$ROOT/cheng-codex/build"
 fi
-if [ -z "${CHENG_ROOT:-}" ]; then
+if [ -z "${ROOT:-}" ]; then
   if [ -d "$ROOT/../cheng-lang" ]; then
-    CHENG_ROOT="$ROOT/../cheng-lang"
+    ROOT="$ROOT/../cheng-lang"
   elif [ -d "$ROOT/../../cheng-lang" ]; then
-    CHENG_ROOT="$ROOT/../../cheng-lang"
+    ROOT="$ROOT/../../cheng-lang"
   elif [ -d "${HOME}/cheng-lang" ]; then
-    CHENG_ROOT="${HOME}/cheng-lang"
+    ROOT="${HOME}/cheng-lang"
   else
-    CHENG_ROOT="$ROOT/../cheng-lang"
+    ROOT="$ROOT/../cheng-lang"
   fi
 fi
-CHENG_ROOT="$(cd "$CHENG_ROOT" && pwd)"
+ROOT="$(cd "$ROOT" && pwd)"
 NAME="cheng-codex-bin"
 OUT_NAME="cheng-codex"
-WORKSPACE_ROOT="$CHENG_ROOT/chengcache/workspace"
+WORKSPACE_ROOT="$ROOT/chengcache/workspace"
 mkdir -p "$WORKSPACE_ROOT"
 
 if [ "${CODEX_BUILD_VERBOSE:-1}" != "0" ]; then
   echo "[cheng-codex] build: stage1 -> backend driver (obj/exe) -> link (this can take a few minutes)"
 fi
-export CHENG_BACKEND_LINKER="${CHENG_BACKEND_LINKER:-self}"
-export CHENG_BACKEND_FRONTEND="${CHENG_BACKEND_FRONTEND:-mvp}"
-if [ "$CHENG_BACKEND_FRONTEND" = "stage1" ] && [ "${CODEX_BUILD_ALLOW_STAGE1:-0}" != "1" ]; then
+export BACKEND_LINKER="${BACKEND_LINKER:-self}"
+export BACKEND_FRONTEND="${BACKEND_FRONTEND:-stage1}"
+if [ "$BACKEND_FRONTEND" != "stage1" ]; then
   if [ "${CODEX_BUILD_VERBOSE:-1}" != "0" ]; then
-    echo "[cheng-codex] warn: frontend=stage1 is slow/unstable for this workspace; fallback to mvp"
-    echo "[cheng-codex] tip: set CODEX_BUILD_ALLOW_STAGE1=1 if you need strict stage1."
+    echo "[cheng-codex] warn: forcing frontend=stage1 (legacy frontend=$BACKEND_FRONTEND is unsupported)"
   fi
-  export CHENG_BACKEND_FRONTEND="mvp"
+  export BACKEND_FRONTEND="stage1"
 fi
+export GENERIC_MODE="${GENERIC_MODE:-dict}"
+export GENERIC_SPEC_BUDGET="${GENERIC_SPEC_BUDGET:-0}"
 if [ "${CODEX_BUILD_FAST:-0}" = "1" ]; then
   export CFLAGS="${CFLAGS:--O0}"
 fi
 TRACE_INTERVAL="${CODEX_BUILD_TRACE_INTERVAL:-5}"
 TRACE_HEARTBEAT="${CODEX_BUILD_TRACE_HEARTBEAT:-60}"
-STAGE1_TIMEOUT="${CODEX_BUILD_STAGE1_TIMEOUT:-360}"
-STAGE1_FALLBACK_TO_MVP="${CODEX_BUILD_STAGE1_FALLBACK_TO_MVP:-0}"
+STAGE1_TIMEOUT="${CODEX_BUILD_STAGE1_TIMEOUT:-60}"
 
 file_size_bytes() {
   local path="$1"
@@ -77,13 +77,13 @@ append_pkg_root() {
   if [ -z "$root" ] || [ ! -d "$root" ]; then
     return
   fi
-  case ",${CHENG_PKG_ROOTS:-}," in
+  case ",${PKG_ROOTS:-}," in
     *,"$root",*) return ;;
   esac
-  if [ -z "${CHENG_PKG_ROOTS:-}" ]; then
-    CHENG_PKG_ROOTS="$root"
+  if [ -z "${PKG_ROOTS:-}" ]; then
+    PKG_ROOTS="$root"
   else
-    CHENG_PKG_ROOTS="$CHENG_PKG_ROOTS,$root"
+    PKG_ROOTS="$PKG_ROOTS,$root"
   fi
 }
 
@@ -92,23 +92,26 @@ probe_backend_driver() {
   if [ -z "$driver" ] || [ ! -x "$driver" ]; then
     return 1
   fi
-  local probe_target="${CHENG_BACKEND_TARGET:-}"
-  if [ -z "$probe_target" ] && [ -x "$CHENG_ROOT/src/tooling/detect_host_target.sh" ]; then
-    probe_target="$(sh "$CHENG_ROOT/src/tooling/detect_host_target.sh" 2>/dev/null || true)"
+  local probe_target="${BACKEND_TARGET:-}"
+  if [ -z "$probe_target" ] && [ -x "$ROOT/src/tooling/detect_host_target.sh" ]; then
+    probe_target="$(sh "$ROOT/src/tooling/detect_host_target.sh" 2>/dev/null || true)"
   fi
   if [ -z "$probe_target" ]; then
     probe_target="arm64-apple-darwin"
   fi
-  local probe_obj="$CHENG_ROOT/chengcache/.codex_driver_probe.$$.$RANDOM.o"
+  local probe_obj="$ROOT/chengcache/.codex_driver_probe.$$.$RANDOM.o"
   rm -f "$probe_obj"
   env \
-    CHENG_BACKEND_ALLOW_NO_MAIN=1 \
-    CHENG_BACKEND_WHOLE_PROGRAM=1 \
-    CHENG_BACKEND_TARGET="$probe_target" \
-    CHENG_BACKEND_EMIT=obj \
-    CHENG_BACKEND_FRONTEND=mvp \
-    CHENG_BACKEND_INPUT="$CHENG_ROOT/src/std/system_helpers_backend.cheng" \
-    CHENG_BACKEND_OUTPUT="$probe_obj" \
+    BACKEND_ALLOW_NO_MAIN=1 \
+    BACKEND_WHOLE_PROGRAM=1 \
+    GENERIC_MODE=dict \
+    GENERIC_SPEC_BUDGET=0 \
+    STAGE1_SKIP_OWNERSHIP=1 \
+    BACKEND_TARGET="$probe_target" \
+    BACKEND_EMIT=obj \
+    BACKEND_FRONTEND=stage1 \
+    BACKEND_INPUT="$ROOT/src/std/system_helpers_backend.cheng" \
+    BACKEND_OUTPUT="$probe_obj" \
     "$driver" >/dev/null 2>&1
   local code=$?
   if [ $code -ne 0 ] || [ ! -s "$probe_obj" ]; then
@@ -146,51 +149,66 @@ if [ -d "$ROOT/../cheng-libp2p" ]; then
   fi
   append_pkg_root "$LIBP2P_WORK"
 fi
-export CHENG_PKG_ROOTS="${CHENG_PKG_ROOTS:-}"
+export PKG_ROOTS="${PKG_ROOTS:-}"
 
 CHENGC_SCRIPT=""
-if [ -x "$CHENG_ROOT/cheng/tooling/chengc.sh" ]; then
-  CHENGC_SCRIPT="$CHENG_ROOT/cheng/tooling/chengc.sh"
-elif [ -x "$CHENG_ROOT/src/tooling/chengc.sh" ]; then
-  CHENGC_SCRIPT="$CHENG_ROOT/src/tooling/chengc.sh"
+if [ -x "$ROOT/cheng/tooling/chengc.sh" ]; then
+  CHENGC_SCRIPT="$ROOT/cheng/tooling/chengc.sh"
+elif [ -x "$ROOT/src/tooling/chengc.sh" ]; then
+  CHENGC_SCRIPT="$ROOT/src/tooling/chengc.sh"
 fi
 
 if [ -z "$CHENGC_SCRIPT" ]; then
-  echo "[cheng-codex] missing cheng toolchain at: $CHENG_ROOT" 1>&2
+  echo "[cheng-codex] missing cheng toolchain at: $ROOT" 1>&2
   echo "[cheng-codex] expected chengc at: cheng/tooling/chengc.sh or src/tooling/chengc.sh" 1>&2
   exit 1
 fi
 
 # Prefer a verified backend driver. This avoids silently falling back to
 # stage0 lexer binaries that cannot compile the workspace.
-if [ -z "${CHENG_BACKEND_DRIVER:-}" ]; then
+if [ -z "${BACKEND_DRIVER:-}" ]; then
+  if [ -x "$ROOT/src/tooling/backend_driver_path.sh" ]; then
+    set +e
+    selected_driver="$(env \
+      BACKEND_DRIVER_PATH_STAGE1_SMOKE=1 \
+      BACKEND_DRIVER_PATH_STAGE1_DICT_SMOKE=1 \
+      sh "$ROOT/src/tooling/backend_driver_path.sh" 2>/dev/null)"
+    selected_status=$?
+    set -e
+    if [ $selected_status -eq 0 ] && probe_backend_driver "$selected_driver"; then
+      export BACKEND_DRIVER="$selected_driver"
+    fi
+  fi
+fi
+if [ -z "${BACKEND_DRIVER:-}" ]; then
   driver_candidates=(
-    "$CHENG_ROOT/driver_regr2"
-    "$CHENG_ROOT/driver_local_patch2"
-    "$CHENG_ROOT/driver_local_patch"
-    "$CHENG_ROOT/driver_local"
-    "$CHENG_ROOT/build/driver_probe3"
-    "$CHENG_ROOT/cheng"
-    "$CHENG_ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2"
-    "$CHENG_ROOT/bin/cheng-stage0"
+    "$ROOT/driver_regr2"
+    "$ROOT/driver_local_patch2"
+    "$ROOT/driver_local_patch"
+    "$ROOT/driver_local"
+    "$ROOT/build/driver_probe3"
+    "$ROOT/cheng"
+    "$ROOT/artifacts/backend_selfhost_self_obj/cheng.stage2"
+    "$ROOT/bin/cheng-stage0"
   )
   shopt -s nullglob
-  for cand in "$CHENG_ROOT"/chengcache/backend_seed*/cheng; do
+  for cand in "$ROOT"/chengcache/backend_seed*/cheng; do
     driver_candidates+=("$cand")
   done
   shopt -u nullglob
   for cand in "${driver_candidates[@]}"; do
     if probe_backend_driver "$cand"; then
-      export CHENG_BACKEND_DRIVER="$cand"
+      export BACKEND_DRIVER="$cand"
       break
     fi
   done
 fi
-if [ -z "${CHENG_BACKEND_DRIVER:-}" ]; then
-  echo "[cheng-codex] no usable backend driver found under $CHENG_ROOT" 1>&2
+if [ -z "${BACKEND_DRIVER:-}" ]; then
+  echo "[cheng-codex] no usable backend driver found under $ROOT" 1>&2
   echo "[cheng-codex] hint: rebuild driver and ensure it can compile src/std/system_helpers_backend.cheng" 1>&2
   exit 1
 fi
+
 if [ ! -f "$SRC" ]; then
   echo "[cheng-codex] source not found: $SRC" 1>&2
   exit 1
@@ -249,7 +267,7 @@ run_with_timeout() {
 
 run_chengc() {
   if [ "${CODEX_BUILD_TRACE:-0}" = "1" ]; then
-    local timeout_flag="$CHENG_ROOT/chengcache/.codex_stage1_timeout.$$.$RANDOM.flag"
+    local timeout_flag="$ROOT/chengcache/.codex_stage1_timeout.$$.$RANDOM.flag"
     rm -f "$timeout_flag"
     "$CHENGC_SCRIPT" "$SRC" --name:"$NAME" &
     CHENGC_PID=$!
@@ -259,27 +277,27 @@ run_chengc() {
       last_log_ts="$start_ts"
       while kill -0 "$CHENGC_PID" 2>/dev/null; do
         stage="frontend running"
-        if [ -f "$CHENG_ROOT/$NAME" ]; then
+        if [ -f "$ROOT/$NAME" ]; then
           stage="link done"
-        elif [ -f "$CHENG_ROOT/${NAME}.o.stamp" ]; then
+        elif [ -f "$ROOT/${NAME}.o.stamp" ]; then
           stage="backend obj done"
-        elif [ -d "$CHENG_ROOT/${NAME}.objs" ]; then
+        elif [ -d "$ROOT/${NAME}.objs" ]; then
           stage="backend obj compiling"
-        elif [ -f "$CHENG_ROOT/chengcache/${NAME}.o" ]; then
+        elif [ -f "$ROOT/chengcache/${NAME}.o" ]; then
           stage="backend obj done"
         fi
         now_ts="$(date +%s)"
         elapsed="$((now_ts - start_ts))"
-        if [ "$CHENG_BACKEND_FRONTEND" = "stage1" ] && [ "$stage" = "frontend running" ] && [ "$STAGE1_TIMEOUT" -gt 0 ] 2>/dev/null && [ "$elapsed" -ge "$STAGE1_TIMEOUT" ]; then
+        if [ "$BACKEND_FRONTEND" = "stage1" ] && [ "$stage" = "frontend running" ] && [ "$STAGE1_TIMEOUT" -gt 0 ] 2>/dev/null && [ "$elapsed" -ge "$STAGE1_TIMEOUT" ]; then
           echo "[cheng-codex] warn: stage1 frontend exceeded ${STAGE1_TIMEOUT}s; terminating for fallback"
           : > "$timeout_flag"
           kill "$CHENGC_PID" 2>/dev/null || true
           break
         fi
         if [ "$stage" != "$last_stage" ] || [ "$((now_ts - last_log_ts))" -ge "$TRACE_HEARTBEAT" ]; then
-          stamp_path="$CHENG_ROOT/${NAME}.o.stamp"
+          stamp_path="$ROOT/${NAME}.o.stamp"
           stamp_size="$(file_size_bytes "$stamp_path")"
-          objs_dir="$CHENG_ROOT/${NAME}.objs"
+          objs_dir="$ROOT/${NAME}.objs"
           objs_count="0"
           if [ -d "$objs_dir" ]; then
             objs_count="$(find "$objs_dir" -type f -name '*.o' 2>/dev/null | wc -l | tr -d ' ')"
@@ -302,7 +320,7 @@ run_chengc() {
     wait "$TRACE_PID" 2>/dev/null || true
     return "$CHENGC_STATUS"
   fi
-  if [ "$CHENG_BACKEND_FRONTEND" = "stage1" ] && [ "$STAGE1_TIMEOUT" -gt 0 ] 2>/dev/null; then
+  if [ "$BACKEND_FRONTEND" = "stage1" ] && [ "$STAGE1_TIMEOUT" -gt 0 ] 2>/dev/null; then
     run_with_timeout "$STAGE1_TIMEOUT" "$CHENGC_SCRIPT" "$SRC" --name:"$NAME"
     return $?
   fi
@@ -311,15 +329,22 @@ run_chengc() {
 
 reset_build_outputs() {
   rm -f \
-    "$CHENG_ROOT/$NAME" \
-    "$CHENG_ROOT/${NAME}.o" \
-    "$CHENG_ROOT/${NAME}.o.stamp" \
-    "$CHENG_ROOT/chengcache/${NAME}.o"
-  rm -rf "$CHENG_ROOT/${NAME}.objs"
+    "$ROOT/$NAME" \
+    "$ROOT/${NAME}.o" \
+    "$ROOT/${NAME}.o.stamp" \
+    "$ROOT/chengcache/${NAME}.o"
+  rm -rf "$ROOT/${NAME}.objs"
+  rm -f \
+    "$ROOT/artifacts/chengc/$NAME" \
+    "$ROOT/artifacts/chengc/${NAME}.o" \
+    "$ROOT/artifacts/chengc/${NAME}.o.stamp"
+  rm -rf \
+    "$ROOT/artifacts/chengc/${NAME}.objs" \
+    "$ROOT/artifacts/chengc/${NAME}.objs.lock"
 }
 
 # Stage1 import resolution requires sources to live under the compiler repo root.
-# Mirror src/ into a workspace directory under $CHENG_ROOT.
+# Mirror src/ into a workspace directory under $ROOT.
 WORKSPACE_DIR="$WORKSPACE_ROOT/cheng-codex"
 WORKSPACE_SRC="$WORKSPACE_DIR/src"
 WORKSPACE_PKG_SRC="$WORKSPACE_DIR/cheng/codex"
@@ -346,32 +371,25 @@ fi
 append_pkg_root "$WORKSPACE_DIR"
 SRC="$WORKSPACE_SRC/main.cheng"
 
-cd "$CHENG_ROOT"
+cd "$ROOT"
 reset_build_outputs
 set +e
 run_chengc
 build_status=$?
 set -e
 if [ "$build_status" -ne 0 ]; then
-  if [ "$build_status" -eq 124 ] && [ "$CHENG_BACKEND_FRONTEND" = "stage1" ] && [ "$STAGE1_FALLBACK_TO_MVP" != "0" ]; then
-    echo "[cheng-codex] warn: stage1 timed out after ${STAGE1_TIMEOUT}s; retrying with frontend=mvp"
-    export CHENG_BACKEND_FRONTEND="mvp"
-    reset_build_outputs
-    run_chengc
-  else
-    if [ "$build_status" -eq 124 ] && [ "$CHENG_BACKEND_FRONTEND" = "stage1" ]; then
-      echo "[cheng-codex] error: stage1 timed out after ${STAGE1_TIMEOUT}s"
-      echo "[cheng-codex] hint: increase CODEX_BUILD_STAGE1_TIMEOUT or set CODEX_BUILD_STAGE1_FALLBACK_TO_MVP=1"
-    fi
-    exit "$build_status"
+  if [ "$build_status" -eq 124 ] && [ "$BACKEND_FRONTEND" = "stage1" ]; then
+    echo "[cheng-codex] error: stage1 timed out after ${STAGE1_TIMEOUT}s"
+    echo "[cheng-codex] hint: increase CODEX_BUILD_STAGE1_TIMEOUT for one-off cold builds"
   fi
+  exit "$build_status"
 fi
 
 BUILT_BIN=""
-if [ -f "$CHENG_ROOT/$NAME" ]; then
-  BUILT_BIN="$CHENG_ROOT/$NAME"
-elif [ -f "$CHENG_ROOT/artifacts/chengc/$NAME" ]; then
-  BUILT_BIN="$CHENG_ROOT/artifacts/chengc/$NAME"
+if [ -f "$ROOT/$NAME" ]; then
+  BUILT_BIN="$ROOT/$NAME"
+elif [ -f "$ROOT/artifacts/chengc/$NAME" ]; then
+  BUILT_BIN="$ROOT/artifacts/chengc/$NAME"
 fi
 
 if [ -n "$BUILT_BIN" ] && [ -f "$BUILT_BIN" ]; then
@@ -383,11 +401,21 @@ if [ -n "$BUILT_BIN" ] && [ -f "$BUILT_BIN" ]; then
   if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
     codesign --force --sign - "$OUT_DIR/$OUT_NAME" >/dev/null 2>&1 || true
   fi
-  if ! "$OUT_DIR/$OUT_NAME" --version >/dev/null 2>&1; then
+  version_probe_log="$ROOT/chengcache/.codex_version_probe.$$.$RANDOM.log"
+  rm -f "$version_probe_log"
+  if ! run_with_timeout 10 "$OUT_DIR/$OUT_NAME" --version >"$version_probe_log" 2>&1; then
     echo "[cheng-codex] built binary is not runnable: $OUT_DIR/$OUT_NAME" 1>&2
     echo "[cheng-codex] hint: rebuild a healthy backend driver/toolchain before closed-loop" 1>&2
-    "$OUT_DIR/$OUT_NAME" --version >/dev/null
+    if [ -f "$version_probe_log" ]; then
+      sed -n '1,30p' "$version_probe_log" 1>&2 || true
+    fi
+    if command -v nm >/dev/null 2>&1; then
+      echo "[cheng-codex] unresolved symbols (top):" 1>&2
+      nm -u "$OUT_DIR/$OUT_NAME" 2>/dev/null | sed -n '1,40p' 1>&2 || true
+    fi
+    rm -f "$version_probe_log"
     exit 1
   fi
+  rm -f "$version_probe_log"
   echo "[cheng-codex] built: $OUT_DIR/$OUT_NAME"
 fi

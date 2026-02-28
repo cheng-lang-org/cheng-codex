@@ -13,61 +13,69 @@ fn trimLine(text: str): str =
         return ""
     var start: int32 = 0
     var stop: int32 = len(text) - 1
-    while start <= stop && isSpace(text[start]):
-        start = start + 1
-    while stop >= start && isSpace(text[stop]):
-        stop = stop - 1
+    for idx in 0..<len(text):
+        if isSpace(text[idx]):
+            start = idx + 1
+            continue
+        break
+    for rev in 0..<len(text):
+        let idx = len(text) - rev - 1
+        if idx < start:
+            break
+        if isSpace(text[idx]):
+            stop = idx - 1
+            continue
+        break
     if start > stop:
         return ""
     # Return an owned string: slice views can dangle once the source buffer drops.
     return "" + __cheng_slice_string(text, start, stop, false)
 
 fn splitLinesSimple(text: str): str[] =
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     var start: int32 = 0
-    var i: int32 = 0
-    while i < len(text):
+    for i in 0..<len(text):
         if text[i] == '\n':
             var endIdx: int32 = i - 1
             if endIdx >= start && text[endIdx] == '\r':
                 endIdx = endIdx - 1
             if endIdx >= start:
-                seqAdd(out, "" + __cheng_slice_string(text, start, endIdx, false))
+                add(out, "" + __cheng_slice_string(text, start, endIdx, false))
             else:
-                seqAdd(out, "")
+                add(out, "")
             start = i + 1
-        i = i + 1
     if start <= len(text) - 1:
-        seqAdd(out, "" + __cheng_slice_string(text, start, len(text) - 1, false))
+        add(out, "" + __cheng_slice_string(text, start, len(text) - 1, false))
     elif start == len(text):
-        seqAdd(out, "")
+        add(out, "")
     return out
 
-var configOverrideKeys: str[] = newSeq[str]()
-var configOverrideValues: str[] = newSeq[str]()
+fn configEmptyStrList(): str[] =
+    var out: str[]
+    return out
+
+var configOverrideKeys: str[] = configEmptyStrList()
+var configOverrideValues: str[] = configEmptyStrList()
 
 fn clearConfigOverrides() =
-    configOverrideKeys = newSeq[str]()
-    configOverrideValues = newSeq[str]()
+    configOverrideKeys = []
+    configOverrideValues = []
 
 fn addConfigOverride(key: str, value: str) =
     if len(key) == 0:
         return
-    seqAdd(configOverrideKeys, key)
-    seqAdd(configOverrideValues, value)
+    add(configOverrideKeys, key)
+    add(configOverrideValues, value)
 
 fn findConfigOverrideIndex(key: str): int32 =
-    var idx: int32 = 0
-    while idx < len(configOverrideKeys):
+    for idx in 0..<len(configOverrideKeys):
         if configOverrideKeys[idx] == key:
             return idx
-        idx = idx + 1
     return -1
 
 fn setConfigOverrides(overrides: str[]) =
     clearConfigOverrides()
-    var idx: int32 = 0
-    while idx < len(overrides):
+    for idx in 0..<len(overrides):
         let raw = overrides[idx]
         let eq = findChar(raw, '=')
         if eq > 0:
@@ -77,25 +85,21 @@ fn setConfigOverrides(overrides: str[]) =
             # parser here, but we must at least unquote/escape string literals so
             # `-c model="o3"` behaves like `model=o3`.
             addConfigOverride(keyText, unescapeConfigValue(valueText))
-        idx = idx + 1
 
 fn configOverrideValue(key: str, outValue: var str): bool =
     if len(key) == 0:
         return false
-    var idx: int32 = len(configOverrideKeys) - 1
-    while idx >= 0:
+    for rev in 0..<len(configOverrideKeys):
+        let idx: int32 = len(configOverrideKeys) - 1 - rev
         if configOverrideKeys[idx] == key:
             outValue = configOverrideValues[idx]
             return true
-        idx = idx - 1
     return false
 
 fn findChar(text: str, needle: char): int32 =
-    var i: int32 = 0
-    while i < len(text):
+    for i in 0..<len(text):
         if text[i] == needle:
             return i
-        i = i + 1
     return -1
 
 fn unescapeConfigValue(raw: str): str =
@@ -105,9 +109,11 @@ fn unescapeConfigValue(raw: str): str =
     if trimmed[0] != '"' || trimmed[len(trimmed) - 1] != '"':
         return trimmed
     var outVal = ""
-    var i: int32 = 1
     let endIdx: int32 = len(trimmed) - 1
-    while i < endIdx:
+    var skipUntil: int32 = 0
+    for i in 1..<endIdx:
+        if i <= skipUntil:
+            continue
         let ch = trimmed[i]
         if ch == '\\' && i + 1 < endIdx:
             let next = trimmed[i + 1]
@@ -119,18 +125,16 @@ fn unescapeConfigValue(raw: str): str =
                 outVal = outVal + "\t"
             else:
                 outVal = outVal + $ next
-            i = i + 2
+            skipUntil = i + 1
             continue
         outVal = outVal + $ ch
-        i = i + 1
     return outVal
 
 fn escapeConfigValue(value: str): str =
     if value == nil:
         return ""
     var outVal = ""
-    var i: int32 = 0
-    while i < len(value):
+    for i in 0..<len(value):
         let ch = value[i]
         if ch == '\\':
             outVal = outVal + "\\\\"
@@ -144,7 +148,6 @@ fn escapeConfigValue(value: str): str =
             outVal = outVal + "\\t"
         else:
             outVal = outVal + $ ch
-        i = i + 1
     return outVal
 
 fn codexHomeDir(): str =
@@ -201,15 +204,12 @@ fn readConfigValueRaw(key: str, outValue: var str): bool =
     if len(content) == 0:
         return false
     let lines = splitLinesSimple(content)
-    var idx: int32 = 0
-    while idx < len(lines):
+    for idx in 0..<len(lines):
         let line = trimLine(lines[idx])
         if len(line) == 0 || line[0] == '#':
-            idx = idx + 1
             continue
         let eq = findChar(line, '=')
         if eq <= 0:
-            idx = idx + 1
             continue
         let keyText = trimLine(__cheng_slice_string(line, 0, eq - 1, false))
         if keyText == key:
@@ -217,7 +217,6 @@ fn readConfigValueRaw(key: str, outValue: var str): bool =
                 let valueText = trimLine(__cheng_slice_string(line, eq + 1, len(line) - 1, false))
                 outValue = unescapeConfigValue(valueText)
             return true
-        idx = idx + 1
     return false
 
 fn activeConfigProfile(outProfile: var str): bool =
@@ -266,22 +265,20 @@ fn writeConfigValue(key: str, value: str): bool =
     if ! os.dirExists(home):
         os.createDir(home)
     let path = codexConfigPath()
-    var lines: str[] = newSeq[str]()
+    var lines: str[] = []
     if os.fileExists(path):
         let content = os.readFile(path)
         if len(content) > 0:
             lines = splitLinesSimple(content)
     var out = ""
     var found = false
-    var idx: int32 = 0
     let encoded = "\"" + escapeConfigValue(value) + "\""
     let newLine = key + " = " + encoded
-    while idx < len(lines):
+    for idx in 0..<len(lines):
         let rawLine = lines[idx]
         let trimmed = trimLine(rawLine)
         if len(trimmed) == 0 || trimmed[0] == '#':
             out = out + rawLine + "\n"
-            idx = idx + 1
             continue
         let eq = findChar(rawLine, '=')
         if eq > 0:
@@ -289,10 +286,8 @@ fn writeConfigValue(key: str, value: str): bool =
             if keyText == key:
                 out = out + newLine + "\n"
                 found = true
-                idx = idx + 1
                 continue
         out = out + rawLine + "\n"
-        idx = idx + 1
     if ! found:
         out = out + newLine + "\n"
     os.writeFile(path, out)
@@ -324,22 +319,18 @@ fn clearConfigValue(key: str): bool =
         return false
     let lines = splitLinesSimple(content)
     var out = ""
-    var idx: int32 = 0
-    while idx < len(lines):
+    for idx in 0..<len(lines):
         let rawLine = lines[idx]
         let trimmed = trimLine(rawLine)
         if len(trimmed) == 0 || trimmed[0] == '#':
             out = out + rawLine + "\n"
-            idx = idx + 1
             continue
         let eq = findChar(rawLine, '=')
         if eq > 0:
             let keyText = trimLine(__cheng_slice_string(rawLine, 0, eq - 1, false))
             if keyText == key:
-                idx = idx + 1
                 continue
         out = out + rawLine + "\n"
-        idx = idx + 1
     os.writeFile(path, out)
     return true
 
@@ -363,8 +354,7 @@ fn stripInlineComment(line: str): str =
         return ""
     var inString = false
     var escaped = false
-    var idx: int32 = 0
-    while idx < len(line):
+    for idx in 0..<len(line):
         let ch = line[idx]
         if inString:
             if escaped:
@@ -380,7 +370,6 @@ fn stripInlineComment(line: str): str =
                 if idx == 0:
                     return ""
                 return trimLine(__cheng_slice_string(line, 0, idx - 1, false))
-        idx = idx + 1
     return trimLine(line)
 
 fn parseTomlStringValue(raw: str): str =
@@ -392,28 +381,35 @@ fn parseTomlStringValue(raw: str): str =
     return trimmed
 
 fn parseTomlStringArray(raw: str): str[] =
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     let trimmed = trimLine(raw)
     if len(trimmed) == 0:
         return out
     if trimmed[0] != '[':
         let item = parseTomlStringValue(trimmed)
         if len(item) > 0:
-            seqAdd(out, item)
+            add(out, item)
         return out
-    var idx: int32 = 1
-    while idx < len(trimmed):
-        while idx < len(trimmed) && isSpace(trimmed[idx]):
-            idx = idx + 1
-        if idx >= len(trimmed) || trimmed[idx] == ']':
+    var cursor: int32 = 1
+    for idx in cursor..<len(trimmed):
+        if idx < cursor:
+            continue
+        cursor = idx
+        for scan in cursor..<len(trimmed):
+            if ! isSpace(trimmed[scan]):
+                cursor = scan
+                break
+            if scan == len(trimmed) - 1:
+                cursor = len(trimmed)
+        if cursor >= len(trimmed) || trimmed[cursor] == ']':
             break
         var item = ""
-        let ch = trimmed[idx]
+        let ch = trimmed[cursor]
         if ch == '"':
-            idx = idx + 1
             var escaped = false
-            while idx < len(trimmed):
-                let c = trimmed[idx]
+            var nextCursor = cursor + 1
+            for scan in cursor + 1..<len(trimmed):
+                let c = trimmed[scan]
                 if escaped:
                     if c == 'n':
                         item = item + "\n"
@@ -427,28 +423,40 @@ fn parseTomlStringArray(raw: str): str[] =
                 elif c == '\\':
                     escaped = true
                 elif c == '"':
-                    idx = idx + 1
+                    nextCursor = scan + 1
                     break
                 else:
                     item = item + $ c
-                idx = idx + 1
+                nextCursor = scan + 1
+            cursor = nextCursor
         else:
-            let start = idx
-            while idx < len(trimmed):
-                let c = trimmed[idx]
+            let start = cursor
+            var nextCursor = cursor
+            for scan in cursor..<len(trimmed):
+                let c = trimmed[scan]
                 if c == ',' || c == ']':
+                    nextCursor = scan
                     break
-                idx = idx + 1
-            if idx > start:
-                item = trimLine(__cheng_slice_string(trimmed, start, idx - 1, false))
+                nextCursor = scan + 1
+            if nextCursor > start:
+                item = trimLine(__cheng_slice_string(trimmed, start, nextCursor - 1, false))
+            cursor = nextCursor
         if len(item) > 0:
-            seqAdd(out, item)
-        while idx < len(trimmed) && trimmed[idx] != ',' && trimmed[idx] != ']':
-            idx = idx + 1
-        if idx < len(trimmed) && trimmed[idx] == ',':
-            idx = idx + 1
+            add(out, item)
+        var sawSep = false
+        for scan in cursor..<len(trimmed):
+            let c = trimmed[scan]
+            if c == ',' || c == ']':
+                cursor = scan
+                sawSep = true
+                break
+            cursor = scan + 1
+        if ! sawSep:
+            break
+        if cursor < len(trimmed) && trimmed[cursor] == ',':
+            cursor = cursor + 1
             continue
-        if idx < len(trimmed) && trimmed[idx] == ']':
+        if cursor < len(trimmed) && trimmed[cursor] == ']':
             break
     return out
 
@@ -481,12 +489,10 @@ fn normalizeSandboxModeValue(value: str): str =
 fn addUniqueString(items: var str[], value: str) =
     if len(value) == 0:
         return
-    var idx: int32 = 0
-    while idx < items.len:
+    for idx in 0..<items.len:
         if items[idx] == value:
             return
-        idx = idx + 1
-    seqAdd(items, value)
+    add(items, value)
 
 fn requirementsTomlPath(): str =
     let windowsPath = "C:\\etc\\codex\\requirements.toml"
@@ -508,54 +514,41 @@ fn managedConfigTomlPath(): str =
 
 fn parseRequirementsToml(content: str, outApproval: var str[], outSandbox: var str[]) =
     let lines = splitLinesSimple(content)
-    var idx: int32 = 0
-    while idx < len(lines):
+    for idx in 0..<len(lines):
         let line = stripInlineComment(lines[idx])
         if len(line) == 0:
-            idx = idx + 1
             continue
         let eq = findChar(line, '=')
         if eq <= 0:
-            idx = idx + 1
             continue
         let keyText = trimLine(__cheng_slice_string(line, 0, eq - 1, false))
         if len(keyText) == 0:
-            idx = idx + 1
             continue
         var valueText: str = ""
         if eq + 1 <= len(line) - 1:
             valueText = trimLine(__cheng_slice_string(line, eq + 1, len(line) - 1, false))
         if keyText == "allowed_approval_policies" && outApproval.len == 0:
             let items = parseTomlStringArray(valueText)
-            var itemIdx: int32 = 0
-            while itemIdx < len(items):
+            for itemIdx in 0..<len(items):
                 let normalized = normalizeApprovalPolicyValue(items[itemIdx])
                 addUniqueString(outApproval, normalized)
-                itemIdx = itemIdx + 1
         elif keyText == "allowed_sandbox_modes" && outSandbox.len == 0:
             let items = parseTomlStringArray(valueText)
-            var itemIdx: int32 = 0
-            while itemIdx < len(items):
+            for itemIdx in 0..<len(items):
                 let normalized = normalizeSandboxModeValue(items[itemIdx])
                 addUniqueString(outSandbox, normalized)
-                itemIdx = itemIdx + 1
-        idx = idx + 1
 
 fn parseLegacyManagedConfig(content: str, outApproval: var str[], outSandbox: var str[]) =
     let lines = splitLinesSimple(content)
-    var idx: int32 = 0
-    while idx < len(lines):
+    for idx in 0..<len(lines):
         let line = stripInlineComment(lines[idx])
         if len(line) == 0:
-            idx = idx + 1
             continue
         let eq = findChar(line, '=')
         if eq <= 0:
-            idx = idx + 1
             continue
         let keyText = trimLine(__cheng_slice_string(line, 0, eq - 1, false))
         if len(keyText) == 0:
-            idx = idx + 1
             continue
         var valueText: str = ""
         if eq + 1 <= len(line) - 1:
@@ -569,11 +562,10 @@ fn parseLegacyManagedConfig(content: str, outApproval: var str[], outSandbox: va
                 addUniqueString(outSandbox, "read-only")
                 if normalized != "read-only":
                     addUniqueString(outSandbox, normalized)
-        idx = idx + 1
 
 fn readConfigRequirements(outApproval: var str[], outSandbox: var str[]): bool =
-    outApproval = newSeq[str]()
-    outSandbox = newSeq[str]()
+    outApproval = []
+    outSandbox = []
     let requirementsPath = requirementsTomlPath()
     if len(requirementsPath) > 0:
         let content = os.readFile(requirementsPath)

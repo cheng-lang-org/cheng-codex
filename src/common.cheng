@@ -20,6 +20,16 @@ fn codexVersion(): str =
 fn makeToolResult(ok: bool, output: str, exitCode: int32): ToolResult =
     ToolResult(ok: ok, output: output, exitCode: exitCode)
 
+fn execCmd(command: str): int32 =
+    let opts: uint64 = uint64(7)
+    let res = os.execCmdEx(command, opts, "")
+    return int32(res.exitCode)
+
+fn get_str(items: str[], idx: int32): str =
+    if idx < 0 || idx >= len(items):
+        return ""
+    return items[idx]
+
 fn toolResultOk(result: ToolResult): bool =
     return result.ok
 
@@ -60,29 +70,29 @@ fn stdinReadLine(): StdinLineRead =
     return StdinLineRead(ok: true, line: buf)
 
 fn seqStr1(a: str): str[] =
-    var out: str[] = newSeq[str]()
-    seqAdd(out, a)
+    var out: str[] = []
+    add(out, a)
     return out
 
 fn seqStr2(a: str, b: str): str[] =
-    var out: str[] = newSeq[str]()
-    seqAdd(out, a)
-    seqAdd(out, b)
+    var out: str[] = []
+    add(out, a)
+    add(out, b)
     return out
 
 fn seqStr3(a: str, b: str, c: str): str[] =
-    var out: str[] = newSeq[str]()
-    seqAdd(out, a)
-    seqAdd(out, b)
-    seqAdd(out, c)
+    var out: str[] = []
+    add(out, a)
+    add(out, b)
+    add(out, c)
     return out
 
 fn seqStr4(a: str, b: str, c: str, d: str): str[] =
-    var out: str[] = newSeq[str]()
-    seqAdd(out, a)
-    seqAdd(out, b)
-    seqAdd(out, c)
-    seqAdd(out, d)
+    var out: str[] = []
+    add(out, a)
+    add(out, b)
+    add(out, c)
+    add(out, d)
     return out
 
 fn printLine(text: str) =
@@ -148,11 +158,9 @@ fn hasPrefix(s: str, prefix: str): bool =
         return false
     if len(prefix) > len(s):
         return false
-    var i: int32 = 0
-    while i < len(prefix):
+    for i in 0..<len(prefix):
         if ord(s[i]) != ord(prefix[i]):
             return false
-        i = i + 1
     return true
 
 fn dropPrefix(s: str, prefix: str): str =
@@ -169,11 +177,9 @@ fn endsWithSuffix(s: str, suffix: str): bool =
     if len(suffix) > len(s):
         return false
     let start: int32 = len(s) - len(suffix)
-    var i: int32 = 0
-    while i < len(suffix):
+    for i in 0..<len(suffix):
         if ord(s[start + i]) != ord(suffix[i]):
             return false
-        i = i + 1
     return true
 
 fn joinPartsBalanced(parts: str[]): str =
@@ -182,26 +188,22 @@ fn joinPartsBalanced(parts: str[]): str =
     if n <= 0:
         return ""
     var out: str = ""
-    var i: int32 = 0
-    while i < n:
+    for i in 0..<n:
         let part: str = get_string(parts, i)
         if part != nil:
             out = out + part
-        i = i + 1
     return out
 
 fn joinArgs(args: str[], start: int32): str =
     var out: str = ""
     let n: int32 = args.len
-    var i: int32 = start
-    while i < n:
+    for i in start..<n:
         let part: str = get_string(args, i)
         if part != nil:
             if len(out) == 0:
                 out = part
             else:
                 out = out + " " + part
-        i = i + 1
     return out
 
 fn argAt(args: str[], idx: int32): str =
@@ -217,12 +219,10 @@ fn argListContains(args: str[], start: int32, needle: str): bool =
     if len(needle) == 0:
         return false
     let n: int32 = args.len
-    var i: int32 = start
-    while i < n:
+    for i in start..<n:
         let value: str = get_string(args, i)
         if value != nil && value == needle:
             return true
-        i = i + 1
     return false
 
 fn wantsLongHelp(args: str[], start: int32): bool =
@@ -239,23 +239,21 @@ fn shellQuote(value: str): str =
     if value == nil || len(value) == 0:
         return "''"
     # Use slices + parts join to avoid O(n^2) growth for long strings.
-    var parts: str[] = newSeq[str]()
-    seqAdd(parts, "'")
+    var parts: str[] = []
+    add(parts, "'")
     var last: int32 = 0
-    var i: int32 = 0
-    while i < len(value):
+    for i in 0..<len(value):
         let ch = value[i]
         if ch == '\'':
             if i > last:
                 let chunk: str = __cheng_slice_string(value, last, i - 1, false)
-                seqAdd(parts, chunk)
-            seqAdd(parts, "'\\''")
+                add(parts, chunk)
+            add(parts, "'\\''")
             last = i + 1
-        i = i + 1
     if last <= len(value) - 1:
         let tail: str = __cheng_slice_string(value, last, len(value) - 1, false)
-        seqAdd(parts, tail)
-    seqAdd(parts, "'")
+        add(parts, tail)
+    add(parts, "'")
     return joinPartsBalanced(parts)
 
 fn firstLine(text: str): str =
@@ -272,14 +270,12 @@ fn normalizePolicy(policy: str): str =
     if policy == nil || len(policy) == 0:
         return ""
     var out = ""
-    var i: int32 = 0
-    while i < len(policy):
+    for i in 0..<len(policy):
         let ch = policy[i]
         if ch >= 'A' && ch <= 'Z':
             out = out + $ char(ord(ch) + 32)
         else:
             out = out + $ ch
-        i = i + 1
     return out
 
 var uiStreamOverride: str = ""
@@ -327,16 +323,23 @@ fn trimSpacesTokenLocal(text: str): str =
         return ""
     var start: int32 = 0
     var stop: int32 = len(text) - 1
-    while start <= stop:
-        let ch = text[start]
-        if ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n':
+    for i in 0..<len(text):
+        if i > stop:
             break
-        start = start + 1
-    while stop >= start:
-        let ch = text[stop]
+        let ch = text[i]
         if ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n':
+            start = i
             break
-        stop = stop - 1
+        start = i + 1
+    for rev in 0..<len(text):
+        let i: int32 = len(text) - 1 - rev
+        if i < start:
+            break
+        let ch = text[i]
+        if ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n':
+            stop = i
+            break
+        stop = i - 1
     if start > stop:
         return ""
     return __cheng_slice_string(text, start, stop, false)
@@ -349,11 +352,9 @@ fn repeatChar(ch: char, limit: int32): str =
     if limit <= 0:
         return ""
     var out = ""
-    var i: int32 = 0
-    while i < limit:
+    for i in 0..<limit:
         # Avoid charToStr (unstable in some compiler/runtime combos); use `$` conversion.
         out = out + $ ch
-        i = i + 1
     return out
 
 fn tuiHeader(title: str) =

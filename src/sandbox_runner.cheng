@@ -1,6 +1,5 @@
 # Sandbox execution helpers
 
-import system
 import std/os
 import seqs
 
@@ -23,14 +22,12 @@ fn lowerAscii(text: str): str =
     if text == nil:
         return ""
     var out = ""
-    var i: int32 = 0
-    while i < len(text):
+    for i in 0..<len(text):
         let ch = text[i]
         if ch >= 'A' && ch <= 'Z':
             out = out + $ char(ord(ch) + 32)
         else:
             out = out + $ ch
-        i = i + 1
     return out
 
 fn detectOsKind(): str =
@@ -64,57 +61,49 @@ fn normalizeSandboxModeValue(mode: str): str =
 
 fn buildCommandTextFromTokens(tokens: str[]): str =
     var out = ""
-    var i: int32 = 0
-    while i < len(tokens):
+    for i in 0..<len(tokens):
         let part = shellQuote(tokens[i])
         if len(out) == 0:
             out = part
         else:
             out = out + " "
             out = out + part
-        i = i + 1
     return out
 
 fn collectWritableRoots(cwd: str, extraRoots: str[]): WritableRoot[] =
-    var roots: str[] = newSeq[str]()
-    var i: int32 = 0
-    while i < len(extraRoots):
+    var roots: str[] = []
+    for i in 0..<len(extraRoots):
         let root = extraRoots[i]
         if len(root) > 0:
-            seqAdd(roots, os.absolutePath(root))
-        i = i + 1
+            add(roots, os.absolutePath(root))
     if len(cwd) > 0:
-        seqAdd(roots, os.absolutePath(cwd))
+        add(roots, os.absolutePath(cwd))
     if os.dirExists("/tmp"):
-        seqAdd(roots, "/tmp")
+        add(roots, "/tmp")
     let tmpdir = os.getEnv("TMPDIR")
     if len(tmpdir) > 0:
-        seqAdd(roots, os.absolutePath(tmpdir))
-    var result: WritableRoot[] = newSeq[WritableRoot]()
-    i = 0
-    while i < len(roots):
+        add(roots, os.absolutePath(tmpdir))
+    var result: WritableRoot[] = []
+    for i in 0..<len(roots):
         let root = roots[i]
-        var readOnly: str[] = newSeq[str]()
+        var readOnly: str[] = []
         let gitPath = os.joinPath(root, ".git")
         if os.dirExists(gitPath):
-            seqAdd(readOnly, gitPath)
+            add(readOnly, gitPath)
         let codexPath = os.joinPath(root, ".codex")
         if os.dirExists(codexPath):
-            seqAdd(readOnly, codexPath)
-        seqAdd(result, WritableRoot(root: root, readOnlySubpaths: readOnly))
-        i = i + 1
+            add(readOnly, codexPath)
+        add(result, WritableRoot(root: root, readOnlySubpaths: readOnly))
     return result
 
 fn joinWithSpace(items: str[]): str =
     var out = ""
-    var i: int32 = 0
-    while i < len(items):
+    for i in 0..<len(items):
         if i == 0:
             out = items[i]
         else:
             out = out + " "
             out = out + items[i]
-        i = i + 1
     return out
 
 fn findExecutableInPath(name: str): str =
@@ -196,21 +185,19 @@ fn wrapCommandWithTimeout(commandText: str, timeoutMs: int32, outApplied: var bo
 
 fn findSeatbeltPolicyFile(fileName: str): str =
     let cwd = os.getCurrentDir()
-    var candidates: str[] = newSeq[str]()
-    seqAdd(candidates, os.joinPath(cwd, fileName))
-    seqAdd(candidates, os.joinPath(os.joinPath(os.joinPath(cwd, "codex-cheng"), "src"), fileName))
-    seqAdd(candidates, os.joinPath(os.joinPath(cwd, "src"), fileName))
-    seqAdd(candidates, os.joinPath(os.joinPath(cwd, "codex-cheng"), fileName))
-    seqAdd(candidates, os.joinPath(os.joinPath(os.joinPath(os.joinPath(cwd, ".."), "codex-cheng"), "src"), fileName))
-    seqAdd(candidates, os.joinPath(os.joinPath(os.joinPath(cwd, ".."), "src"), fileName))
-    var i: int32 = 0
-    while i < len(candidates):
+    var candidates: str[] = []
+    add(candidates, os.joinPath(cwd, fileName))
+    add(candidates, os.joinPath(os.joinPath(os.joinPath(cwd, "codex-cheng"), "src"), fileName))
+    add(candidates, os.joinPath(os.joinPath(cwd, "src"), fileName))
+    add(candidates, os.joinPath(os.joinPath(cwd, "codex-cheng"), fileName))
+    add(candidates, os.joinPath(os.joinPath(os.joinPath(os.joinPath(cwd, ".."), "codex-cheng"), "src"), fileName))
+    add(candidates, os.joinPath(os.joinPath(os.joinPath(cwd, ".."), "src"), fileName))
+    for i in 0..<len(candidates):
         # Type annotation here avoids a backend width inference bug that can
         # truncate string pointers when pulling values out of a `seq[str]`.
         let candidate: str = candidates[i]
         if os.fileExists(candidate):
             return candidate
-        i = i + 1
     return ""
 
 fn ensureSeatbeltPoliciesLoaded(): bool =
@@ -228,7 +215,7 @@ fn ensureSeatbeltPoliciesLoaded(): bool =
     return len(seatbeltBasePolicyCache) > 0
 
 fn buildSeatbeltPolicy(sandboxMode: str, cwd: str, extraRoots: str[], allowNetwork: bool, outParams: var str[]): str =
-    outParams = newSeq[str]()
+    outParams = []
     ensureSeatbeltPoliciesLoaded()
     if len(seatbeltBasePolicyCache) == 0:
         return ""
@@ -237,29 +224,27 @@ fn buildSeatbeltPolicy(sandboxMode: str, cwd: str, extraRoots: str[], allowNetwo
     if mode == "workspace-write" || mode == "workspacewrite":
         let roots = collectWritableRoots(cwd, extraRoots)
         if len(roots) > 0:
-            var policyParts: str[] = newSeq[str]()
-            var idx: int32 = 0
-            while idx < len(roots):
+            var policyParts: str[] = []
+            for idx in 0..<len(roots):
                 let root = roots[idx]
                 let rootParam = "WRITABLE_ROOT_" + intToStr(idx)
                 var rootParamArg = "-D"
                 rootParamArg = rootParamArg + rootParam
                 rootParamArg = rootParamArg + "="
                 rootParamArg = rootParamArg + root.root
-                seqAdd(outParams, rootParamArg)
+                add(outParams, rootParamArg)
                 if len(root.readOnlySubpaths) == 0:
                     var part = "(subpath (param \""
                     part = part + rootParam
                     part = part + "\"))"
-                    seqAdd(policyParts, part)
+                    add(policyParts, part)
                 else:
-                    var requireParts: str[] = newSeq[str]()
+                    var requireParts: str[] = []
                     var basePart = "(subpath (param \""
                     basePart = basePart + rootParam
                     basePart = basePart + "\"))"
-                    seqAdd(requireParts, basePart)
-                    var roIdx: int32 = 0
-                    while roIdx < len(root.readOnlySubpaths):
+                    add(requireParts, basePart)
+                    for roIdx in 0..<len(root.readOnlySubpaths):
                         let roIdxText = intToStr(roIdx)
                         var roParam = rootParam
                         roParam = roParam + "_RO_"
@@ -268,18 +253,16 @@ fn buildSeatbeltPolicy(sandboxMode: str, cwd: str, extraRoots: str[], allowNetwo
                         roParamArg = roParamArg + roParam
                         roParamArg = roParamArg + "="
                         roParamArg = roParamArg + root.readOnlySubpaths[roIdx]
-                        seqAdd(outParams, roParamArg)
+                        add(outParams, roParamArg)
                         var requireNotPart = "(require-not (subpath (param \""
                         requireNotPart = requireNotPart + roParam
                         requireNotPart = requireNotPart + "\")))"
-                        seqAdd(requireParts, requireNotPart)
-                        roIdx = roIdx + 1
+                        add(requireParts, requireNotPart)
                     let requireJoined = joinWithSpace(requireParts)
                     var requireAll = "(require-all "
                     requireAll = requireAll + requireJoined
                     requireAll = requireAll + " )"
-                    seqAdd(policyParts, requireAll)
-                idx = idx + 1
+                    add(policyParts, requireAll)
             let policyJoined = joinWithSpace(policyParts)
             var policyText = "(allow file-write*\n"
             policyText = policyText + policyJoined
@@ -333,11 +316,9 @@ fn runSeatbeltSandbox(commandText: str, commandTokens: str[], workingDir: str, s
         return makeToolResult(false, "missing seatbelt policy", -1)
     var fullCmd = "/usr/bin/sandbox-exec -p "
     fullCmd = fullCmd + shellQuote(policyText)
-    var i: int32 = 0
-    while i < len(params):
+    for i in 0..<len(params):
         fullCmd = fullCmd + " "
         fullCmd = fullCmd + shellQuote(params[i])
-        i = i + 1
     var wrappedCmd = "/bin/sh -c "
     wrappedCmd = wrappedCmd + shellQuote(cmd)
     fullCmd = fullCmd + " -- "
@@ -352,8 +333,7 @@ fn findLinuxSandboxExe(): str =
     if len(pathEnv) == 0:
         return ""
     var start: int32 = 0
-    var i: int32 = 0
-    while i <= len(pathEnv):
+    for i in 0..len(pathEnv):
         if i == len(pathEnv) || pathEnv[i] == ':':
             var part: str = ""
             if i > start:
@@ -363,7 +343,6 @@ fn findLinuxSandboxExe(): str =
                 if os.fileExists(candidate):
                     return candidate
             start = i + 1
-        i = i + 1
     return ""
 
 fn buildLinuxSandboxPolicyJson(sandboxMode: str, extraRoots: str[]): str =
@@ -371,20 +350,18 @@ fn buildLinuxSandboxPolicyJson(sandboxMode: str, extraRoots: str[]): str =
     if mode == "read-only" || mode == "readonly":
         return "{\"type\":\"read-only\"}"
     if mode == "workspace-write" || mode == "workspacewrite":
-        var rootsJson: str[] = newSeq[str]()
-        var i: int32 = 0
-        while i < len(extraRoots):
+        var rootsJson: str[] = []
+        for i in 0..<len(extraRoots):
             let root = extraRoots[i]
             if len(root) > 0:
-                seqAdd(rootsJson, jstrString(os.absolutePath(root)))
-            i = i + 1
-        var fields: str[] = newSeq[str]()
-        seqAdd(fields, jstrPair("type", jstrString("workspace-write")))
+                add(rootsJson, jstrString(os.absolutePath(root)))
+        var fields: str[] = []
+        add(fields, jstrPair("type", jstrString("workspace-write")))
         if len(rootsJson) > 0:
-            seqAdd(fields, jstrPair("writable_roots", jstrArray(rootsJson)))
-        seqAdd(fields, jstrPair("network_access", jstrBool(false)))
-        seqAdd(fields, jstrPair("exclude_tmpdir_env_var", jstrBool(false)))
-        seqAdd(fields, jstrPair("exclude_slash_tmp", jstrBool(false)))
+            add(fields, jstrPair("writable_roots", jstrArray(rootsJson)))
+        add(fields, jstrPair("network_access", jstrBool(false)))
+        add(fields, jstrPair("exclude_tmpdir_env_var", jstrBool(false)))
+        add(fields, jstrPair("exclude_slash_tmp", jstrBool(false)))
         return jstrObject(fields)
     return "{\"type\":\"danger-full-access\"}"
 

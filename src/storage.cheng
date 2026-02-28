@@ -1,6 +1,5 @@
 # Thread storage for codex-cheng
 
-import system
 import std/os
 import std/times
 import seqs
@@ -82,23 +81,20 @@ fn inputTokenImageUrl(url: str): str =
     return "image_url:" + url
 
 fn inputTokenSkill(name: str, path: str): str =
-    var fields: str[] = newSeq[str]()
-    seqAdd(fields, jstrPair("name", jstrString(name)))
-    seqAdd(fields, jstrPair("path", jstrString(path)))
+    var fields: str[] = []
+    add(fields, jstrPair("name", jstrString(name)))
+    add(fields, jstrPair("path", jstrString(path)))
     return "skill:" + jstrObject(fields)
 
 fn inputTokensHasText(tokens: str[]): bool =
-    var idx: int32 = 0
-    while idx < len(tokens):
+    for idx in 0..<len(tokens):
         if hasPrefix(tokens[idx], "text:"):
             return true
-        idx = idx + 1
     return false
 
 fn inputTokensToText(tokens: str[]): str =
     var out = ""
-    var idx: int32 = 0
-    while idx < len(tokens):
+    for idx in 0..<len(tokens):
         let token = tokens[idx]
         if hasPrefix(token, "text:"):
             let text = dropPrefix(token, "text:")
@@ -106,15 +102,13 @@ fn inputTokensToText(tokens: str[]): str =
                 out = text
             else:
                 out = out + "\n" + text
-        idx = idx + 1
     return out
 
 fn inputTokensSummary(tokens: str[]): str =
     let text = inputTokensToText(tokens)
     if len(text) > 0:
         return text
-    var idx: int32 = 0
-    while idx < len(tokens):
+    for idx in 0..<len(tokens):
         let token = tokens[idx]
         if hasPrefix(token, "local_image:"):
             return "local image: " + dropPrefix(token, "local_image:")
@@ -125,56 +119,51 @@ fn inputTokensSummary(tokens: str[]): str =
             let name = jsonExtractString(obj, "name")
             if len(name) > 0:
                 return "skill: " + name
-        idx = idx + 1
     return ""
 
 fn inputTokensToMessages(tokens: str[], cwd: str): str[] =
-    var outVal: str[] = newSeq[str]()
-    var idx: int32 = 0
-    while idx < len(tokens):
+    var outVal: str[] = []
+    for idx in 0..<len(tokens):
         let token = tokens[idx]
         if hasPrefix(token, "text:"):
             let text = dropPrefix(token, "text:")
             let msg = buildInputMessage("user", text)
             if len(msg) > 0:
-                seqAdd(outVal, msg)
+                add(outVal, msg)
         elif hasPrefix(token, "local_image:"):
             let path = dropPrefix(token, "local_image:")
             let msg = buildInputImageMessage(path)
             if len(msg) > 0:
-                seqAdd(outVal, msg)
+                add(outVal, msg)
         elif hasPrefix(token, "image_url:"):
             let url = dropPrefix(token, "image_url:")
             let msg = buildInputImageUrlMessage(url)
             if len(msg) > 0:
-                seqAdd(outVal, msg)
+                add(outVal, msg)
         elif hasPrefix(token, "skill:"):
             let obj = dropPrefix(token, "skill:")
             let name = jsonExtractString(obj, "name")
             let path = jsonExtractString(obj, "path")
             let msg = loadSkillInstructionMessage(cwd, name, path)
             if len(msg) > 0:
-                seqAdd(outVal, msg)
-        idx = idx + 1
+                add(outVal, msg)
     return outVal
 
 fn inputTokensToHistoryLines(tokens: str[]): str[] =
-    var outVal: str[] = newSeq[str]()
-    var idx: int32 = 0
-    while idx < len(tokens):
+    var outVal: str[] = []
+    for idx in 0..<len(tokens):
         let token = tokens[idx]
         if hasPrefix(token, "text:"):
-            seqAdd(outVal, "you: " + dropPrefix(token, "text:"))
+            add(outVal, "you: " + dropPrefix(token, "text:"))
         elif hasPrefix(token, "local_image:"):
-            seqAdd(outVal, "you: [image] " + dropPrefix(token, "local_image:"))
+            add(outVal, "you: [image] " + dropPrefix(token, "local_image:"))
         elif hasPrefix(token, "image_url:"):
-            seqAdd(outVal, "you: [image] " + dropPrefix(token, "image_url:"))
+            add(outVal, "you: [image] " + dropPrefix(token, "image_url:"))
         elif hasPrefix(token, "skill:"):
             let obj = dropPrefix(token, "skill:")
             let name = jsonExtractString(obj, "name")
             if len(name) > 0:
-                seqAdd(outVal, "you: [skill] " + name)
-        idx = idx + 1
+                add(outVal, "you: [skill] " + name)
     return outVal
 
 fn threadFilePath(threadId: str): str =
@@ -214,16 +203,13 @@ fn threadCreatedAtNow(): int32 =
             let raw = trimLine(res.output)
             var parsed: int64 = 0
             var ok = false
-            var idx: int32 = 0
-            while idx < len(raw):
+            for idx in 0..<len(raw):
                 let ch = raw[idx]
                 if ch < '0' || ch > '9':
                     ok = false
-                    idx = len(raw)
                     break
                 parsed = parsed * 10 + int64(ord(ch) - ord('0'))
                 ok = true
-                idx = idx + 1
             if ok:
                 nowTs = parsed
     if nowTs <= 0:
@@ -301,12 +287,10 @@ fn updateThreadPreview(threadId: str, preview: str): bool =
     let newHeader = buildThreadHeaderJson(threadId, preview, createdAt, cwd, source)
     # Replace only the first line to preserve the rest of the jsonl file as-is.
     var nl: int32 = -1
-    var i: int32 = 0
-    while i < len(content):
+    for i in 0..<len(content):
         if content[i] == '\n':
             nl = i
             break
-        i = i + 1
     if nl < 0:
         os.writeFile(path, newHeader + "\n")
         return true
@@ -344,33 +328,31 @@ fn threadCwd(threadId: str): str =
 fn appendTurnEvent(threadId: str, turnId: str, input: str, inputItems: str[], agentPrefix: str, agentOutput: str, command: str, commandOutput: str, commandExit: int32, diff: str, mock: str) =
     if len(threadId) == 0:
         return
-    var pairs: str[] = newSeq[str]()
-    seqAdd(pairs, jstrPair("type", jstrString("turn")))
+    var pairs: str[] = []
+    add(pairs, jstrPair("type", jstrString("turn")))
     if len(turnId) > 0:
-        seqAdd(pairs, jstrPair("turnId", jstrString(turnId)))
+        add(pairs, jstrPair("turnId", jstrString(turnId)))
     if len(input) > 0:
-        seqAdd(pairs, jstrPair("input", jstrString(input)))
+        add(pairs, jstrPair("input", jstrString(input)))
     if len(inputItems) > 0:
-        var itemJson: str[] = newSeq[str]()
-        var idx: int32 = 0
-        while idx < len(inputItems):
-            seqAdd(itemJson, jstrString(inputItems[idx]))
-            idx = idx + 1
-        seqAdd(pairs, jstrPair("inputItems", jstrArray(itemJson)))
+        var itemJson: str[] = []
+        for idx in 0..<len(inputItems):
+            add(itemJson, jstrString(inputItems[idx]))
+        add(pairs, jstrPair("inputItems", jstrArray(itemJson)))
     if len(agentPrefix) > 0:
-        seqAdd(pairs, jstrPair("agentPrefix", jstrString(agentPrefix)))
+        add(pairs, jstrPair("agentPrefix", jstrString(agentPrefix)))
     if len(agentOutput) > 0:
-        seqAdd(pairs, jstrPair("agentOutput", jstrString(agentOutput)))
+        add(pairs, jstrPair("agentOutput", jstrString(agentOutput)))
     if len(command) > 0:
-        seqAdd(pairs, jstrPair("command", jstrString(command)))
+        add(pairs, jstrPair("command", jstrString(command)))
     if len(commandOutput) > 0:
-        seqAdd(pairs, jstrPair("commandOutput", jstrString(commandOutput)))
+        add(pairs, jstrPair("commandOutput", jstrString(commandOutput)))
     if commandExit >= 0:
-        seqAdd(pairs, jstrPair("commandExit", intToStr(commandExit)))
+        add(pairs, jstrPair("commandExit", intToStr(commandExit)))
     if len(diff) > 0:
-        seqAdd(pairs, jstrPair("diff", jstrString(diff)))
+        add(pairs, jstrPair("diff", jstrString(diff)))
     if len(mock) > 0:
-        seqAdd(pairs, jstrPair("mock", jstrString(mock)))
+        add(pairs, jstrPair("mock", jstrString(mock)))
     let eventJson = jstrObject(pairs)
     appendThreadEvent(threadId, eventJson)
     var cwd = threadCwd(threadId)
@@ -392,25 +374,25 @@ fn appendToolEventWithContext(
 ) =
     if len(threadId) == 0:
         return
-    var pairs: str[] = newSeq[str]()
-    seqAdd(pairs, jstrPair("type", jstrString("tool")))
+    var pairs: str[] = []
+    add(pairs, jstrPair("type", jstrString("tool")))
     if len(turnId) > 0:
-        seqAdd(pairs, jstrPair("turnId", jstrString(turnId)))
+        add(pairs, jstrPair("turnId", jstrString(turnId)))
     if len(callId) > 0:
-        seqAdd(pairs, jstrPair("callId", jstrString(callId)))
+        add(pairs, jstrPair("callId", jstrString(callId)))
     if len(toolName) > 0:
-        seqAdd(pairs, jstrPair("tool", jstrString(toolName)))
+        add(pairs, jstrPair("tool", jstrString(toolName)))
     if len(command) > 0:
-        seqAdd(pairs, jstrPair("command", jstrString(command)))
+        add(pairs, jstrPair("command", jstrString(command)))
     if len(commandOutput) > 0:
-        seqAdd(pairs, jstrPair("commandOutput", jstrString(commandOutput)))
+        add(pairs, jstrPair("commandOutput", jstrString(commandOutput)))
     if commandExit >= 0:
-        seqAdd(pairs, jstrPair("commandExit", intToStr(commandExit)))
+        add(pairs, jstrPair("commandExit", intToStr(commandExit)))
     if len(diff) > 0:
-        seqAdd(pairs, jstrPair("diff", jstrString(diff)))
+        add(pairs, jstrPair("diff", jstrString(diff)))
     if len(toolOutput) > 0:
-        seqAdd(pairs, jstrPair("output", jstrString(toolOutput)))
-    seqAdd(pairs, jstrPair("ok", jstrBool(ok)))
+        add(pairs, jstrPair("output", jstrString(toolOutput)))
+    add(pairs, jstrPair("ok", jstrBool(ok)))
     let eventJson = jstrObject(pairs)
     appendThreadEvent(threadId, eventJson)
     var cwd = threadCwd(threadId)
@@ -450,29 +432,29 @@ fn buildUserInputFromToken(token: str): str =
     return ""
 
 fn buildThreadItemUserMessage(itemId: str, content: str[]): str =
-    var fields: str[] = newSeq[str]()
-    seqAdd(fields, jstrPair("type", jstrString("userMessage")))
-    seqAdd(fields, jstrPair("id", jstrString(itemId)))
-    seqAdd(fields, jstrPair("content", jstrArray(content)))
+    var fields: str[] = []
+    add(fields, jstrPair("type", jstrString("userMessage")))
+    add(fields, jstrPair("id", jstrString(itemId)))
+    add(fields, jstrPair("content", jstrArray(content)))
     return jstrObject(fields)
 
 fn buildThreadItemAgentMessage(itemId: str, text: str): str =
-    var fields: str[] = newSeq[str]()
-    seqAdd(fields, jstrPair("type", jstrString("agentMessage")))
-    seqAdd(fields, jstrPair("id", jstrString(itemId)))
-    seqAdd(fields, jstrPair("text", jstrString(text)))
+    var fields: str[] = []
+    add(fields, jstrPair("type", jstrString("agentMessage")))
+    add(fields, jstrPair("id", jstrString(itemId)))
+    add(fields, jstrPair("text", jstrString(text)))
     return jstrObject(fields)
 
 fn buildThreadTurn(turnId: str, items: str[], status: str): str =
-    var fields: str[] = newSeq[str]()
-    seqAdd(fields, jstrPair("id", jstrString(turnId)))
-    seqAdd(fields, jstrPair("items", jstrArray(items)))
-    seqAdd(fields, jstrPair("status", jstrString(status)))
-    seqAdd(fields, jstrPair("error", jstrNull()))
+    var fields: str[] = []
+    add(fields, jstrPair("id", jstrString(turnId)))
+    add(fields, jstrPair("items", jstrArray(items)))
+    add(fields, jstrPair("status", jstrString(status)))
+    add(fields, jstrPair("error", jstrNull()))
     return jstrObject(fields)
 
 fn threadTurns(threadId: str): str[] =
-    var outVal: str[] = newSeq[str]()
+    var outVal: str[] = []
     if len(threadId) == 0:
         return outVal
     let path = threadFilePath(threadId)
@@ -483,8 +465,7 @@ fn threadTurns(threadId: str): str[] =
         return outVal
     let lines = splitLinesSimple(content)
     var turnIdx: int32 = 0
-    var idx: int32 = 1
-    while idx < len(lines):
+    for idx in 1..<len(lines):
         let line = lines[idx]
         if jsonExtractString(line, "type") == "turn":
             var tokens = jsonExtractStringArray(line, "inputItems")
@@ -492,23 +473,20 @@ fn threadTurns(threadId: str): str[] =
                 let inputText = jsonExtractString(line, "input")
                 if len(inputText) > 0:
                     tokens = seqStr1(inputTokenText(inputText))
-            var inputs: str[] = newSeq[str]()
-            var ti: int32 = 0
-            while ti < len(tokens):
+            var inputs: str[] = []
+            for ti in 0..<len(tokens):
                 let inputJson = buildUserInputFromToken(tokens[ti])
                 if len(inputJson) > 0:
-                    seqAdd(inputs, inputJson)
-                ti = ti + 1
-            var items: str[] = newSeq[str]()
+                    add(inputs, inputJson)
+            var items: str[] = []
             let turnId = "turn-" + intToStr(turnIdx + 1)
             if len(inputs) > 0:
-                seqAdd(items, buildThreadItemUserMessage(turnId + "-user", inputs))
+                add(items, buildThreadItemUserMessage(turnId + "-user", inputs))
             let agentOutput = jsonExtractString(line, "agentOutput")
             if len(agentOutput) > 0:
-                seqAdd(items, buildThreadItemAgentMessage(turnId + "-agent", agentOutput))
-            seqAdd(outVal, buildThreadTurn(turnId, items, "completed"))
+                add(items, buildThreadItemAgentMessage(turnId + "-agent", agentOutput))
+            add(outVal, buildThreadTurn(turnId, items, "completed"))
             turnIdx = turnIdx + 1
-        idx = idx + 1
     return outVal
 
 fn rollbackThreadTurns(threadId: str, numTurns: int32): bool =
@@ -523,12 +501,10 @@ fn rollbackThreadTurns(threadId: str, numTurns: int32): bool =
     let lines = splitLinesSimple(content)
     if len(lines) <= 1:
         return true
-    var turnIdxs: int32[] = newSeq[int32]()
-    var idx: int32 = 1
-    while idx < len(lines):
+    var turnIdxs: int32[] = []
+    for idx in 1..<len(lines):
         if jsonExtractString(lines[idx], "type") == "turn":
-            seqAdd(turnIdxs, idx)
-        idx = idx + 1
+            add(turnIdxs, idx)
     if len(turnIdxs) == 0:
         return true
     let total = len(turnIdxs)
@@ -538,12 +514,12 @@ fn rollbackThreadTurns(threadId: str, numTurns: int32): bool =
     else:
         keepIdx = turnIdxs[total - numTurns - 1]
     var out = ""
-    var i: int32 = 0
-    while i <= keepIdx && i < len(lines):
+    for i in 0..keepIdx:
+        if i >= len(lines):
+            break
         if len(out) > 0:
             out = out + "\n"
         out = out + lines[i]
-        i = i + 1
     if len(out) > 0:
         out = out + "\n"
     os.writeFile(path, out)
@@ -573,11 +549,9 @@ fn forkThread(threadId: str, preview: str, cwd: str, source: str): str =
     let createdAt: int32 = threadCreatedAtNow()
     let headerJson = buildThreadHeaderJson(newId, finalPreview, createdAt, normalizeThreadCwd(finalCwd), finalSource)
     var out = headerJson
-    var idx: int32 = 1
-    while idx < len(lines):
+    for idx in 1..<len(lines):
         out = out + "\n"
         out = out + argAt(lines, idx)
-        idx = idx + 1
     out = out + "\n"
     let threadsDir = ensureCodexDirs()
     if len(threadsDir) == 0:
@@ -635,11 +609,13 @@ fn normalizePathForMatch(path: str): str =
     if path == nil || len(path) == 0:
         return ""
     var stop = len(path) - 1
-    while stop >= 0:
-        let ch = path[stop]
+    for rev in 0..<len(path):
+        let i: int32 = len(path) - 1 - rev
+        let ch = path[i]
         if ch != '/' && ch != '\\':
+            stop = i
             break
-        stop = stop - 1
+        stop = i - 1
     if stop < 0:
         return ""
     if stop == len(path) - 1:
@@ -654,20 +630,34 @@ fn pathsMatchLocal(a: str, b: str): bool =
     return na == nb
 
 fn sortThreadInfosByCreatedAtDesc(infos: var ThreadInfo[]) =
-    var i: int32 = 0
-    while i < len(infos):
-        var j: int32 = i + 1
-        while j < len(infos):
-            if infos[j].createdAt > infos[i].createdAt:
-                let tmp = infos[i]
-                infos[i] = infos[j]
-                infos[j] = tmp
-            j = j + 1
-        i = i + 1
+    let total = infos.len
+    if total <= 1:
+        return
+    var used: int32[] = []
+    var sorted: ThreadInfo[] = []
+    while sorted.len < total:
+        var found = false
+        var bestIdx: int32 = -1
+        for i in 0..<total:
+            var alreadyUsed = false
+            for ui in 0..<used.len:
+                if used[ui] == i:
+                    alreadyUsed = true
+                    break
+            if alreadyUsed:
+                continue
+            if !found || infos[i].createdAt > infos[bestIdx].createdAt:
+                bestIdx = i
+                found = true
+        if !found:
+            break
+        add(used, bestIdx)
+        add(sorted, infos[bestIdx])
+    infos = sorted
 
 fn listThreadInfos(filterCwd: str, showAll: bool): ThreadInfo[] =
     traceStorageLocal("listThreadInfos.begin")
-    var outVal: ThreadInfo[] = newSeq[ThreadInfo]()
+    var outVal: ThreadInfo[] = []
     let dir = codexThreadsDir()
     traceStorageLocal("listThreadInfos.dir=" + dir)
     if len(dir) == 0 || ! os.dirExists(dir):
@@ -677,8 +667,7 @@ fn listThreadInfos(filterCwd: str, showAll: bool): ThreadInfo[] =
     traceStorageLocal("listThreadInfos.files=" + intToStr(len(files)))
     let normalizedFilter = normalizePathForMatch(filterCwd)
     traceStorageLocal("listThreadInfos.filter=" + normalizedFilter)
-    var idx: int32 = 0
-    while idx < len(files):
+    for idx in 0..<len(files):
         let path = argAt(files, idx)
         traceStorageLocal("listThreadInfos.path=" + path)
         if endsWithSuffix(path, ".jsonl"):
@@ -687,11 +676,10 @@ fn listThreadInfos(filterCwd: str, showAll: bool): ThreadInfo[] =
             traceStorageLocal("listThreadInfos.path.info.ready")
             if len(info.id) > 0:
                 if showAll || len(normalizedFilter) == 0:
-                    seqAdd(outVal, info)
+                    add(outVal, info)
                 else:
                     if len(info.cwd) == 0 || pathsMatchLocal(info.cwd, normalizedFilter):
-                        seqAdd(outVal, info)
-        idx = idx + 1
+                        add(outVal, info)
     sortThreadInfosByCreatedAtDesc(outVal)
     return outVal
 
@@ -714,23 +702,21 @@ fn archiveThread(threadId: str): bool =
     return true
 
 fn listThreadLines(): str[] =
-    var outVal: str[] = newSeq[str]()
+    var outVal: str[] = []
     let dir = codexThreadsDir()
     if len(dir) == 0 || ! os.dirExists(dir):
         return outVal
     let files: str[] = os.walkDirRec(dir)
-    var idx: int32 = 0
-    while idx < len(files):
+    for idx in 0..<len(files):
         let path = files[idx]
         if endsWithSuffix(path, ".jsonl"):
             let line = threadLineFromFile(path)
             if len(line) > 0:
-                seqAdd(outVal, line)
-        idx = idx + 1
+                add(outVal, line)
     return outVal
 
 fn threadHistoryLines(threadId: str): str[] =
-    var outVal: str[] = newSeq[str]()
+    var outVal: str[] = []
     if len(threadId) == 0:
         return outVal
     let path: str = threadFilePath(threadId)
@@ -743,8 +729,7 @@ fn threadHistoryLines(threadId: str): str[] =
     # dispatch `len()` to the wrong overload (e.g. treating seq as str), which
     # can SIGSEGV in strlen on arm64.
     let lines: str[] = splitLinesSimple(content)
-    var idx: int32 = 1
-    while idx < len(lines):
+    for idx in 1..<len(lines):
         let line: str = argAt(lines, idx)
         let eventType: str = jsonExtractString(line, "type")
         if eventType == "turn":
@@ -752,69 +737,60 @@ fn threadHistoryLines(threadId: str): str[] =
             # seq[str] has been crash-prone under the current ORC/seq runtime.
             let inputText: str = jsonExtractString(line, "input")
             if len(inputText) > 0:
-                seqAdd(outVal, "you: " + inputText)
+                add(outVal, "you: " + inputText)
             let agentOutput: str = jsonExtractString(line, "agentOutput")
             if len(agentOutput) > 0:
                 var prefix: str = jsonExtractString(line, "agentPrefix")
                 if len(prefix) == 0 || hasPrefix(prefix, "codex-cheng"):
                     prefix = "codex: "
-                seqAdd(outVal, prefix + agentOutput)
+                add(outVal, prefix + agentOutput)
             let commandText: str = jsonExtractString(line, "command")
             if len(commandText) > 0:
-                seqAdd(outVal, "exec: " + commandText)
+                add(outVal, "exec: " + commandText)
                 let commandOutput: str = jsonExtractString(line, "commandOutput")
                 if len(commandOutput) > 0:
                     let cmdLines: str[] = splitLinesSimple(commandOutput)
-                    var cidx: int32 = 0
-                    while cidx < len(cmdLines):
-                        seqAdd(outVal, "exec: " + argAt(cmdLines, cidx))
-                        cidx = cidx + 1
+                    for cidx in 0..<len(cmdLines):
+                        add(outVal, "exec: " + argAt(cmdLines, cidx))
                 let exitCode: int32 = jsonExtractInt(line, "commandExit", -1)
                 if exitCode >= 0:
-                    seqAdd(outVal, "exec: exit=" + intToStr(exitCode))
+                    add(outVal, "exec: exit=" + intToStr(exitCode))
             let diffText: str = jsonExtractString(line, "diff")
             if len(diffText) > 0:
                 let diffLines: str[] = splitLinesSimple(diffText)
-                var didx: int32 = 0
-                while didx < len(diffLines):
-                    seqAdd(outVal, "patch: " + argAt(diffLines, didx))
-                    didx = didx + 1
+                for didx in 0..<len(diffLines):
+                    add(outVal, "patch: " + argAt(diffLines, didx))
             let mockText: str = jsonExtractString(line, "mock")
             if len(mockText) > 0:
-                seqAdd(outVal, "tool: mock")
-                seqAdd(outVal, "tool: " + mockText)
+                add(outVal, "tool: mock")
+                add(outVal, "tool: " + mockText)
         elif eventType == "tool":
             let toolName: str = jsonExtractString(line, "tool")
             if len(toolName) > 0:
-                seqAdd(outVal, "tool: " + toolName)
+                add(outVal, "tool: " + toolName)
             let commandText: str = jsonExtractString(line, "command")
             if len(commandText) > 0:
-                seqAdd(outVal, "exec: " + commandText)
+                add(outVal, "exec: " + commandText)
                 let commandOutput: str = jsonExtractString(line, "commandOutput")
                 if len(commandOutput) > 0:
                     let cmdLines: str[] = splitLinesSimple(commandOutput)
-                    var cidx: int32 = 0
-                    while cidx < len(cmdLines):
-                        seqAdd(outVal, "exec: " + argAt(cmdLines, cidx))
-                        cidx = cidx + 1
+                    for cidx in 0..<len(cmdLines):
+                        add(outVal, "exec: " + argAt(cmdLines, cidx))
                 let exitCode: int32 = jsonExtractInt(line, "commandExit", -1)
                 if exitCode >= 0:
-                    seqAdd(outVal, "exec: exit=" + intToStr(exitCode))
+                    add(outVal, "exec: exit=" + intToStr(exitCode))
             let diffText: str = jsonExtractString(line, "diff")
             if len(diffText) > 0:
                 let diffLines: str[] = splitLinesSimple(diffText)
-                var didx: int32 = 0
-                while didx < len(diffLines):
-                    seqAdd(outVal, "patch: " + argAt(diffLines, didx))
-                    didx = didx + 1
+                for didx in 0..<len(diffLines):
+                    add(outVal, "patch: " + argAt(diffLines, didx))
             let outText: str = jsonExtractString(line, "output")
             if len(outText) > 0:
-                seqAdd(outVal, "tool: " + outText)
-        idx = idx + 1
+                add(outVal, "tool: " + outText)
     return outVal
 
 fn threadContextItems(threadId: str): str[] =
-    var outVal: str[] = newSeq[str]()
+    var outVal: str[] = []
     if len(threadId) == 0:
         return outVal
     # Type annotations are important: current compiler can mis-infer locals and
@@ -828,8 +804,7 @@ fn threadContextItems(threadId: str): str[] =
     if len(content) == 0:
         return outVal
     let lines: str[] = splitLinesSimple(content)
-    var idx: int32 = 1
-    while idx < len(lines):
+    for idx in 1..<len(lines):
         let line: str = lines[idx]
         let eventType: str = jsonExtractString(line, "type")
         if eventType == "turn":
@@ -837,18 +812,16 @@ fn threadContextItems(threadId: str): str[] =
             # seq[str] has been crash-prone under the current ORC/seq runtime.
             let inputText: str = jsonExtractString(line, "input")
             if len(inputText) > 0:
-                seqAdd(outVal, buildInputMessage("user", inputText))
+                add(outVal, buildInputMessage("user", inputText))
             else:
                 let inputItems: str[] = jsonExtractStringArray(line, "inputItems")
                 if len(inputItems) > 0:
                     let inputMsgs: str[] = inputTokensToMessages(inputItems, cwd)
-                    var ii: int32 = 0
-                    while ii < len(inputMsgs):
-                        seqAdd(outVal, inputMsgs[ii])
-                        ii = ii + 1
+                    for ii in 0..<len(inputMsgs):
+                        add(outVal, inputMsgs[ii])
             let agentOutput: str = jsonExtractString(line, "agentOutput")
             if len(agentOutput) > 0:
-                seqAdd(outVal, buildAssistantMessage(agentOutput))
+                add(outVal, buildAssistantMessage(agentOutput))
             let commandText: str = jsonExtractString(line, "command")
             if len(commandText) > 0:
                 # Build incrementally to avoid deep temporary chains.
@@ -858,13 +831,13 @@ fn threadContextItems(threadId: str): str[] =
                 if len(commandOutput) > 0:
                     toolText = toolText + "\n"
                     toolText = toolText + commandOutput
-                seqAdd(outVal, buildAssistantMessage(toolText))
+                add(outVal, buildAssistantMessage(toolText))
             let diffText: str = jsonExtractString(line, "diff")
             if len(diffText) > 0:
-                seqAdd(outVal, buildAssistantMessage("Tool output (apply_patch):\n" + diffText))
+                add(outVal, buildAssistantMessage("Tool output (apply_patch):\n" + diffText))
             let mockText: str = jsonExtractString(line, "mock")
             if len(mockText) > 0:
-                seqAdd(outVal, buildAssistantMessage("Tool output (mock):\n" + mockText))
+                add(outVal, buildAssistantMessage("Tool output (mock):\n" + mockText))
         elif eventType == "tool":
             let toolName: str = jsonExtractString(line, "tool")
             if toolName == "shell":
@@ -878,22 +851,21 @@ fn threadContextItems(threadId: str): str[] =
                 if len(commandOutput) > 0:
                     toolText = toolText + "\n"
                     toolText = toolText + commandOutput
-                seqAdd(outVal, buildAssistantMessage(toolText))
+                add(outVal, buildAssistantMessage(toolText))
             elif toolName == "apply_patch":
                 let diffText: str = jsonExtractString(line, "diff")
                 if len(diffText) > 0:
-                    seqAdd(outVal, buildAssistantMessage("Tool output (apply_patch):\n" + diffText))
+                    add(outVal, buildAssistantMessage("Tool output (apply_patch):\n" + diffText))
                 else:
                     let outText: str = jsonExtractString(line, "output")
                     if len(outText) > 0:
-                        seqAdd(outVal, buildAssistantMessage("Tool output (apply_patch):\n" + outText))
+                        add(outVal, buildAssistantMessage("Tool output (apply_patch):\n" + outText))
             elif toolName == "web_search":
                 let outText: str = jsonExtractString(line, "output")
                 if len(outText) > 0:
-                    seqAdd(outVal, buildAssistantMessage("Tool output (web_search):\n" + outText))
+                    add(outVal, buildAssistantMessage("Tool output (web_search):\n" + outText))
             elif toolName == "mock":
                 let outText: str = jsonExtractString(line, "output")
                 if len(outText) > 0:
-                    seqAdd(outVal, buildAssistantMessage("Tool output (mock):\n" + outText))
-        idx = idx + 1
+                    add(outVal, buildAssistantMessage("Tool output (mock):\n" + outText))
     return outVal

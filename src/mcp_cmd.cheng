@@ -1,6 +1,5 @@
 # MCP command support
 
-import system
 import std/os
 import seqs
 import cheng/codex/common
@@ -75,23 +74,23 @@ fn mcpEmptyServer(name: str): McpServerEntry =
     McpServerEntry(
         name: "" + name,
         command: "",
-        args: newSeq[str](),
-        env: newSeq[McpStringPair](),
+        args: [],
+        env: [],
         hasEnv: false,
-        envVars: newSeq[str](),
+        envVars: [],
         cwd: "",
         url: "",
         bearerTokenEnvVar: "",
-        httpHeaders: newSeq[McpStringPair](),
+        httpHeaders: [],
         hasHttpHeaders: false,
-        envHttpHeaders: newSeq[McpStringPair](),
+        envHttpHeaders: [],
         hasEnvHttpHeaders: false,
         enabled: true,
         disabledReason: "",
         hasEnabledTools: false,
-        enabledTools: newSeq[str](),
+        enabledTools: [],
         hasDisabledTools: false,
-        disabledTools: newSeq[str](),
+        disabledTools: [],
         hasStartupTimeout: false,
         startupTimeoutSec: "",
         hasToolTimeout: false,
@@ -99,11 +98,9 @@ fn mcpEmptyServer(name: str): McpServerEntry =
     )
 
 fn mcpFindServerIndex(servers: var McpServerEntry[], name: str): int32 =
-    var idx: int32 = 0
-    while idx < len(servers):
+    for idx in 0..<servers.len:
         if servers[idx].name == name:
             return idx
-        idx = idx + 1
     return -1
 
 fn mcpGetServerIndex(servers: var McpServerEntry[], name: str): int32 =
@@ -111,21 +108,19 @@ fn mcpGetServerIndex(servers: var McpServerEntry[], name: str): int32 =
     if existing >= 0:
         return existing
     let entry = mcpEmptyServer(name)
-    seqAdd(servers, entry)
-    return len(servers) - 1
+    add(servers, entry)
+    return servers.len - 1
 
 fn mcpSetPair(pairs: var McpStringPair[], key: str, value: str) =
     let keyCopy = "" + key
     let valueCopy = "" + value
-    var idx: int32 = 0
-    while idx < len(pairs):
+    for idx in 0..<pairs.len:
         if pairs[idx].key == keyCopy:
             var item = pairs[idx]
             item.value = valueCopy
             pairs[idx] = item
             return
-        idx = idx + 1
-    seqAdd(pairs, McpStringPair(key: keyCopy, value: valueCopy))
+    add(pairs, McpStringPair(key: keyCopy, value: valueCopy))
 
 fn mcpStrLess(a: str, b: str): bool =
     if a == nil && b == nil:
@@ -137,70 +132,56 @@ fn mcpStrLess(a: str, b: str): bool =
     let lenA = len(a)
     let lenB = len(b)
     let limit = if lenA < lenB: lenA else: lenB
-    var idx: int32 = 0
-    while idx < limit:
+    for idx in 0..<limit:
         let ca = a[idx]
         let cb = b[idx]
         if ca < cb:
             return true
         if ca > cb:
             return false
-        idx = idx + 1
     return lenA < lenB
 
 fn mcpSortPairsByKey(pairs: var McpStringPair[]) =
-    var i: int32 = 0
-    while i < len(pairs):
-        var j: int32 = i + 1
-        while j < len(pairs):
+    for i in 0..<pairs.len:
+        for j in i + 1..<pairs.len:
             if mcpStrLess(pairs[j].key, pairs[i].key):
                 let tmp = pairs[i]
                 pairs[i] = pairs[j]
                 pairs[j] = tmp
-            j = j + 1
-        i = i + 1
 
 fn mcpSortServersByName(servers: var McpServerEntry[]) =
-    var i: int32 = 0
-    while i < len(servers):
-        var j: int32 = i + 1
-        while j < len(servers):
+    for i in 0..<servers.len:
+        for j in i + 1..<servers.len:
             if mcpStrLess(servers[j].name, servers[i].name):
                 let tmp = servers[i]
                 servers[i] = servers[j]
                 servers[j] = tmp
-            j = j + 1
-        i = i + 1
 
 fn mcpSplitKeyPath(text: str): str[] =
-    var outVal: str[] = newSeq[str]()
+    var outVal: str[] = []
     if text == nil:
         return outVal
     var start: int32 = 0
-    var i: int32 = 0
-    while i < len(text):
+    for i in 0..<len(text):
         if text[i] == '.':
             if i > start:
-                seqAdd(outVal, trimLine(__cheng_slice_string(text, start, i - 1, false)))
+                add(outVal, trimLine(__cheng_slice_string(text, start, i - 1, false)))
             else:
-                seqAdd(outVal, "")
+                add(outVal, "")
             start = i + 1
-        i = i + 1
     if start <= len(text) - 1:
-        seqAdd(outVal, trimLine(__cheng_slice_string(text, start, len(text) - 1, false)))
+        add(outVal, trimLine(__cheng_slice_string(text, start, len(text) - 1, false)))
     elif start == len(text):
-        seqAdd(outVal, "")
+        add(outVal, "")
     return outVal
 
 fn mcpJoinParts(parts: str[], start: int32): str =
     var out = ""
-    var idx: int32 = start
-    while idx < len(parts):
+    for idx in start..<len(parts):
         if len(out) == 0:
             out = parts[idx]
         else:
             out = out + "." + parts[idx]
-        idx = idx + 1
     return out
 
 fn mcpSliceCopy(text: str, start: int32, stop: int32): str =
@@ -212,31 +193,34 @@ fn mcpSliceCopy(text: str, start: int32, stop: int32): str =
     if last >= len(text):
         last = len(text) - 1
     var out = ""
-    var idx = start
-    while idx <= last:
+    for idx in start..last:
         let ch = text[idx]
         out = out + $ ch
-        idx = idx + 1
     return out
 
 fn mcpTrimCopy(text: str): str =
     if text == nil || len(text) == 0:
         return ""
     var start: int32 = 0
-    while start < len(text):
-        let ch = text[start]
+    for probe in 0..<len(text):
+        let ch = text[probe]
         if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n':
-            start = start + 1
+            start = probe + 1
         else:
+            start = probe
             break
     if start >= len(text):
         return ""
     var stop: int32 = len(text) - 1
-    while stop >= start:
-        let ch = text[stop]
+    for rev in 0..<len(text):
+        let idx: int32 = len(text) - 1 - rev
+        if idx < start:
+            break
+        let ch = text[idx]
         if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n':
-            stop = stop - 1
+            stop = idx - 1
         else:
+            stop = idx
             break
     return mcpSliceCopy(text, start, stop)
 
@@ -246,8 +230,7 @@ fn mcpStripInlineCommentCopy(line: str): str =
     var out = ""
     var inString = false
     var escaped = false
-    var idx: int32 = 0
-    while idx < len(line):
+    for idx in 0..<len(line):
         let ch = line[idx]
         if inString:
             if escaped:
@@ -257,24 +240,20 @@ fn mcpStripInlineCommentCopy(line: str): str =
             elif ch == '"':
                 inString = false
             out = out + $ ch
-            idx = idx + 1
             continue
         if ch == '"':
             inString = true
             out = out + $ ch
-            idx = idx + 1
             continue
         if ch == '#':
             break
         out = out + $ ch
-        idx = idx + 1
     return mcpTrimCopy(out)
 
 fn mcpCanonicalKey(text: str): str =
     let trimmed = mcpTrimCopy(text)
     var out = ""
-    var idx: int32 = 0
-    while idx < len(trimmed):
+    for idx in 0..<len(trimmed):
         let ch = trimmed[idx]
         if ch >= 'A' && ch <= 'Z':
             out = out + $ char(ch + 32)
@@ -284,7 +263,6 @@ fn mcpCanonicalKey(text: str): str =
             ch
         else:
             out = out + $ ch
-        idx = idx + 1
     return out
 
 fn mcpParseStringValueSimple(raw: str): str =
@@ -294,9 +272,11 @@ fn mcpParseStringValueSimple(raw: str): str =
     if trimmed[0] != '"' || trimmed[len(trimmed) - 1] != '"':
         return trimmed
     var out = ""
-    var idx: int32 = 1
     let stop = len(trimmed) - 1
-    while idx < stop:
+    var skipUntil: int32 = 0
+    for idx in 1..<stop:
+        if idx <= skipUntil:
+            continue
         let ch = trimmed[idx]
         if ch == '\\' && idx + 1 < stop:
             let next = trimmed[idx + 1]
@@ -308,39 +288,45 @@ fn mcpParseStringValueSimple(raw: str): str =
                 out = out + "\t"
             else:
                 out = out + $ next
-            idx = idx + 2
+            skipUntil = idx + 1
             continue
         out = out + $ ch
-        idx = idx + 1
     return out
 
 fn mcpParseStringArraySimple(raw: str): str[] =
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     let trimmed = mcpTrimCopy(raw)
     if len(trimmed) == 0:
         return out
     if trimmed[0] != '[':
         let one = mcpParseStringValueSimple(trimmed)
         if len(one) > 0:
-            seqAdd(out, one)
+            add(out, one)
         return out
-    var idx: int32 = 1
-    while idx < len(trimmed):
-        while idx < len(trimmed):
-            let c = trimmed[idx]
+    var cursor: int32 = 1
+    for idx in cursor..<len(trimmed):
+        if idx < cursor:
+            continue
+        cursor = idx
+        for scan in cursor..<len(trimmed):
+            let c = trimmed[scan]
             if c == ' ' || c == '\t' || c == '\r' || c == '\n':
-                idx = idx + 1
-            else:
-                break
-        if idx >= len(trimmed) || trimmed[idx] == ']':
+                cursor = scan + 1
+                continue
+            cursor = scan
             break
-        if trimmed[idx] == '"':
+        if cursor >= len(trimmed) || trimmed[cursor] == ']':
+            break
+        if trimmed[cursor] == '"':
             var item = ""
-            idx = idx + 1
-            while idx < len(trimmed):
-                let c = trimmed[idx]
-                if c == '\\' && idx + 1 < len(trimmed):
-                    let next = trimmed[idx + 1]
+            var nextCursor = cursor + 1
+            var skipUntil: int32 = cursor
+            for scan in cursor + 1..<len(trimmed):
+                if scan <= skipUntil:
+                    continue
+                let c = trimmed[scan]
+                if c == '\\' && scan + 1 < len(trimmed):
+                    let next = trimmed[scan + 1]
                     if next == 'n':
                         item = item + "\n"
                     elif next == 'r':
@@ -349,56 +335,65 @@ fn mcpParseStringArraySimple(raw: str): str[] =
                         item = item + "\t"
                     else:
                         item = item + $ next
-                    idx = idx + 2
+                    skipUntil = scan + 1
+                    nextCursor = scan + 2
                     continue
                 if c == '"':
-                    idx = idx + 1
+                    nextCursor = scan + 1
                     break
                 item = item + $ c
-                idx = idx + 1
+                nextCursor = scan + 1
             if len(item) > 0:
-                seqAdd(out, item)
+                add(out, item)
+            cursor = nextCursor
         else:
             var item = ""
-            while idx < len(trimmed):
-                let c = trimmed[idx]
+            var nextCursor = cursor
+            for scan in cursor..<len(trimmed):
+                let c = trimmed[scan]
                 if c == ',' || c == ']':
+                    nextCursor = scan
                     break
                 item = item + $ c
-                idx = idx + 1
+                nextCursor = scan + 1
             item = mcpTrimCopy(item)
             if len(item) > 0:
-                seqAdd(out, item)
-        while idx < len(trimmed) && trimmed[idx] != ',' && trimmed[idx] != ']':
-            idx = idx + 1
-        if idx < len(trimmed) && trimmed[idx] == ',':
-            idx = idx + 1
+                add(out, item)
+            cursor = nextCursor
+        var sawSep = false
+        for scan in cursor..<len(trimmed):
+            if trimmed[scan] == ',' || trimmed[scan] == ']':
+                cursor = scan
+                sawSep = true
+                break
+            cursor = scan + 1
+        if ! sawSep:
+            break
+        if cursor < len(trimmed) && trimmed[cursor] == ',':
+            cursor = cursor + 1
     return out
 
 fn mcpSplitCommaList(text: str): str[] =
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     if text == nil || len(text) == 0:
         return out
     var start: int32 = 0
-    var i: int32 = 0
-    while i <= len(text):
+    for i in 0..len(text):
         if i == len(text) || text[i] == ',':
             if i > start:
                 let part = trimLine(__cheng_slice_string(text, start, i - 1, false))
                 if len(part) > 0:
-                    seqAdd(out, part)
+                    add(out, part)
             start = i + 1
-        i = i + 1
     return out
 
 fn mcpSplitInlineEntry(entry: str, outKey: var str, outValue: var str, err: var str): bool =
     err = ""
-    var idx: int32 = 0
     var inString = false
     var escaped = false
-    var braceDepth = 0
-    var bracketDepth = 0
-    while idx < len(entry):
+    var braceDepth: int32 = 0
+    var bracketDepth: int32 = 0
+    for idx in 0..<len(entry):
         let ch = entry[idx]
         if inString:
             if escaped:
@@ -433,14 +428,17 @@ fn mcpSplitInlineEntry(entry: str, outKey: var str, outValue: var str, err: var 
                 outKey = keyText
                 outValue = valText
                 return true
-        idx = idx + 1
     err = "invalid inline table entry"
     return false
 
 fn mcpParseInlineTableEntries(raw: str, outPairs: var McpStringPair[], err: var str): bool =
     err = ""
     let trimmed = trimLine(raw)
-    var pairs: McpStringPair[] = newSeq[McpStringPair]()
+    var pairs: McpStringPair[] = []
+    var inString = false
+    var escaped = false
+    var braceDepth: int32 = 0
+    var bracketDepth: int32 = 0
     if len(trimmed) == 0:
         outPairs = pairs
         return true
@@ -450,14 +448,9 @@ fn mcpParseInlineTableEntries(raw: str, outPairs: var McpStringPair[], err: var 
     var inner: str = ""
     if len(trimmed) > 2:
         inner = __cheng_slice_string(trimmed, 1, len(trimmed) - 2, false)
-    var entries: str[] = newSeq[str]()
+    var entries: str[] = []
     var start: int32 = 0
-    var idx: int32 = 0
-    var inString = false
-    var escaped = false
-    var braceDepth = 0
-    var bracketDepth = 0
-    while idx < len(inner):
+    for idx in 0..<len(inner):
         let ch = inner[idx]
         if inString:
             if escaped:
@@ -483,15 +476,13 @@ fn mcpParseInlineTableEntries(raw: str, outPairs: var McpStringPair[], err: var 
                 var entry = ""
                 if idx > start:
                     entry = trimLine(__cheng_slice_string(inner, start, idx - 1, false))
-                seqAdd(entries, entry)
+                add(entries, entry)
                 start = idx + 1
-        idx = idx + 1
     if start <= len(inner) - 1:
-        seqAdd(entries, trimLine(__cheng_slice_string(inner, start, len(inner) - 1, false)))
+        add(entries, trimLine(__cheng_slice_string(inner, start, len(inner) - 1, false)))
     elif start == len(inner):
-        seqAdd(entries, "")
-    var eidx: int32 = 0
-    while eidx < len(entries):
+        add(entries, "")
+    for eidx in 0..<len(entries):
         let entry = entries[eidx]
         if len(entry) > 0:
             var keyText = ""
@@ -500,8 +491,7 @@ fn mcpParseInlineTableEntries(raw: str, outPairs: var McpStringPair[], err: var 
             if ! mcpSplitInlineEntry(entry, keyText, valText, entryErr):
                 err = entryErr
                 return false
-            seqAdd(pairs, McpStringPair(key: keyText, value: valText))
-        eidx = eidx + 1
+            add(pairs, McpStringPair(key: keyText, value: valText))
     outPairs = pairs
     return true
 
@@ -510,14 +500,12 @@ fn mcpInlineTableToStringPairs(raw: str, outPairs: var McpStringPair[]): bool =
     var err = ""
     if ! mcpParseInlineTableEntries(raw, entries, err):
         return false
-    var pairs: McpStringPair[] = newSeq[McpStringPair]()
-    var idx: int32 = 0
-    while idx < len(entries):
+    var pairs: McpStringPair[] = []
+    for idx in 0..<len(entries):
         let keyText = trimLine(entries[idx].key)
         if len(keyText) > 0:
             let valueText = parseTomlStringValue(entries[idx].value)
-            seqAdd(pairs, McpStringPair(key: keyText, value: valueText))
-        idx = idx + 1
+            add(pairs, McpStringPair(key: keyText, value: valueText))
     outPairs = pairs
     return true
 
@@ -535,12 +523,12 @@ fn mcpIsNumericLiteral(text: str): bool =
     let trimmed = trimLine(text)
     if len(trimmed) == 0:
         return false
-    var idx: int32 = 0
+    var start: int32 = 0
     if trimmed[0] == '-':
-        idx = 1
+        start = 1
     var sawDigit = false
     var sawDot = false
-    while idx < len(trimmed):
+    for idx in start..<len(trimmed):
         let ch = trimmed[idx]
         if ch >= '0' && ch <= '9':
             sawDigit = true
@@ -548,7 +536,6 @@ fn mcpIsNumericLiteral(text: str): bool =
             sawDot = true
         else:
             return false
-        idx = idx + 1
     return sawDigit
 
 fn mcpNormalizeNumberValue(raw: str, outValue: var str): bool =
@@ -580,28 +567,22 @@ fn mcpSecondsFromMillis(ms: int64): str =
 
 fn mcpApplyEnvPairs(entry: var McpServerEntry, pairs: McpStringPair[]) =
     var envPairs = entry.env
-    var idx: int32 = 0
-    while idx < len(pairs):
+    for idx in 0..<pairs.len:
         mcpSetPair(envPairs, pairs[idx].key, pairs[idx].value)
-        idx = idx + 1
     entry.env = envPairs
     entry.hasEnv = true
 
 fn mcpApplyHttpHeaderPairs(entry: var McpServerEntry, pairs: McpStringPair[]) =
     var headerPairs = entry.httpHeaders
-    var idx: int32 = 0
-    while idx < len(pairs):
+    for idx in 0..<pairs.len:
         mcpSetPair(headerPairs, pairs[idx].key, pairs[idx].value)
-        idx = idx + 1
     entry.httpHeaders = headerPairs
     entry.hasHttpHeaders = true
 
 fn mcpApplyEnvHttpHeaderPairs(entry: var McpServerEntry, pairs: McpStringPair[]) =
     var headerPairs = entry.envHttpHeaders
-    var idx: int32 = 0
-    while idx < len(pairs):
+    for idx in 0..<pairs.len:
         mcpSetPair(headerPairs, pairs[idx].key, pairs[idx].value)
-        idx = idx + 1
     entry.envHttpHeaders = headerPairs
     entry.hasEnvHttpHeaders = true
 
@@ -609,7 +590,7 @@ fn mcpApplyField(servers: var McpServerEntry[], name: str, key: str, rawValue: s
     let idx = mcpGetServerIndex(servers, name)
     var entry = servers[idx]
     let keyNorm = normalizePolicy(trimLine(key))
-    var pairs: McpStringPair[] = newSeq[McpStringPair]()
+    var pairs: McpStringPair[] = []
     var enabled = false
     var startupText = ""
     var toolText = ""
@@ -618,7 +599,7 @@ fn mcpApplyField(servers: var McpServerEntry[], name: str, key: str, rawValue: s
     elif keyNorm == "args":
         entry.args = parseTomlStringArray(rawValue)
     elif keyNorm == "env":
-        pairs = newSeq[McpStringPair]()
+        pairs = []
         if mcpInlineTableToStringPairs(rawValue, pairs):
             mcpApplyEnvPairs(entry, pairs)
     elif keyNorm == "env_vars":
@@ -630,11 +611,11 @@ fn mcpApplyField(servers: var McpServerEntry[], name: str, key: str, rawValue: s
     elif keyNorm == "bearer_token_env_var":
         entry.bearerTokenEnvVar = "" + parseTomlStringValue(rawValue)
     elif keyNorm == "http_headers":
-        pairs = newSeq[McpStringPair]()
+        pairs = []
         if mcpInlineTableToStringPairs(rawValue, pairs):
             mcpApplyHttpHeaderPairs(entry, pairs)
     elif keyNorm == "env_http_headers":
-        pairs = newSeq[McpStringPair]()
+        pairs = []
         if mcpInlineTableToStringPairs(rawValue, pairs):
             mcpApplyEnvHttpHeaderPairs(entry, pairs)
     elif keyNorm == "enabled":
@@ -673,10 +654,8 @@ fn mcpApplyInlineTable(servers: var McpServerEntry[], name: str, rawValue: str) 
     var err = ""
     if ! mcpParseInlineTableEntries(rawValue, entries, err):
         return
-    var idx: int32 = 0
-    while idx < len(entries):
+    for idx in 0..<len(entries):
         mcpApplyField(servers, name, entries[idx].key, entries[idx].value)
-        idx = idx + 1
 
 fn mcpHandleRootEntry(servers: var McpServerEntry[], keyText: str, valueText: str) =
     let parts = mcpSplitKeyPath(keyText)
@@ -791,19 +770,17 @@ fn mcpHandleGlobalEntry(servers: var McpServerEntry[], keyText: str, valueText: 
     mcpApplyField(servers, name, field, valueText)
 
 fn mcpFindServerIndexSimple(servers: var McpServerEntry[], name: str): int32 =
-    var idx: int32 = 0
-    while idx < len(servers):
+    for idx in 0..<servers.len:
         if servers[idx].name == name:
             return idx
-        idx = idx + 1
     return -1
 
 fn mcpEnsureServerIndexSimple(servers: var McpServerEntry[], name: str): int32 =
     let found = mcpFindServerIndexSimple(servers, name)
     if found >= 0:
         return found
-    seqAdd(servers, mcpEmptyServer(name))
-    return len(servers) - 1
+    add(servers, mcpEmptyServer(name))
+    return servers.len - 1
 
 fn mcpLiteEmpty(name: str): McpLiteEntry =
     McpLiteEntry(
@@ -822,31 +799,25 @@ fn mcpLiteEmpty(name: str): McpLiteEntry =
     )
 
 fn mcpLiteFindIndex(items: var McpLiteEntry[], name: str): int32 =
-    var i: int32 = 0
-    while i < len(items):
+    for i in 0..<items.len:
         if items[i].name == name:
             return i
-        i = i + 1
     return -1
 
 fn mcpLiteEnsureIndex(items: var McpLiteEntry[], name: str): int32 =
     let found = mcpLiteFindIndex(items, name)
     if found >= 0:
         return found
-    seqAdd(items, mcpLiteEmpty(name))
-    return len(items) - 1
+    add(items, mcpLiteEmpty(name))
+    return items.len - 1
 
 fn mcpLiteSortByName(items: var McpLiteEntry[]) =
-    var i: int32 = 0
-    while i < len(items):
-        var j: int32 = i + 1
-        while j < len(items):
+    for i in 0..<items.len:
+        for j in i + 1..<items.len:
             if mcpStrLess(items[j].name, items[i].name):
                 let tmp = items[i]
                 items[i] = items[j]
                 items[j] = tmp
-            j = j + 1
-        i = i + 1
 
 fn mcpLiteTransportType(entry: McpLiteEntry): str =
     if len(entry.command) > 0:
@@ -865,7 +836,7 @@ fn mcpLiteAuthStatus(entry: McpLiteEntry): str =
     return "not_logged_in"
 
 fn mcpLoadServersLiteFromConfig(): McpLiteEntry[] =
-    var out: McpLiteEntry[] = newSeq[McpLiteEntry]()
+    var out: McpLiteEntry[] = []
     let path = codexConfigPath()
     if len(path) == 0 || ! os.fileExists(path):
         return out
@@ -875,11 +846,9 @@ fn mcpLoadServersLiteFromConfig(): McpLiteEntry[] =
     let lines = splitLinesSimple(content)
     var sectionName = ""
     var sectionSub = ""
-    var i: int32 = 0
-    while i < len(lines):
+    for i in 0..<len(lines):
         let raw = mcpTrimCopy("" + lines[i])
         if len(raw) == 0 || hasPrefix(raw, "#"):
-            i = i + 1
             continue
         if raw[0] == '[' && raw[len(raw) - 1] == ']':
             let section = mcpTrimCopy(mcpSliceCopy(raw, 1, len(raw) - 2))
@@ -888,36 +857,29 @@ fn mcpLoadServersLiteFromConfig(): McpLiteEntry[] =
             if hasPrefix(section, "mcp_servers."):
                 let prefixLen = len("mcp_servers.")
                 var dot: int32 = -1
-                var j: int32 = prefixLen
-                while j < len(section):
+                for j in prefixLen..<len(section):
                     if section[j] == '.':
                         dot = j
                         break
-                    j = j + 1
                 if dot > prefixLen:
                     sectionName = mcpTrimCopy(mcpSliceCopy(section, prefixLen, dot - 1))
                     if dot + 1 <= len(section) - 1:
                         sectionSub = normalizePolicy(mcpTrimCopy(mcpSliceCopy(section, dot + 1, len(section) - 1)))
                 elif prefixLen <= len(section) - 1:
                     sectionName = mcpTrimCopy(mcpSliceCopy(section, prefixLen, len(section) - 1))
-            i = i + 1
             continue
         if len(sectionName) == 0:
-            i = i + 1
             continue
         let eq = findChar(raw, '=')
         if eq <= 0:
-            i = i + 1
             continue
         let keyText = normalizePolicy(mcpTrimCopy(mcpSliceCopy(raw, 0, eq - 1)))
         let valueText = mcpTrimCopy(mcpSliceCopy(raw, eq + 1, len(raw) - 1))
         let idx = mcpLiteEnsureIndex(out, sectionName)
         var entry = out[idx]
         if len(sectionSub) > 0 && sectionSub != "env" && sectionSub != "http_headers" && sectionSub != "env_http_headers":
-            i = i + 1
             continue
         if sectionSub == "env" || sectionSub == "http_headers" || sectionSub == "env_http_headers":
-            i = i + 1
             out[idx] = entry
             continue
         if keyText == "command":
@@ -949,7 +911,6 @@ fn mcpLoadServersLiteFromConfig(): McpLiteEntry[] =
             if mcpNormalizeNumberValue(valueText, toolText):
                 entry.toolTimeoutSec = toolText
         out[idx] = entry
-        i = i + 1
     return out
 
 fn mcpApplySimpleFieldValue(entryIn: McpServerEntry, keyText: str, valueText: str): McpServerEntry =
@@ -1000,7 +961,7 @@ fn mcpApplySimpleFieldValue(entryIn: McpServerEntry, keyText: str, valueText: st
     return entry
 
 fn mcpLoadServersFromConfig(): McpServerEntry[] =
-    var servers: McpServerEntry[] = newSeq[McpServerEntry]()
+    var servers: McpServerEntry[] = []
     let path = codexConfigPath()
     if len(path) == 0 || ! os.fileExists(path):
         return servers
@@ -1010,11 +971,9 @@ fn mcpLoadServersFromConfig(): McpServerEntry[] =
     let lines = splitLinesSimple(content)
     var sectionName = ""
     var sectionSub = ""
-    var i: int32 = 0
-    while i < len(lines):
+    for i in 0..<len(lines):
         let raw = mcpTrimCopy("" + lines[i])
         if len(raw) == 0 || hasPrefix(raw, "#"):
-            i = i + 1
             continue
         if raw[0] == '[' && raw[len(raw) - 1] == ']':
             let section = mcpTrimCopy(mcpSliceCopy(raw, 1, len(raw) - 2))
@@ -1023,28 +982,23 @@ fn mcpLoadServersFromConfig(): McpServerEntry[] =
             if hasPrefix(section, "mcp_servers."):
                 let prefixLen = len("mcp_servers.")
                 var dot: int32 = -1
-                var didx: int32 = prefixLen
-                while didx < len(section):
+                for didx in prefixLen..<len(section):
                     if section[didx] == '.':
                         dot = didx
                         break
-                    didx = didx + 1
                 if dot > prefixLen:
                     sectionName = mcpTrimCopy(mcpSliceCopy(section, prefixLen, dot - 1))
                     if dot + 1 <= len(section) - 1:
                         sectionSub = normalizePolicy(mcpTrimCopy(mcpSliceCopy(section, dot + 1, len(section) - 1)))
                 elif prefixLen <= len(section) - 1:
                     sectionName = mcpTrimCopy(mcpSliceCopy(section, prefixLen, len(section) - 1))
-            i = i + 1
             continue
         let eq = findChar(raw, '=')
         if eq <= 0:
-            i = i + 1
             continue
         let keyText = mcpTrimCopy(mcpSliceCopy(raw, 0, eq - 1))
         let valueText = mcpTrimCopy(mcpSliceCopy(raw, eq + 1, len(raw) - 1))
         if len(keyText) == 0:
-            i = i + 1
             continue
         if len(sectionName) > 0:
             let sidx = mcpEnsureServerIndexSimple(servers, sectionName)
@@ -1103,36 +1057,27 @@ fn mcpLoadServersFromConfig(): McpServerEntry[] =
                         entry.toolTimeoutSec = toolText
                         entry.hasToolTimeout = true
             servers[sidx] = entry
-            i = i + 1
             continue
-        i = i + 1
     return servers
 
 fn mcpFormatEnvDisplay(envPairs: McpStringPair[], envVars: str[]): str =
-    var parts: str[] = newSeq[str]()
-    var idx: int32 = 0
+    var parts: str[] = []
     if len(envPairs) > 0:
         var sorted = envPairs
         mcpSortPairsByKey(sorted)
-        idx = 0
-        while idx < len(sorted):
-            seqAdd(parts, sorted[idx].key + "=*****")
-            idx = idx + 1
+        for idx in 0..<len(sorted):
+            add(parts, sorted[idx].key + "=*****")
     if len(envVars) > 0:
-        idx = 0
-        while idx < len(envVars):
-            seqAdd(parts, envVars[idx] + "=*****")
-            idx = idx + 1
+        for idx in 0..<len(envVars):
+            add(parts, envVars[idx] + "=*****")
     if len(parts) == 0:
         return "-"
     var out = ""
-    idx = 0
-    while idx < len(parts):
+    for idx in 0..<len(parts):
         if idx == 0:
             out = parts[idx]
         else:
             out = out + ", " + parts[idx]
-        idx = idx + 1
     return out
 
 fn mcpFormatHeadersDisplay(headers: McpStringPair[], maskValues: bool): str =
@@ -1141,8 +1086,7 @@ fn mcpFormatHeadersDisplay(headers: McpStringPair[], maskValues: bool): str =
     var sorted = headers
     mcpSortPairsByKey(sorted)
     var out = ""
-    var idx: int32 = 0
-    while idx < len(sorted):
+    for idx in 0..<len(sorted):
         var value: str = sorted[idx].value
         if maskValues:
             value = "*****"
@@ -1151,7 +1095,6 @@ fn mcpFormatHeadersDisplay(headers: McpStringPair[], maskValues: bool): str =
             out = part
         else:
             out = out + ", " + part
-        idx = idx + 1
     return out
 
 fn mcpAuthDisplay(status: int32): str =
@@ -1197,37 +1140,29 @@ fn mcpHasTransport(entry: McpServerEntry): bool =
     return len(entry.command) > 0 || len(entry.url) > 0
 
 fn mcpHeadersFromEntry(entry: McpServerEntry): str[] =
-    var headers: str[] = newSeq[str]()
+    var headers: str[] = []
     if entry.hasHttpHeaders:
-        var idx: int32 = 0
-        while idx < len(entry.httpHeaders):
+        for idx in 0..<len(entry.httpHeaders):
             let pair = entry.httpHeaders[idx]
-            seqAdd(headers, pair.key + ": " + pair.value)
-            idx = idx + 1
+            add(headers, pair.key + ": " + pair.value)
     if entry.hasEnvHttpHeaders:
-        var idx: int32 = 0
-        while idx < len(entry.envHttpHeaders):
+        for idx in 0..<len(entry.envHttpHeaders):
             let pair = entry.envHttpHeaders[idx]
             let envVal = os.getEnv(pair.value)
             if len(envVal) > 0:
-                seqAdd(headers, pair.key + ": " + envVal)
-            idx = idx + 1
+                add(headers, pair.key + ": " + envVal)
     return headers
 
 fn mcpJsonArrayFromStrings(items: str[]): str =
-    var jsonItems: str[] = newSeq[str]()
-    var idx: int32 = 0
-    while idx < len(items):
-        seqAdd(jsonItems, jstrString(items[idx]))
-        idx = idx + 1
+    var jsonItems: str[] = []
+    for idx in 0..<items.len:
+        add(jsonItems, jstrString(items[idx]))
     return jstrArray(jsonItems)
 
 fn mcpJsonObjectFromPairs(pairs: McpStringPair[]): str =
-    var items: str[] = newSeq[str]()
-    var idx: int32 = 0
-    while idx < len(pairs):
-        seqAdd(items, jstrPair(pairs[idx].key, jstrString(pairs[idx].value)))
-        idx = idx + 1
+    var items: str[] = []
+    for idx in 0..<pairs.len:
+        add(items, jstrPair(pairs[idx].key, jstrString(pairs[idx].value)))
     return jstrObject(items)
 
 fn mcpJsonNumberOrString(rawValue: str): str =
@@ -1243,36 +1178,34 @@ fn padRight(text: str, width: int32): str =
 
 fn joinComma(items: str[]): str =
     var out = ""
-    var idx: int32 = 0
-    while idx < len(items):
+    for idx in 0..<items.len:
         if idx == 0:
             out = items[idx]
         else:
             out = out + ", " + items[idx]
-        idx = idx + 1
     return out
 
 fn mcpTransportJson(entry: McpServerEntry): str =
-    var pairs: str[] = newSeq[str]()
+    var pairs: str[] = []
     if len(entry.command) > 0:
-        seqAdd(pairs, jstrPair("type", jstrString("stdio")))
-        seqAdd(pairs, jstrPair("command", jstrString(entry.command)))
-        seqAdd(pairs, jstrPair("args", mcpJsonArrayFromStrings(entry.args)))
+        add(pairs, jstrPair("type", jstrString("stdio")))
+        add(pairs, jstrPair("command", jstrString(entry.command)))
+        add(pairs, jstrPair("args", mcpJsonArrayFromStrings(entry.args)))
         let envJson = if entry.hasEnv: mcpJsonObjectFromPairs(entry.env) else: jstrNull()
-        seqAdd(pairs, jstrPair("env", envJson))
-        seqAdd(pairs, jstrPair("env_vars", mcpJsonArrayFromStrings(entry.envVars)))
+        add(pairs, jstrPair("env", envJson))
+        add(pairs, jstrPair("env_vars", mcpJsonArrayFromStrings(entry.envVars)))
         let cwdJson = if len(entry.cwd) > 0: jstrString(entry.cwd) else: jstrNull()
-        seqAdd(pairs, jstrPair("cwd", cwdJson))
+        add(pairs, jstrPair("cwd", cwdJson))
         return jstrObject(pairs)
     if len(entry.url) > 0:
-        seqAdd(pairs, jstrPair("type", jstrString("streamable_http")))
-        seqAdd(pairs, jstrPair("url", jstrString(entry.url)))
+        add(pairs, jstrPair("type", jstrString("streamable_http")))
+        add(pairs, jstrPair("url", jstrString(entry.url)))
         let bearerJson = if len(entry.bearerTokenEnvVar) > 0: jstrString(entry.bearerTokenEnvVar) else: jstrNull()
-        seqAdd(pairs, jstrPair("bearer_token_env_var", bearerJson))
+        add(pairs, jstrPair("bearer_token_env_var", bearerJson))
         let headersJson = if entry.hasHttpHeaders: mcpJsonObjectFromPairs(entry.httpHeaders) else: jstrNull()
-        seqAdd(pairs, jstrPair("http_headers", headersJson))
+        add(pairs, jstrPair("http_headers", headersJson))
         let envHeadersJson = if entry.hasEnvHttpHeaders: mcpJsonObjectFromPairs(entry.envHttpHeaders) else: jstrNull()
-        seqAdd(pairs, jstrPair("env_http_headers", envHeadersJson))
+        add(pairs, jstrPair("env_http_headers", envHeadersJson))
         return jstrObject(pairs)
     return jstrNull()
 
@@ -1281,60 +1214,53 @@ fn mcpFormatTomlString(value: str): str =
 
 fn mcpFormatTomlStringArray(items: str[]): str =
     var out = "["
-    var idx: int32 = 0
-    while idx < len(items):
+    for idx in 0..<items.len:
         if idx > 0:
             out = out + ", "
         out = out + mcpFormatTomlString(items[idx])
-        idx = idx + 1
     out = out + "]"
     return out
 
 fn mcpBuildStdioConfigLines(name: str, command: str, args: str[], envPairs: McpStringPair[]): str[] =
-    var lines: str[] = newSeq[str]()
-    seqAdd(lines, "[mcp_servers." + name + "]")
-    seqAdd(lines, "command = " + mcpFormatTomlString(command))
+    var lines: str[] = []
+    add(lines, "[mcp_servers." + name + "]")
+    add(lines, "command = " + mcpFormatTomlString(command))
     if len(args) > 0:
-        seqAdd(lines, "args = " + mcpFormatTomlStringArray(args))
+        add(lines, "args = " + mcpFormatTomlStringArray(args))
     if len(envPairs) > 0:
-        seqAdd(lines, "")
-        seqAdd(lines, "[mcp_servers." + name + ".env]")
+        add(lines, "")
+        add(lines, "[mcp_servers." + name + ".env]")
         var sorted = envPairs
         mcpSortPairsByKey(sorted)
-        var idx: int32 = 0
-        while idx < len(sorted):
-            seqAdd(lines, sorted[idx].key + " = " + mcpFormatTomlString(sorted[idx].value))
-            idx = idx + 1
+        for idx in 0..<len(sorted):
+            add(lines, sorted[idx].key + " = " + mcpFormatTomlString(sorted[idx].value))
     return lines
 
 fn mcpBuildHttpConfigLines(name: str, url: str, bearerTokenEnvVar: str): str[] =
-    var lines: str[] = newSeq[str]()
-    seqAdd(lines, "[mcp_servers." + name + "]")
-    seqAdd(lines, "url = " + mcpFormatTomlString(url))
+    var lines: str[] = []
+    add(lines, "[mcp_servers." + name + "]")
+    add(lines, "url = " + mcpFormatTomlString(url))
     if len(bearerTokenEnvVar) > 0:
-        seqAdd(lines, "bearer_token_env_var = " + mcpFormatTomlString(bearerTokenEnvVar))
+        add(lines, "bearer_token_env_var = " + mcpFormatTomlString(bearerTokenEnvVar))
     return lines
 
 fn mcpJoinLines(lines: str[]): str =
     var out = ""
-    var idx: int32 = 0
-    while idx < len(lines):
+    for idx in 0..<len(lines):
         if idx == 0:
             out = lines[idx]
         else:
             out = out + "\n" + lines[idx]
-        idx = idx + 1
     if len(out) > 0:
         out = out + "\n"
     return out
 
 fn mcpRemoveServerFromLines(lines: str[], name: str, removed: var bool): str[] =
     removed = false
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     var section = ""
     var skipPrefix = ""
-    var idx: int32 = 0
-    while idx < len(lines):
+    for idx in 0..<len(lines):
         let rawLine = lines[idx]
         let noComment = stripInlineComment(rawLine)
         let trimmed = trimLine(noComment)
@@ -1343,24 +1269,19 @@ fn mcpRemoveServerFromLines(lines: str[], name: str, removed: var bool): str[] =
             if len(skipPrefix) > 0:
                 if hasPrefix(section, skipPrefix):
                     removed = true
-                    idx = idx + 1
                     continue
                 skipPrefix = ""
             let prefix = "mcp_servers." + name
             if hasPrefix(section, prefix):
                 skipPrefix = prefix
                 removed = true
-                idx = idx + 1
                 continue
-            seqAdd(out, rawLine)
-            idx = idx + 1
+            add(out, rawLine)
             continue
         if len(skipPrefix) > 0:
-            idx = idx + 1
             continue
         if len(trimmed) == 0 || trimmed[0] == '#':
-            seqAdd(out, rawLine)
-            idx = idx + 1
+            add(out, rawLine)
             continue
         let eq = findChar(trimmed, '=')
         if eq > 0:
@@ -1368,14 +1289,11 @@ fn mcpRemoveServerFromLines(lines: str[], name: str, removed: var bool): str[] =
             if section == "mcp_servers":
                 if keyText == name || hasPrefix(keyText, name + "."):
                     removed = true
-                    idx = idx + 1
                     continue
             if hasPrefix(keyText, "mcp_servers." + name):
                 removed = true
-                idx = idx + 1
                 continue
-        seqAdd(out, rawLine)
-        idx = idx + 1
+        add(out, rawLine)
     return out
 
 fn mcpSectionNameFromHeaderLine(line: str): str =
@@ -1385,19 +1303,15 @@ fn mcpSectionNameFromHeaderLine(line: str): str =
     if ! hasPrefix("" + trimmed, "["):
         return ""
     var lastCh: char = '\0'
-    var idx: int32 = 0
-    while idx < len(trimmed):
+    for idx in 0..<len(trimmed):
         lastCh = trimmed[idx]
-        idx = idx + 1
     if lastCh != ']':
         return ""
     var section = ""
-    var sidx: int32 = 1
     let stop = len(trimmed) - 1
-    while sidx < stop:
+    for sidx in 1..<stop:
         let ch = trimmed[sidx]
         section = section + $ ch
-        sidx = sidx + 1
     return mcpTrimCopy(section)
 
 fn mcpIsTargetSection(section: str, name: str): bool =
@@ -1409,26 +1323,21 @@ fn mcpIsTargetSection(section: str, name: str): bool =
     return false
 
 fn mcpRemoveServerFromLinesSafe(lines: str[], name: str): str[] =
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     var skipSection = false
-    var idx: int32 = 0
-    while idx < len(lines):
+    for idx in 0..<len(lines):
         let rawLine = "" + lines[idx]
         let section = mcpSectionNameFromHeaderLine(rawLine)
         if len(section) > 0:
             if mcpIsTargetSection(section, name):
                 skipSection = true
-                idx = idx + 1
                 continue
             skipSection = false
-            seqAdd(out, rawLine)
-            idx = idx + 1
+            add(out, rawLine)
             continue
         if skipSection:
-            idx = idx + 1
             continue
-        seqAdd(out, rawLine)
-        idx = idx + 1
+        add(out, rawLine)
     return out
 
 fn mcpWriteConfigLines(lines: str[]): bool =
@@ -1458,24 +1367,20 @@ fn mcpParseEnvPair(raw: str, outKey: var str, outValue: var str): bool =
 fn mcpValidServerName(name: str): bool =
     if len(name) == 0:
         return false
-    var idx: int32 = 0
-    while idx < len(name):
+    for idx in 0..<len(name):
         let ch = name[idx]
         if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_':
-            idx = idx + 1
             continue
         return false
     return true
 
 fn mcpJoinSpace(items: str[]): str =
     var out = ""
-    var idx: int32 = 0
-    while idx < len(items):
+    for idx in 0..<items.len:
         if idx == 0:
             out = items[idx]
         else:
             out = out + " " + items[idx]
-        idx = idx + 1
     return out
 
 fn mcpToolListDisplay(hasTools: bool, tools: str[]): str =
@@ -1496,28 +1401,27 @@ fn mcpTimeoutJson(hasTimeout: bool, raw: str): str =
     return mcpJsonNumberOrString(raw)
 
 fn mcpServerJson(entry: McpServerEntry, includeToolFilters: bool, includeAuthStatus: bool): str =
-    var fields: str[] = newSeq[str]()
+    var fields: str[] = []
     let authStatus = mcpDetermineAuthStatus(entry)
-    seqAdd(fields, jstrPair("name", jstrString(entry.name)))
-    seqAdd(fields, jstrPair("enabled", jstrBool(entry.enabled)))
+    add(fields, jstrPair("name", jstrString(entry.name)))
+    add(fields, jstrPair("enabled", jstrBool(entry.enabled)))
     let disabledReasonJson = if len(entry.disabledReason) > 0: jstrString(entry.disabledReason) else: jstrNull()
-    seqAdd(fields, jstrPair("disabled_reason", disabledReasonJson))
-    seqAdd(fields, jstrPair("transport", mcpTransportJson(entry)))
+    add(fields, jstrPair("disabled_reason", disabledReasonJson))
+    add(fields, jstrPair("transport", mcpTransportJson(entry)))
     if includeToolFilters:
-        seqAdd(fields, jstrPair("enabled_tools", mcpToolListJson(entry.hasEnabledTools, entry.enabledTools)))
-        seqAdd(fields, jstrPair("disabled_tools", mcpToolListJson(entry.hasDisabledTools, entry.disabledTools)))
-    seqAdd(fields, jstrPair("startup_timeout_sec", mcpTimeoutJson(entry.hasStartupTimeout, entry.startupTimeoutSec)))
-    seqAdd(fields, jstrPair("tool_timeout_sec", mcpTimeoutJson(entry.hasToolTimeout, entry.toolTimeoutSec)))
+        add(fields, jstrPair("enabled_tools", mcpToolListJson(entry.hasEnabledTools, entry.enabledTools)))
+        add(fields, jstrPair("disabled_tools", mcpToolListJson(entry.hasDisabledTools, entry.disabledTools)))
+    add(fields, jstrPair("startup_timeout_sec", mcpTimeoutJson(entry.hasStartupTimeout, entry.startupTimeoutSec)))
+    add(fields, jstrPair("tool_timeout_sec", mcpTimeoutJson(entry.hasToolTimeout, entry.toolTimeoutSec)))
     if includeAuthStatus:
-        seqAdd(fields, jstrPair("auth_status", jstrString(mcpAuthJson(authStatus))))
+        add(fields, jstrPair("auth_status", jstrString(mcpAuthJson(authStatus))))
     return jstrObject(fields)
 
 fn mcpPrintStdioRows(rows: McpStdioRow[]) =
     if len(rows) == 0:
         return
     printLine("Name  Command  Args  Env  Cwd  Status  Auth")
-    var idx: int32 = 0
-    while idx < len(rows):
+    for idx in 0..<len(rows):
         let row = rows[idx]
         # Build incrementally to avoid deep temporary chains.
         var line: str = row.name
@@ -1534,14 +1438,12 @@ fn mcpPrintStdioRows(rows: McpStdioRow[]) =
         line = line + "  "
         line = line + row.auth
         printLine(line)
-        idx = idx + 1
 
 fn mcpPrintHttpRows(rows: McpHttpRow[]) =
     if len(rows) == 0:
         return
     printLine("Name  URL  Bearer Token Var  Status  Auth")
-    var idx: int32 = 0
-    while idx < len(rows):
+    for idx in 0..<len(rows):
         let row = rows[idx]
         # Build incrementally to avoid deep temporary chains.
         var line: str = row.name
@@ -1554,12 +1456,10 @@ fn mcpPrintHttpRows(rows: McpHttpRow[]) =
         line = line + "  "
         line = line + row.auth
         printLine(line)
-        idx = idx + 1
 
 fn runMcpList(args: str[], start: int32): int32 =
     var json = false
-    var i: int32 = start
-    while i < len(args):
+    for i in start..<len(args):
         let arg = argAt(args, i)
         if arg == "--help" || arg == "-h":
             printLine("usage: codex mcp list [--json]")
@@ -1569,46 +1469,40 @@ fn runMcpList(args: str[], start: int32): int32 =
         else:
             printErr("unknown option: " + arg)
             return 2
-        i = i + 1
     var servers = mcpLoadServersLiteFromConfig()
     mcpLiteSortByName(servers)
     if json:
-        var entries: str[] = newSeq[str]()
-        var idx: int32 = 0
-        while idx < len(servers):
+        var entries: str[] = []
+        for idx in 0..<servers.len:
             let entry = servers[idx]
             let transportType = mcpLiteTransportType(entry)
-            var fields: str[] = newSeq[str]()
-            var transportFields: str[] = newSeq[str]()
-            seqAdd(transportFields, jstrPair("type", jstrString(transportType)))
+            var fields: str[] = []
+            var transportFields: str[] = []
+            add(transportFields, jstrPair("type", jstrString(transportType)))
             if len(entry.command) > 0:
-                seqAdd(transportFields, jstrPair("command", jstrString(entry.command)))
+                add(transportFields, jstrPair("command", jstrString(entry.command)))
             elif len(entry.url) > 0:
-                seqAdd(transportFields, jstrPair("url", jstrString(entry.url)))
-            seqAdd(fields, jstrPair("name", jstrString(entry.name)))
-            seqAdd(fields, jstrPair("enabled", jstrBool(entry.enabled)))
-            seqAdd(fields, jstrPair("disabled_reason", if len(entry.disabledReason) > 0: jstrString(entry.disabledReason) else: jstrNull()))
-            seqAdd(fields, jstrPair("transport", jstrObject(transportFields)))
-            seqAdd(fields, jstrPair("auth_status", jstrString(mcpLiteAuthStatus(entry))))
-            seqAdd(entries, jstrObject(fields))
-            idx = idx + 1
+                add(transportFields, jstrPair("url", jstrString(entry.url)))
+            add(fields, jstrPair("name", jstrString(entry.name)))
+            add(fields, jstrPair("enabled", jstrBool(entry.enabled)))
+            add(fields, jstrPair("disabled_reason", if len(entry.disabledReason) > 0: jstrString(entry.disabledReason) else: jstrNull()))
+            add(fields, jstrPair("transport", jstrObject(transportFields)))
+            add(fields, jstrPair("auth_status", jstrString(mcpLiteAuthStatus(entry))))
+            add(entries, jstrObject(fields))
         printLine(jstrArray(entries))
         return 0
-    if len(servers) == 0:
+    if servers.len == 0:
         printLine("No MCP servers configured yet. Try `codex mcp add my-tool -- my-command`.")
         return 0
-    var idx: int32 = 0
-    while idx < len(servers):
+    for idx in 0..<servers.len:
         let entry = servers[idx]
         printLine(entry.name)
-        idx = idx + 1
     return 0
 
 fn runMcpGet(args: str[], start: int32): int32 =
     var json = false
     var name = ""
-    var i: int32 = start
-    while i < len(args):
+    for i in start..<len(args):
         let arg = argAt(args, i)
         if arg == "--help" || arg == "-h":
             printLine("usage: codex mcp get <name> [--json]")
@@ -1620,7 +1514,6 @@ fn runMcpGet(args: str[], start: int32): int32 =
         else:
             printErr("unknown option: " + arg)
             return 2
-        i = i + 1
     if len(name) == 0:
         printErr("missing mcp server name")
         return 2
@@ -1632,26 +1525,26 @@ fn runMcpGet(args: str[], start: int32): int32 =
     let entry = servers[idx]
     if json:
         let transportType = mcpLiteTransportType(entry)
-        var fields: str[] = newSeq[str]()
-        var transportFields: str[] = newSeq[str]()
-        seqAdd(transportFields, jstrPair("type", jstrString(transportType)))
+        var fields: str[] = []
+        var transportFields: str[] = []
+        add(transportFields, jstrPair("type", jstrString(transportType)))
         if len(entry.command) > 0:
-            seqAdd(transportFields, jstrPair("command", jstrString(entry.command)))
-            seqAdd(transportFields, jstrPair("args", mcpJsonArrayFromStrings(mcpParseStringArraySimple(entry.argsRaw))))
-            seqAdd(transportFields, jstrPair("cwd", if len(entry.cwd) > 0: jstrString(entry.cwd) else: jstrNull()))
+            add(transportFields, jstrPair("command", jstrString(entry.command)))
+            add(transportFields, jstrPair("args", mcpJsonArrayFromStrings(mcpParseStringArraySimple(entry.argsRaw))))
+            add(transportFields, jstrPair("cwd", if len(entry.cwd) > 0: jstrString(entry.cwd) else: jstrNull()))
         elif len(entry.url) > 0:
-            seqAdd(transportFields, jstrPair("url", jstrString(entry.url)))
-            seqAdd(transportFields, jstrPair("bearer_token_env_var", if len(entry.bearerTokenEnvVar) > 0: jstrString(entry.bearerTokenEnvVar) else: jstrNull()))
-        seqAdd(fields, jstrPair("name", jstrString(entry.name)))
-        seqAdd(fields, jstrPair("enabled", jstrBool(entry.enabled)))
-        seqAdd(fields, jstrPair("disabled_reason", if len(entry.disabledReason) > 0: jstrString(entry.disabledReason) else: jstrNull()))
-        seqAdd(fields, jstrPair("transport", jstrObject(transportFields)))
+            add(transportFields, jstrPair("url", jstrString(entry.url)))
+            add(transportFields, jstrPair("bearer_token_env_var", if len(entry.bearerTokenEnvVar) > 0: jstrString(entry.bearerTokenEnvVar) else: jstrNull()))
+        add(fields, jstrPair("name", jstrString(entry.name)))
+        add(fields, jstrPair("enabled", jstrBool(entry.enabled)))
+        add(fields, jstrPair("disabled_reason", if len(entry.disabledReason) > 0: jstrString(entry.disabledReason) else: jstrNull()))
+        add(fields, jstrPair("transport", jstrObject(transportFields)))
         let enabledTools = mcpParseStringArraySimple(entry.enabledToolsRaw)
         let disabledTools = mcpParseStringArraySimple(entry.disabledToolsRaw)
-        seqAdd(fields, jstrPair("enabled_tools", if len(entry.enabledToolsRaw) > 0: mcpJsonArrayFromStrings(enabledTools) else: jstrNull()))
-        seqAdd(fields, jstrPair("disabled_tools", if len(entry.disabledToolsRaw) > 0: mcpJsonArrayFromStrings(disabledTools) else: jstrNull()))
-        seqAdd(fields, jstrPair("startup_timeout_sec", if len(entry.startupTimeoutSec) > 0: mcpJsonNumberOrString(entry.startupTimeoutSec) else: jstrNull()))
-        seqAdd(fields, jstrPair("tool_timeout_sec", if len(entry.toolTimeoutSec) > 0: mcpJsonNumberOrString(entry.toolTimeoutSec) else: jstrNull()))
+        add(fields, jstrPair("enabled_tools", if len(entry.enabledToolsRaw) > 0: mcpJsonArrayFromStrings(enabledTools) else: jstrNull()))
+        add(fields, jstrPair("disabled_tools", if len(entry.disabledToolsRaw) > 0: mcpJsonArrayFromStrings(disabledTools) else: jstrNull()))
+        add(fields, jstrPair("startup_timeout_sec", if len(entry.startupTimeoutSec) > 0: mcpJsonNumberOrString(entry.startupTimeoutSec) else: jstrNull()))
+        add(fields, jstrPair("tool_timeout_sec", if len(entry.toolTimeoutSec) > 0: mcpJsonNumberOrString(entry.toolTimeoutSec) else: jstrNull()))
         printLine(jstrObject(fields))
         return 0
     if ! entry.enabled:
@@ -1684,28 +1577,28 @@ fn runMcpAdd(args: str[], start: int32): int32 =
         return 2
     var url = ""
     var bearerTokenEnvVar = ""
-    var commandParts: str[] = newSeq[str]()
-    var envPairs: McpStringPair[] = newSeq[McpStringPair]()
-    var i: int32 = start + 1
-    while i < len(args):
+    var commandParts: str[] = []
+    var envPairs: McpStringPair[] = []
+    var skipUntil: int32 = start
+    for i in start + 1..<len(args):
+        if i <= skipUntil:
+            continue
         let arg = argAt(args, i)
         if arg == "--help" || arg == "-h":
             printLine("usage: codex mcp add [OPTIONS] <NAME> (--url <URL> | -- <COMMAND>...)")
             return 0
         if arg == "--":
-            var j: int32 = i + 1
-            while j < len(args):
-                seqAdd(commandParts, "" + argAt(args, j))
-                j = j + 1
+            for j in i + 1..<len(args):
+                add(commandParts, "" + argAt(args, j))
             break
         if arg == "--url" && i + 1 < len(args):
             url = "" + argAt(args, i + 1)
-            i = i + 1
+            skipUntil = i + 1
         elif hasPrefix(arg, "--url:"):
             url = "" + dropPrefix(arg, "--url:")
         elif arg == "--bearer-token-env-var" && i + 1 < len(args):
             bearerTokenEnvVar = "" + argAt(args, i + 1)
-            i = i + 1
+            skipUntil = i + 1
         elif hasPrefix(arg, "--bearer-token-env-var:"):
             bearerTokenEnvVar = "" + dropPrefix(arg, "--bearer-token-env-var:")
         elif arg == "--env" && i + 1 < len(args):
@@ -1715,7 +1608,7 @@ fn runMcpAdd(args: str[], start: int32): int32 =
                 printErr("environment entries must be in KEY=VALUE form")
                 return 2
             mcpSetPair(envPairs, key, val)
-            i = i + 1
+            skipUntil = i + 1
         elif hasPrefix(arg, "--env:"):
             var key = ""
             var val = ""
@@ -1724,15 +1617,12 @@ fn runMcpAdd(args: str[], start: int32): int32 =
                 return 2
             mcpSetPair(envPairs, key, val)
         elif len(commandParts) == 0 && len(url) == 0 && ! hasPrefix(arg, "-"):
-            var j: int32 = i
-            while j < len(args):
-                seqAdd(commandParts, "" + argAt(args, j))
-                j = j + 1
+            for j in i..<len(args):
+                add(commandParts, "" + argAt(args, j))
             break
         else:
             printErr("unknown option: " + arg)
             return 2
-        i = i + 1
     if len(url) > 0 && len(commandParts) > 0:
         printErr("exactly one of --url or -- <command> must be provided")
         return 2
@@ -1746,7 +1636,7 @@ fn runMcpAdd(args: str[], start: int32): int32 =
         printErr("--bearer-token-env-var is only supported with streamable_http servers")
         return 2
     let path = codexConfigPath()
-    var lines: str[] = newSeq[str]()
+    var lines: str[] = []
     if len(path) > 0 && os.fileExists(path):
         let content = os.readFile(path)
         if len(content) > 0:
@@ -1755,22 +1645,18 @@ fn runMcpAdd(args: str[], start: int32): int32 =
     lines = mcpRemoveServerFromLines(lines, name, removed)
     if len(lines) > 0:
         if len(trimLine(lines[(len(lines) - 1)])) > 0:
-            seqAdd(lines, "")
-    var blockLines: str[] = newSeq[str]()
+            add(lines, "")
+    var blockLines: str[] = []
     if len(url) > 0:
         blockLines = mcpBuildHttpConfigLines(name, url, bearerTokenEnvVar)
     else:
         let command = "" + commandParts[0]
-        var argsList: str[] = newSeq[str]()
-        var idx: int32 = 1
-        while idx < len(commandParts):
-            seqAdd(argsList, "" + commandParts[idx])
-            idx = idx + 1
+        var argsList: str[] = []
+        for idx in 1..<len(commandParts):
+            add(argsList, "" + commandParts[idx])
         blockLines = mcpBuildStdioConfigLines(name, command, argsList, envPairs)
-    var bidx: int32 = 0
-    while bidx < len(blockLines):
-        seqAdd(lines, blockLines[bidx])
-        bidx = bidx + 1
+    for bidx in 0..<len(blockLines):
+        add(lines, blockLines[bidx])
     if ! mcpWriteConfigLines(lines):
         printErr("failed to write config")
         return 1
@@ -1795,7 +1681,7 @@ fn runMcpRemove(args: str[], start: int32): int32 =
         printLine("No MCP server named '" + name + "' found.")
         return 0
     let content = os.readFile(path)
-    var lines: str[] = newSeq[str]()
+    var lines: str[] = []
     if len(content) > 0:
         lines = splitLinesSimple(content)
     let originalLen = len(lines)
@@ -1811,44 +1697,42 @@ fn runMcpRemove(args: str[], start: int32): int32 =
     return 0
 
 fn mcpSplitScopesCsv(raw: str): str[] =
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     let trimmed = trimLine(raw)
     if len(trimmed) == 0:
         return out
     var start: int32 = 0
-    var i: int32 = 0
-    while i <= len(trimmed):
+    for i in 0..len(trimmed):
         if i == len(trimmed) || trimmed[i] == ',':
             if i > start:
                 let scope = trimLine(__cheng_slice_string(trimmed, start, i - 1, false))
                 if len(scope) > 0:
-                    seqAdd(out, scope)
+                    add(out, scope)
             start = i + 1
-        i = i + 1
     return out
 
 fn mcpAppendScopes(scopes: var str[], raw: str) =
     let parts = mcpSplitScopesCsv(raw)
-    var i: int32 = 0
-    while i < len(parts):
-        seqAdd(scopes, parts[i])
-        i = i + 1
+    for i in 0..<len(parts):
+        add(scopes, parts[i])
 
 fn runMcpLogin(args: str[], start: int32): int32 =
     if start >= len(args):
         printLine("usage: codex mcp login <name> [--scopes SCOPE,SCOPE]")
         return 2
     var name = ""
-    var scopes: str[] = newSeq[str]()
-    var i: int32 = start
-    while i < len(args):
+    var scopes: str[] = []
+    var skipUntil: int32 = start - 1
+    for i in start..<len(args):
+        if i <= skipUntil:
+            continue
         let arg = argAt(args, i)
         if arg == "--help" || arg == "-h":
             printLine("usage: codex mcp login <name> [--scopes SCOPE,SCOPE]")
             return 0
         if arg == "--scopes" && i + 1 < len(args):
             mcpAppendScopes(scopes, argAt(args, i + 1))
-            i = i + 1
+            skipUntil = i + 1
         elif hasPrefix(arg, "--scopes:"):
             mcpAppendScopes(scopes, dropPrefix(arg, "--scopes:"))
         elif len(name) == 0:
@@ -1856,7 +1740,6 @@ fn runMcpLogin(args: str[], start: int32): int32 =
         else:
             printErr("unknown option: " + arg)
             return 2
-        i = i + 1
     if len(name) == 0:
         printErr("missing mcp server name")
         return 2

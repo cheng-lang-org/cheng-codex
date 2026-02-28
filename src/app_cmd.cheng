@@ -16,11 +16,9 @@ fn appStrEq(a: str, b: str): bool =
         return false
     if len(a) != len(b):
         return false
-    var i: int32 = 0
-    while i < len(a):
+    for i in 0..<len(a):
         if ord(a[i]) != ord(b[i]):
             return false
-        i = i + 1
     return true
 
 fn appIsWhitespace(ch: char): bool =
@@ -41,37 +39,33 @@ fn appSlice(text: str, start: int32, stop: int32): str =
     if e < s:
         return ""
     var out: str = ""
-    var i: int32 = s
-    while i <= e:
+    for i in s..e:
         out = out + $text[i]
-        i = i + 1
     return out
 
 fn appLastIndexOfChar(text: str, needle: char): int32 =
     if text == nil:
         return -1
     var idx: int32 = -1
-    var i: int32 = 0
-    while i < len(text):
+    for i in 0..<len(text):
         if text[i] == needle:
             idx = i
-        i = i + 1
     return idx
 
 fn appFindMountPointInFields(line: str): str =
     if line == nil:
         return ""
-    var i: int32 = 0
-    while i < len(line):
-        while i < len(line) && appIsWhitespace(line[i]):
-            i = i + 1
-        let start: int32 = i
-        while i < len(line) && ! appIsWhitespace(line[i]):
-            i = i + 1
-        if i > start:
-            let field = appSlice(line, start, i - 1)
+    var fieldStart: int32 = -1
+    for i in 0..len(line):
+        if i < len(line) && ! appIsWhitespace(line[i]):
+            if fieldStart < 0:
+                fieldStart = i
+            continue
+        if fieldStart >= 0:
+            let field = appSlice(line, fieldStart, i - 1)
             if hasPrefix(field, "/Volumes/"):
                 return field
+            fieldStart = -1
     return ""
 
 fn appParseMountPointFromAttachLine(line: str): str =
@@ -88,15 +82,13 @@ fn appParseMountPointFromAttachOutput(output: str): str =
     if output == nil:
         return ""
     var start: int32 = 0
-    var i: int32 = 0
-    while i <= len(output):
+    for i in 0..len(output):
         if i == len(output) || output[i] == '\n':
             let line = appSlice(output, start, i - 1)
             let mount = appParseMountPointFromAttachLine(line)
             if len(mount) > 0:
                 return mount
             start = i + 1
-        i = i + 1
     return ""
 
 fn appRunShell(command: str): os.ExecCmdResult =
@@ -183,20 +175,18 @@ fn appCopyAppBundle(srcApp: str, destApp: str): bool =
 
 fn appInstallCodexAppBundle(appInVolume: str): str =
     var candidates: str[]
-    seqAdd(candidates, "/Applications")
+    add(candidates, "/Applications")
     let userApplications = appHomeApplicationsPath()
     if len(userApplications) > 0:
-        seqAdd(candidates, os.parentDir(userApplications))
+        add(candidates, os.parentDir(userApplications))
 
-    var i: int32 = 0
-    while i < len(candidates):
+    for i in 0..<len(candidates):
         let applicationsDir = argAt(candidates, i)
         printErr("Installing Codex Desktop into " + applicationsDir + "...")
         let mkdirCmd = "mkdir -p " + shellQuote(applicationsDir)
         let mkdirRes = appRunShell(mkdirCmd)
         if mkdirRes.exitCode != 0:
             printErr("warning: failed to create applications dir " + applicationsDir)
-            i = i + 1
             continue
         let destApp = os.joinPath(applicationsDir, CODEX_APP_BUNDLE_NAME)
         if os.dirExists(destApp):
@@ -204,7 +194,6 @@ fn appInstallCodexAppBundle(appInVolume: str): str =
         if appCopyAppBundle(appInVolume, destApp):
             return destApp
         printErr("warning: failed to install Codex.app to " + applicationsDir)
-        i = i + 1
     return ""
 
 fn appMakeTempInstallerDir(): str =
@@ -275,8 +264,10 @@ fn runAppCommand(args: str[], start: int32): int32 =
     var workspace = "."
     var downloadUrl = CODEX_APP_DEFAULT_DMG_URL
     var seenPath = false
-    var i: int32 = start
-    while i < len(args):
+    var skipUntil: int32 = start - 1
+    for i in start..<len(args):
+        if i <= skipUntil:
+            continue
         let arg = argAt(args, i)
         if appStrEq(arg, "--help") || appStrEq(arg, "-h"):
             printLine("Launch the Codex desktop app (downloads the macOS installer if missing)")
@@ -303,7 +294,7 @@ fn runAppCommand(args: str[], start: int32): int32 =
             return 0
         if appStrEq(arg, "--download-url") && i + 1 < len(args):
             downloadUrl = argAt(args, i + 1)
-            i = i + 1
+            skipUntil = i + 1
         elif appStrEq(arg, "--download-url"):
             printErr("option '--download-url' requires a value")
             return 2
@@ -315,7 +306,6 @@ fn runAppCommand(args: str[], start: int32): int32 =
         else:
             printErr("unknown option: " + arg)
             return 2
-        i = i + 1
 
     if ! appIsMacHost():
         printErr("`codex app` is only available on macOS")

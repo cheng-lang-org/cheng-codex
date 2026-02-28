@@ -44,16 +44,25 @@ fn mcpOauthTrimSlashes(path: str): str =
         return ""
     var start: int32 = 0
     var stop: int32 = len(path) - 1
-    while start <= stop && path[start] == '/':
-        start = start + 1
-    while stop >= start && path[stop] == '/':
-        stop = stop - 1
+    for i in 0..<len(path):
+        if i > stop || path[i] != '/':
+            start = i
+            break
+        start = i + 1
+    for rev in 0..<len(path):
+        let i: int32 = len(path) - 1 - rev
+        if i < start:
+            break
+        if path[i] != '/':
+            stop = i
+            break
+        stop = i - 1
     if stop < start:
         return ""
     return __cheng_slice_string(path, start, stop, false)
 
 fn mcpOauthDiscoveryUrls(serverUrl: str): str[] =
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     let parts = web_url.urlParse(serverUrl)
     if len(parts.scheme) == 0 || len(parts.authority) == 0:
         return out
@@ -61,29 +70,27 @@ fn mcpOauthDiscoveryUrls(serverUrl: str): str[] =
     let trimmed = mcpOauthTrimSlashes(parts.path)
     let canonical = "/.well-known/oauth-authorization-server"
     if len(trimmed) == 0:
-        seqAdd(out, root + canonical)
+        add(out, root + canonical)
         return out
     # Build incrementally to avoid deep temporary chains.
     var url1: str = root
     url1 = url1 + canonical
     url1 = url1 + "/"
     url1 = url1 + trimmed
-    seqAdd(out, url1)
+    add(out, url1)
     var url2: str = root
     url2 = url2 + "/"
     url2 = url2 + trimmed
     url2 = url2 + canonical
-    seqAdd(out, url2)
-    seqAdd(out, root + canonical)
+    add(out, url2)
+    add(out, root + canonical)
     return out
 
 fn mcpOauthAddProtocolHeader(headers: str[]): str[] =
-    var out: str[] = newSeq[str]()
-    var i: int32 = 0
-    while i < len(headers):
-        seqAdd(out, headers[i])
-        i = i + 1
-    seqAdd(out, mcpOauthProtocolHeader + ": " + mcpOauthProtocolVersion)
+    var out: str[] = []
+    for i in 0..<len(headers):
+        add(out, headers[i])
+    add(out, mcpOauthProtocolHeader + ": " + mcpOauthProtocolVersion)
     return out
 
 fn mcpOauthHttpRequest(method: str, url: str, body: str, contentType: str, headers: str[]): AuthHttpResult =
@@ -105,13 +112,11 @@ fn mcpOauthHttpRequest(method: str, url: str, body: str, contentType: str, heade
         var ctLine: str = "Content-Type: "
         ctLine = ctLine + contentType
         cmd = cmd + shellQuote(ctLine)
-    var idx: int32 = 0
-    while idx < len(headers):
+    for idx in 0..<len(headers):
         let header = trimLine(headers[idx])
         if len(header) > 0:
             cmd = cmd + " -H "
             cmd = cmd + shellQuote(header)
-        idx = idx + 1
     if len(body) > 0:
         let reqPath = authNextTempPath("mcp_req", ".txt")
         os.writeFile(reqPath, body)
@@ -162,8 +167,7 @@ fn mcpOauthDiscover(serverUrl: str, headers: str[], meta: var McpOauthMetadata, 
         err = "invalid server url"
         return false
     let fullHeaders = mcpOauthAddProtocolHeader(headers)
-    var idx: int32 = 0
-    while idx < len(urls):
+    for idx in 0..<len(urls):
         let res = mcpOauthHttpRequest("GET", urls[idx], "", "", fullHeaders)
         if res.ok:
             let parsed = parseJsonSafe(res.body)
@@ -176,7 +180,6 @@ fn mcpOauthDiscover(serverUrl: str, headers: str[], meta: var McpOauthMetadata, 
                     meta.tokenEndpoint = tokenEndpoint
                     meta.registrationEndpoint = getStringField(root, "registration_endpoint", "")
                     return true
-        idx = idx + 1
     err = "OAuth discovery failed"
     return false
 
@@ -186,15 +189,15 @@ fn mcpOauthRegisterClient(meta: McpOauthMetadata, redirectUri: str, clientName: 
     if len(meta.registrationEndpoint) == 0:
         err = "dynamic registration not supported"
         return false
-    var fields: str[] = newSeq[str]()
-    seqAdd(fields, jstrPair("client_name", jstrString(clientName)))
-    seqAdd(fields, jstrPair("redirect_uris", jstrArray(seqStr1(jstrString(redirectUri)))))
-    var grantTypes: str[] = newSeq[str]()
-    seqAdd(grantTypes, jstrString("authorization_code"))
-    seqAdd(grantTypes, jstrString("refresh_token"))
-    seqAdd(fields, jstrPair("grant_types", jstrArray(grantTypes)))
-    seqAdd(fields, jstrPair("token_endpoint_auth_method", jstrString("none")))
-    seqAdd(fields, jstrPair("response_types", jstrArray(seqStr1(jstrString("code")))))
+    var fields: str[] = []
+    add(fields, jstrPair("client_name", jstrString(clientName)))
+    add(fields, jstrPair("redirect_uris", jstrArray(seqStr1(jstrString(redirectUri)))))
+    var grantTypes: str[] = []
+    add(grantTypes, jstrString("authorization_code"))
+    add(grantTypes, jstrString("refresh_token"))
+    add(fields, jstrPair("grant_types", jstrArray(grantTypes)))
+    add(fields, jstrPair("token_endpoint_auth_method", jstrString("none")))
+    add(fields, jstrPair("response_types", jstrArray(seqStr1(jstrString("code")))))
     let body = jstrObject(fields)
     let res = mcpOauthHttpRequest("POST", meta.registrationEndpoint, body, "application/json", headers)
     if ! res.ok:
@@ -215,57 +218,51 @@ fn mcpOauthRegisterClient(meta: McpOauthMetadata, redirectUri: str, clientName: 
 
 fn mcpOauthJoinScopes(scopes: str[]): str =
     var out = ""
-    var idx: int32 = 0
-    while idx < len(scopes):
+    for idx in 0..<len(scopes):
         let scope = trimLine(scopes[idx])
         if len(scope) > 0:
             if len(out) == 0:
                 out = scope
             else:
                 out = out + " " + scope
-        idx = idx + 1
     return out
 
 fn mcpOauthSplitScopes(text: str): str[] =
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     if text == nil || len(text) == 0:
         return out
     var start: int32 = 0
-    var i: int32 = 0
-    while i <= len(text):
+    for i in 0..len(text):
         if i == len(text) || text[i] == ' ':
             if i > start:
                 let part = trimLine(__cheng_slice_string(text, start, i - 1, false))
                 if len(part) > 0:
-                    seqAdd(out, part)
+                    add(out, part)
             start = i + 1
-        i = i + 1
     return out
 
 fn mcpOauthJoinWithAmpersand(items: str[]): str =
     var out = ""
-    var i: int32 = 0
-    while i < len(items):
+    for i in 0..<len(items):
         if i == 0:
             out = items[i]
         else:
             out = out + "&" + items[i]
-        i = i + 1
     return out
 
 fn mcpOauthBuildAuthorizationUrl(meta: McpOauthMetadata, clientId: str, redirectUri: str, codeChallenge: str, state: str, scopes: str[]): str =
-    var query: str[] = newSeq[str]()
-    seqAdd(query, "response_type=" + web_url.urlEncodeComponent("code"))
-    seqAdd(query, "client_id=" + web_url.urlEncodeComponent(clientId))
-    seqAdd(query, "redirect_uri=" + web_url.urlEncodeComponent(redirectUri))
+    var query: str[] = []
+    add(query, "response_type=" + web_url.urlEncodeComponent("code"))
+    add(query, "client_id=" + web_url.urlEncodeComponent(clientId))
+    add(query, "redirect_uri=" + web_url.urlEncodeComponent(redirectUri))
     let scopeText = mcpOauthJoinScopes(scopes)
     if len(scopeText) > 0:
-        seqAdd(query, "scope=" + web_url.urlEncodeComponent(scopeText))
+        add(query, "scope=" + web_url.urlEncodeComponent(scopeText))
     if len(codeChallenge) > 0:
-        seqAdd(query, "code_challenge=" + web_url.urlEncodeComponent(codeChallenge))
-        seqAdd(query, "code_challenge_method=" + web_url.urlEncodeComponent("S256"))
+        add(query, "code_challenge=" + web_url.urlEncodeComponent(codeChallenge))
+        add(query, "code_challenge_method=" + web_url.urlEncodeComponent("S256"))
     if len(state) > 0:
-        seqAdd(query, "state=" + web_url.urlEncodeComponent(state))
+        add(query, "state=" + web_url.urlEncodeComponent(state))
     let q = mcpOauthJoinWithAmpersand(query)
     if indexOfSubstr(meta.authorizationEndpoint, "?", 0) >= 0:
         return meta.authorizationEndpoint + "&" + q
@@ -277,7 +274,7 @@ fn mcpOauthResetTokens(tokens: var McpOauthTokens) =
     tokens.hasRefreshToken = false
     tokens.expiresAt = 0
     tokens.hasExpiresAt = false
-    tokens.scopes = newSeq[str]()
+    tokens.scopes = []
 
 fn mcpOauthExchangeCode(tokenEndpoint: str, clientId: str, redirectUri: str, codeVerifier: str, code: str, headers: str[], tokens: var McpOauthTokens, err: var str): bool =
     mcpOauthResetTokens(tokens)
@@ -285,12 +282,12 @@ fn mcpOauthExchangeCode(tokenEndpoint: str, clientId: str, redirectUri: str, cod
     if len(tokenEndpoint) == 0:
         err = "missing token endpoint"
         return false
-    var formPairs: str[] = newSeq[str]()
-    seqAdd(formPairs, "grant_type=" + web_url.urlEncodeComponent("authorization_code"))
-    seqAdd(formPairs, "code=" + web_url.urlEncodeComponent(code))
-    seqAdd(formPairs, "redirect_uri=" + web_url.urlEncodeComponent(redirectUri))
-    seqAdd(formPairs, "client_id=" + web_url.urlEncodeComponent(clientId))
-    seqAdd(formPairs, "code_verifier=" + web_url.urlEncodeComponent(codeVerifier))
+    var formPairs: str[] = []
+    add(formPairs, "grant_type=" + web_url.urlEncodeComponent("authorization_code"))
+    add(formPairs, "code=" + web_url.urlEncodeComponent(code))
+    add(formPairs, "redirect_uri=" + web_url.urlEncodeComponent(redirectUri))
+    add(formPairs, "client_id=" + web_url.urlEncodeComponent(clientId))
+    add(formPairs, "code_verifier=" + web_url.urlEncodeComponent(codeVerifier))
     let body = mcpOauthJoinWithAmpersand(formPairs)
     let res = mcpOauthHttpRequest("POST", tokenEndpoint, body, "application/x-www-form-urlencoded", headers)
     if ! res.ok:
@@ -335,7 +332,7 @@ fn mcpOauthStoreKey(serverName: str, serverUrl: str): str =
     let payload = jstrObject(seqStr3(
         jstrPair("type", jstrString("http")),
         jstrPair("url", jstrString(serverUrl)),
-        jstrPair("headers", jstrObject(newSeq[str]()))
+        jstrPair("headers", jstrObject([]))
     ))
     let hex = mcpOauthSha256Hex(payload)
     var shortHex: str = hex
@@ -385,20 +382,16 @@ fn mcpOauthJsonEncode(node: json.JsonNode): str =
     if node.kind == json.JString:
         return jstrString(node.getStr())
     if node.kind == json.JArray:
-        var items: str[] = newSeq[str]()
-        var i: int32 = 0
-        while i < len(node.a):
-            seqAdd(items, mcpOauthJsonEncode(node.a[i]))
-            i = i + 1
+        var items: str[] = []
+        for i in 0..<len(node.a):
+            add(items, mcpOauthJsonEncode(node.a[i]))
         return jstrArray(items)
     if node.kind == json.JObject:
-        var pairs: str[] = newSeq[str]()
-        var i: int32 = 0
-        while i < len(node.okeys):
+        var pairs: str[] = []
+        for i in 0..<len(node.okeys):
             let key = node.okeys[i]
             let value = mcpOauthJsonEncode(node.ovalues[i])
-            seqAdd(pairs, jstrPair(key, value))
-            i = i + 1
+            add(pairs, jstrPair(key, value))
         return jstrObject(pairs)
     return "null"
 
@@ -444,10 +437,8 @@ fn mcpOauthSaveTokens(serverName: str, serverUrl: str, clientId: str, tokens: Mc
         json.jsonSetField(entry, "refresh_token", json.jsonString(tokens.refreshToken))
     if len(tokens.scopes) > 0:
         let scopeArr = json.newJArray()
-        var i: int32 = 0
-        while i < len(tokens.scopes):
+        for i in 0..<len(tokens.scopes):
             scopeArr.add(json.jsonString(tokens.scopes[i]))
-            i = i + 1
         json.jsonSetField(entry, "scopes", scopeArr)
     json.jsonSetField(root, key, entry)
     return mcpOauthWriteCredentials(path, root)
@@ -457,14 +448,12 @@ fn mcpOauthRemoveKey(root: json.JsonNode, key: str, removed: var bool): json.Jso
     if root == nil || root.kind != json.JObject:
         return json.newJObject()
     let out = json.newJObject()
-    var i: int32 = 0
-    while i < len(root.okeys):
+    for i in 0..<len(root.okeys):
         let name = root.okeys[i]
         if name == key:
             removed = true
         else:
             json.jsonSetField(out, name, root.ovalues[i])
-        i = i + 1
     return out
 
 fn mcpOauthDeleteTokens(serverName: str, serverUrl: str, removed: var bool): bool =

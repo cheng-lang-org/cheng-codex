@@ -17,10 +17,19 @@ fn trimSpacesLocal(text: str): str =
         return ""
     var start: int32 = 0
     var stop: int32 = len(text) - 1
-    while start <= stop && isSpaceLocal(text[start]):
-        start = start + 1
-    while stop >= start && isSpaceLocal(text[stop]):
-        stop = stop - 1
+    for idx in 0..<len(text):
+        if isSpaceLocal(text[idx]):
+            start = idx + 1
+            continue
+        break
+    for rev in 0..<len(text):
+        let idx = len(text) - rev - 1
+        if idx < start:
+            break
+        if isSpaceLocal(text[idx]):
+            stop = idx - 1
+            continue
+        break
     if start > stop:
         return ""
     return __cheng_slice_string(text, start, stop, false)
@@ -35,27 +44,27 @@ fn extractProgramName(path: str): str =
 
 fn splitCommandTokens(text: str, outTokens: var str[], err: var str): bool =
     err = ""
-    outTokens = newSeq[str]()
+    outTokens = []
     if text == nil:
         err = "empty command"
         return false
-    var i: int32 = 0
+    var skipUntil: int32 = -1
     var current = ""
     var inSingle = false
     var inDouble = false
-    while i < len(text):
+    for i in 0..<len(text):
+        if i <= skipUntil:
+            continue
         let ch = text[i]
         if inSingle:
             if ch == '\'':
                 inSingle = false
             else:
                 current = current + $ ch
-            i = i + 1
             continue
         if inDouble:
             if ch == '"':
                 inDouble = false
-                i = i + 1
                 continue
             if ch == '\\' && i + 1 < len(text):
                 let next = text[i + 1]
@@ -67,37 +76,32 @@ fn splitCommandTokens(text: str, outTokens: var str[], err: var str): bool =
                     current = current + "\t"
                 else:
                     current = current + $ next
-                i = i + 2
+                skipUntil = i + 1
                 continue
             current = current + $ ch
-            i = i + 1
             continue
         if isSpaceLocal(ch):
             if len(current) > 0:
-                seqAdd(outTokens, current)
+                add(outTokens, current)
                 current = ""
-            i = i + 1
             continue
         if ch == '"':
             inDouble = true
-            i = i + 1
             continue
         if ch == '\'':
             inSingle = true
-            i = i + 1
             continue
         if ch == '\\' && i + 1 < len(text):
             let next = text[i + 1]
             current = current + $ next
-            i = i + 2
+            skipUntil = i + 1
             continue
         current = current + $ ch
-        i = i + 1
     if inSingle || inDouble:
         err = "unterminated quote"
         return false
     if len(current) > 0:
-        seqAdd(outTokens, current)
+        add(outTokens, current)
     if outTokens.len == 0:
         err = "empty command"
         return false
@@ -114,33 +118,33 @@ fn isLinuxLocal(): bool =
 fn flushSegmentLocal(segments: var str[], current: str): str =
     let trimmed = trimSpacesLocal(current)
     if len(trimmed) > 0:
-        seqAdd(segments, trimmed)
+        add(segments, trimmed)
     return ""
 
 fn parseWordOnlyCommandsSequence(script: str, outCommands: var str[][], err: var str): bool =
     err = ""
-    outCommands = newSeq[str[]]()
+    outCommands = []
     if script == nil || len(script) == 0:
         err = "empty script"
         return false
-    var segments: str[] = newSeq[str]()
+    var segments: str[] = []
     var current = ""
-    var i: int32 = 0
+    var skipUntil: int32 = -1
     var inSingle = false
     var inDouble = false
-    while i < len(script):
+    for i in 0..<len(script):
+        if i <= skipUntil:
+            continue
         let ch = script[i]
         if inSingle:
             if ch == '\'':
                 inSingle = false
             else:
                 current = current + $ ch
-            i = i + 1
             continue
         if inDouble:
             if ch == '"':
                 inDouble = false
-                i = i + 1
                 continue
             if ch == '\\' && i + 1 < len(script):
                 let next = script[i + 1]
@@ -152,45 +156,40 @@ fn parseWordOnlyCommandsSequence(script: str, outCommands: var str[][], err: var
                     current = current + "\t"
                 else:
                     current = current + $ next
-                i = i + 2
+                skipUntil = i + 1
                 continue
             if ch == '$':
                 err = "unsupported expansion"
                 return false
             current = current + $ ch
-            i = i + 1
             continue
         if ch == '\'':
             inSingle = true
-            i = i + 1
             continue
         if ch == '"':
             inDouble = true
-            i = i + 1
             continue
         if ch == '\\' && i + 1 < len(script):
             let next = script[i + 1]
             current = current + $ next
-            i = i + 2
+            skipUntil = i + 1
             continue
         if ch == '&':
             if i + 1 < len(script) && script[i + 1] == '&':
                 current = flushSegmentLocal(segments, current)
-                i = i + 2
+                skipUntil = i + 1
                 continue
             err = "unsupported operator"
             return false
         if ch == '|':
             if i + 1 < len(script) && script[i + 1] == '|':
                 current = flushSegmentLocal(segments, current)
-                i = i + 2
+                skipUntil = i + 1
                 continue
             current = flushSegmentLocal(segments, current)
-            i = i + 1
             continue
         if ch == ';' || ch == '\n' || ch == '\r':
             current = flushSegmentLocal(segments, current)
-            i = i + 1
             continue
         if ch == '<' || ch == '>' || ch == '(' || ch == ')' || ch == '{' || ch == '}' || ch == '`':
             err = "unsupported operator"
@@ -199,7 +198,6 @@ fn parseWordOnlyCommandsSequence(script: str, outCommands: var str[][], err: var
             err = "unsupported expansion"
             return false
         current = current + $ ch
-        i = i + 1
     if inSingle || inDouble:
         err = "unterminated quote"
         return false
@@ -207,19 +205,17 @@ fn parseWordOnlyCommandsSequence(script: str, outCommands: var str[][], err: var
     if segments.len == 0:
         err = "empty script"
         return false
-    var sidx: int32 = 0
-    while sidx < segments.len:
+    for sidx in 0..<segments.len:
         var tokens: str[]
         var splitErr = ""
         if ! splitCommandTokens(segments[sidx], tokens, splitErr):
             err = splitErr
             return false
-        seqAdd(outCommands, tokens)
-        sidx = sidx + 1
+        add(outCommands, tokens)
     return outCommands.len > 0
 
 fn parseShellLcPlainCommands(commandTokens: str[]): str[][] =
-    var empty: str[][] = newSeq[str[]]()
+    var empty: str[][] = []
     if commandTokens.len < 3:
         return empty
     let program = extractProgramName(commandTokens[0])
@@ -243,29 +239,23 @@ fn isValidSedNArg(arg: str): bool =
     let core = __cheng_slice_string(arg, 0, len(arg) - 2, false)
     if len(core) == 0:
         return false
-    var parts: str[] = newSeq[str]()
+    var parts: str[] = []
     var start: int32 = 0
-    var i: int32 = 0
-    while i <= len(core):
+    for i in 0..len(core):
         if i == len(core) || core[i] == ',':
             if i >= start:
-                seqAdd(parts, __cheng_slice_string(core, start, i - 1, false))
+                add(parts, __cheng_slice_string(core, start, i - 1, false))
             start = i + 1
-        i = i + 1
     if parts.len == 0 || parts.len > 2:
         return false
-    var pidx: int32 = 0
-    while pidx < parts.len:
+    for pidx in 0..<parts.len:
         let part = parts[pidx]
         if len(part) == 0:
             return false
-        var j: int32 = 0
-        while j < len(part):
+        for j in 0..<len(part):
             let ch = part[j]
             if ch < '0' || ch > '9':
                 return false
-            j = j + 1
-        pidx = pidx + 1
     return true
 
 fn isSafeToCallWithExec(commandTokens: str[]): bool =
@@ -279,30 +269,24 @@ fn isSafeToCallWithExec(commandTokens: str[]): bool =
     if cmd0 == "cat" || cmd0 == "cd" || cmd0 == "cut" || cmd0 == "echo" || cmd0 == "expr" || cmd0 == "false" || cmd0 == "grep" || cmd0 == "head" || cmd0 == "id" || cmd0 == "ls" || cmd0 == "nl" || cmd0 == "paste" || cmd0 == "pwd" || cmd0 == "rev" || cmd0 == "seq" || cmd0 == "stat" || cmd0 == "tail" || cmd0 == "tr" || cmd0 == "true" || cmd0 == "uname" || cmd0 == "uniq" || cmd0 == "wc" || cmd0 == "which" || cmd0 == "whoami":
         return true
     if cmd0 == "base64":
-        var i: int32 = 1
-        while i < commandTokens.len:
+        for i in 1..<commandTokens.len:
             let arg = commandTokens[i]
             if arg == "-o" || arg == "--output" || hasPrefix(arg, "--output=") || (hasPrefix(arg, "-o") && arg != "-o"):
                 return false
-            i = i + 1
         return true
     if cmd0 == "find":
-        var i: int32 = 0
-        while i < commandTokens.len:
+        for i in 0..<commandTokens.len:
             let arg = commandTokens[i]
             if arg == "-exec" || arg == "-execdir" || arg == "-ok" || arg == "-okdir" || arg == "-delete" || arg == "-fls" || arg == "-fprint" || arg == "-fprint0" || arg == "-fprintf":
                 return false
-            i = i + 1
         return true
     if cmd0 == "rg":
-        var i: int32 = 0
-        while i < commandTokens.len:
+        for i in 0..<commandTokens.len:
             let arg = commandTokens[i]
             if arg == "--search-zip" || arg == "-z":
                 return false
             if arg == "--pre" || arg == "--hostname-bin" || hasPrefix(arg, "--pre=") || hasPrefix(arg, "--hostname-bin="):
                 return false
-            i = i + 1
         return true
     if cmd0 == "git":
         if commandTokens.len > 1:
@@ -320,27 +304,23 @@ fn isSafeToCallWithExec(commandTokens: str[]): bool =
 fn isKnownSafeCommand(commandTokens: str[]): bool =
     if commandTokens.len == 0:
         return false
-    var tokens: str[] = newSeq[str]()
-    var i: int32 = 0
-    while i < commandTokens.len:
+    var tokens: str[] = []
+    for i in 0..<commandTokens.len:
         let token = commandTokens[i]
         if i == 0 && token == "zsh":
-            seqAdd(tokens, "bash")
+            add(tokens, "bash")
         else:
-            seqAdd(tokens, token)
-        i = i + 1
+            add(tokens, token)
     if isSafeToCallWithExec(tokens):
         return true
     let scriptCommands = parseShellLcPlainCommands(tokens)
     if scriptCommands.len == 0:
         return false
     var allSafe = true
-    i = 0
-    while i < scriptCommands.len:
+    for i in 0..<scriptCommands.len:
         if ! isSafeToCallWithExec(scriptCommands[i]):
             allSafe = false
             break
-        i = i + 1
     return allSafe
 
 fn isDangerousToCallWithExec(commandTokens: str[]): bool =
@@ -359,11 +339,9 @@ fn isDangerousToCallWithExec(commandTokens: str[]): bool =
         return false
     if cmd0 == "sudo":
         if commandTokens.len > 1:
-            var rest: str[] = newSeq[str]()
-            var i: int32 = 1
-            while i < commandTokens.len:
-                seqAdd(rest, commandTokens[i])
-                i = i + 1
+            var rest: str[] = []
+            for i in 1..<commandTokens.len:
+                add(rest, commandTokens[i])
             return isDangerousToCallWithExec(rest)
         return false
     return false
@@ -374,11 +352,9 @@ fn commandMightBeDangerous(commandTokens: str[]): bool =
     if isDangerousToCallWithExec(commandTokens):
         return true
     let scriptCommands = parseShellLcPlainCommands(commandTokens)
-    var i: int32 = 0
-    while i < scriptCommands.len:
+    for i in 0..<scriptCommands.len:
         if isDangerousToCallWithExec(scriptCommands[i]):
             return true
-        i = i + 1
     return false
 
 fn sandboxPermissionsRequiresEscalated(value: str): bool =

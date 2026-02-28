@@ -20,14 +20,14 @@ type
         port: int32
 
 fn loginDebugEnabled(): bool =
-    let raw = normalizePolicy(trimLine(os.getEnv("CHENG_CODEX_LOGIN_DEBUG")))
+    let raw = normalizePolicy(trimLine(os.getEnv("CODEX_LOGIN_DEBUG")))
     return raw == "1" || raw == "true" || raw == "yes"
 
 fn loginQuietEnabled(): bool =
-    let appServer = normalizePolicy(trimLine(os.getEnv("CHENG_CODEX_APP_SERVER")))
+    let appServer = normalizePolicy(trimLine(os.getEnv("CODEX_APP_SERVER")))
     if appServer == "1" || appServer == "true" || appServer == "yes":
         return true
-    let raw = normalizePolicy(trimLine(os.getEnv("CHENG_CODEX_LOGIN_QUIET")))
+    let raw = normalizePolicy(trimLine(os.getEnv("CODEX_LOGIN_QUIET")))
     return raw == "1" || raw == "true" || raw == "yes"
 
 fn loginDebug(msg: str) =
@@ -67,7 +67,7 @@ fn loginTrimTrailingSlash(url: str): str =
 
 fn loginReadHttpRequest(fd: int32, maxHeader: int32, maxBody: int32): str =
     # Avoid repeated `raw = raw + chunk` growth (quadratic for long payloads).
-    var parts: str[] = newSeq[str]()
+    var parts: str[] = []
     var totalLen: int32 = 0
     var headerEnd: int32 = -1
     var contentLen: int32 = -1
@@ -76,7 +76,7 @@ fn loginReadHttpRequest(fd: int32, maxHeader: int32, maxBody: int32): str =
         let chunk: str = readChunk(fd, 4096)
         if len(chunk) == 0:
             break
-        seqAdd(parts, chunk)
+        add(parts, chunk)
         totalLen = totalLen + len(chunk)
         if headerEnd < 0:
             let priorTailLen: int32 = len(tail)
@@ -90,8 +90,8 @@ fn loginReadHttpRequest(fd: int32, maxHeader: int32, maxBody: int32): str =
                 headerEnd = (totalLen - len(chunk) - priorTailLen) + idx
                 # Compact so we can slice/parse headers without re-joining every chunk.
                 let joined: str = joinPartsBalanced(parts)
-                parts = newSeq[str]()
-                seqAdd(parts, joined)
+                parts = []
+                add(parts, joined)
                 totalLen = len(joined)
                 tail = ""
                 var head: str = ""
@@ -116,40 +116,36 @@ fn loginReadHttpRequest(fd: int32, maxHeader: int32, maxBody: int32): str =
     return joinPartsBalanced(parts)
 
 fn loginSplitLinesRaw(text: str): str[] =
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     if text == nil:
         return out
     var start: int32 = 0
-    var i: int32 = 0
-    while i < len(text):
+    for i in 0..<len(text):
         if text[i] == '\n':
             var endIdx: int32 = i - 1
             if endIdx >= start && text[endIdx] == '\r':
                 endIdx = endIdx - 1
             if endIdx >= start:
-                seqAdd(out, __cheng_slice_string(text, start, endIdx, false))
+                add(out, __cheng_slice_string(text, start, endIdx, false))
             else:
-                seqAdd(out, "")
+                add(out, "")
             start = i + 1
-        i = i + 1
     if start <= len(text) - 1:
-        seqAdd(out, __cheng_slice_string(text, start, len(text) - 1, false))
+        add(out, __cheng_slice_string(text, start, len(text) - 1, false))
     elif start == len(text):
-        seqAdd(out, "")
+        add(out, "")
     return out
 
 fn loginParseHeaderValue(headersText: str, key: str): str =
     let keyLower = normalizePolicy(key)
     let lines = loginSplitLinesRaw(headersText)
-    var i: int32 = 0
-    while i < len(lines):
+    for i in 0..<len(lines):
         let line = lines[i]
         let colon = indexOfSubstr(line, ":", 0)
         if colon > 0:
             let k = normalizePolicy(trimLine(__cheng_slice_string(line, 0, colon - 1, false)))
             if k == keyLower:
                 return trimLine(__cheng_slice_string(line, colon + 1, len(line) - 1, false))
-        i = i + 1
     return ""
 
 fn loginHexValue(c: char): int32 =
@@ -173,19 +169,19 @@ fn loginSubstr(text: str, start: int32, count: int32): str =
 fn loginIndexOfChar(s: str, target: char, start: int32): int32 =
     if s == nil:
         return -1
-    var i: int32 = start
-    while i < len(s):
+    for i in start..<len(s):
         if s[i] == target:
             return i
-        i = i + 1
     return -1
 
 fn loginDecodeQueryComponent(text: str): str =
     if text == nil || len(text) == 0:
         return ""
     var out: str = ""
-    var i: int32 = 0
-    while i < len(text):
+    var skipUntil: int32 = -1
+    for i in 0..<len(text):
+        if i <= skipUntil:
+            continue
         let c = text[i]
         if c == '+':
             out = out + " "
@@ -194,12 +190,11 @@ fn loginDecodeQueryComponent(text: str): str =
             let lo = loginHexValue(text[i + 2])
             if hi >= 0 && lo >= 0:
                 out = out + $ chr(hi * 16 + lo)
-                i = i + 2
+                skipUntil = i + 2
             else:
                 out = out + $ c
         else:
             out = out + $ c
-        i = i + 1
     return out
 
 fn loginQueryGet(query: str, key: str): str =
@@ -208,8 +203,7 @@ fn loginQueryGet(query: str, key: str): str =
     if query == nil || len(query) == 0:
         return ""
     var start: int32 = 0
-    var i: int32 = 0
-    while i <= len(query):
+    for i in 0..len(query):
         if i == len(query) || query[i] == '&':
             let size: int32 = i - start
             if size > 0:
@@ -226,7 +220,6 @@ fn loginQueryGet(query: str, key: str): str =
                     if decodedKey == key:
                         return ""
             start = i + 1
-        i = i + 1
     return ""
 
 fn loginSuccessHtml(): str =
@@ -287,12 +280,10 @@ fn runLoginServerLoop(listenerFd: int32, sess: LoginSession, openBrowser: bool, 
         let req = parseHttpRequest(raw)
         if (req.method == hmGet || req.method == hmPost) && req.path == "/auth/callback":
             var queryHasPlus = false
-            var qi: int32 = 0
-            while qi < len(req.query):
+            for qi in 0..<len(req.query):
                 if req.query[qi] == '+':
                     queryHasPlus = true
                     break
-                qi = qi + 1
             var errCode = loginQueryGet(req.query, "error")
             if len(errCode) == 0 && len(req.body) > 0:
                 errCode = loginQueryGet(req.body, "error")
@@ -332,12 +323,10 @@ fn runLoginServerLoop(listenerFd: int32, sess: LoginSession, openBrowser: bool, 
                 err = "missing authorization code"
                 return false
             var codeHasSpace = false
-            var ci: int32 = 0
-            while ci < len(code):
+            for ci in 0..<len(code):
                 if code[ci] == ' ':
                     codeHasSpace = true
                     break
-                ci = ci + 1
             var queryPlusText: str = "0"
             if queryHasPlus:
                 queryPlusText = "1"
@@ -454,10 +443,9 @@ fn runLoginServerLoop(listenerFd: int32, sess: LoginSession, openBrowser: bool, 
 
 fn bindLoginListener(preferredPort: int32, outPort: var int32, err: var str): int32 =
     err = ""
-    var attempts: int32 = 0
-    var cancelled: bool = false
+    var cancelled = false
     let opts = {os.poStdErrToStdOut, os.poUsePath, os.poEvalCommand}
-    while attempts < 10:
+    for attempts in 0..<10:
         let listener = createTcpListenerWithPort(preferredPort)
         if listener.fd >= 0:
             outPort = listener.port
@@ -488,7 +476,6 @@ fn bindLoginListener(preferredPort: int32, outPort: var int32, err: var str): in
             cancelled = true
             loginCancelPriorServer(preferredPort)
         os.execCmdEx("sleep 0.2", opts, os.getCurrentDir())
-        attempts = attempts + 1
     let netErr = netGetError()
     if len(netErr) > 0:
         var msg: str = "failed to bind login server ("

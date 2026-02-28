@@ -69,25 +69,21 @@ fn relayFd(srcFd: int32, dstFd: int32) =
 fn runStdioToUdsLocal(args: str[], start: int32): int32 =
     # Help flags are accepted anywhere before `--` (matches clap behavior).
     var delim: int32 = -1
-    var i: int32 = start
-    while i < len(args):
+    for i in start..<len(args):
         if argAt(args, i) == "--":
             delim = i
             break
-        i = i + 1
     var helpEnd: int32 = len(args)
     if delim >= 0:
         helpEnd = delim
     var sawLong = false
     var sawShort = false
-    i = start
-    while i < helpEnd:
+    for i in start..<helpEnd:
         let arg = argAt(args, i)
         if arg == "--help":
             sawLong = true
         elif arg == "-h":
             sawShort = true
-        i = i + 1
     if sawLong:
         return printStdioToUdsHelpLong()
     if sawShort:

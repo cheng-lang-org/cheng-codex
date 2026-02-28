@@ -1,6 +1,5 @@
 # Model client via Responses API (curl)
 
-import system
 import std/os
 import seqs
 
@@ -73,8 +72,10 @@ fn jsonUnescape(text: str): str =
     if text == nil:
         return ""
     var out = ""
-    var i: int32 = 0
-    while i < len(text):
+    var skipUntil: int32 = -1
+    for i in 0..<len(text):
+        if i <= skipUntil:
+            continue
         let ch = text[i]
         if ch == '\\' && i + 1 < len(text):
             let next = text[i + 1]
@@ -90,10 +91,9 @@ fn jsonUnescape(text: str): str =
                 out = out + "\""
             else:
                 out = out + $ next
-            i = i + 2
+            skipUntil = i + 1
             continue
         out = out + $ ch
-        i = i + 1
     return out
 
 fn loadAuthForResponses(): AuthInfo =
@@ -166,11 +166,9 @@ fn cloneText(value: str): str =
     if value == nil:
         return ""
     var out = ""
-    var i: int32 = 0
-    while i < len(value):
+    for i in 0..<len(value):
         let ch = value[i]
         out = out + $ ch
-        i = i + 1
     return out
 
 fn modelLooksLikePath(value: str): bool =
@@ -386,15 +384,12 @@ fn readModelFromConfigFile(): str =
     if len(content) == 0:
         return ""
     let lines = splitLinesSimple(content)
-    var idx: int32 = 0
-    while idx < len(lines):
+    for idx in 0..<len(lines):
         let line = trimLine(lines[idx])
         if len(line) == 0 || line[0] == '#':
-            idx = idx + 1
             continue
         let eq = findChar(line, '=')
         if eq <= 0:
-            idx = idx + 1
             continue
         let keyText = trimLine(__cheng_slice_string(line, 0, eq - 1, false))
         if keyText == "model":
@@ -402,25 +397,22 @@ fn readModelFromConfigFile(): str =
                 let valueText = trimLine(__cheng_slice_string(line, eq + 1, len(line) - 1, false))
                 return unescapeConfigValue(valueText)
             return ""
-        idx = idx + 1
     return ""
 
 fn findPromptFile(fileName: str): str =
     let cwd = currentDirSafe()
-    var candidates: str[] = newSeq[str]()
-    seqAdd(candidates, os.joinPath(cwd, fileName))
-    seqAdd(candidates, os.joinPath(os.joinPath(cwd, "prompts"), fileName))
-    seqAdd(candidates, os.joinPath(os.joinPath(os.joinPath(cwd, "codex-cheng"), "prompts"), fileName))
-    seqAdd(candidates, os.joinPath(os.joinPath(os.joinPath(cwd, "cheng-codex"), "prompts"), fileName))
-    seqAdd(candidates, os.joinPath(os.joinPath(os.joinPath(cwd, ".."), "prompts"), fileName))
-    seqAdd(candidates, os.joinPath(os.joinPath(os.joinPath(os.joinPath(cwd, ".."), "codex-cheng"), "prompts"), fileName))
-    seqAdd(candidates, os.joinPath(os.joinPath(os.joinPath(os.joinPath(cwd, ".."), "cheng-codex"), "prompts"), fileName))
-    var i: int32 = 0
-    while i < len(candidates):
+    var candidates: str[] = []
+    add(candidates, os.joinPath(cwd, fileName))
+    add(candidates, os.joinPath(os.joinPath(cwd, "prompts"), fileName))
+    add(candidates, os.joinPath(os.joinPath(os.joinPath(cwd, "codex-cheng"), "prompts"), fileName))
+    add(candidates, os.joinPath(os.joinPath(os.joinPath(cwd, "cheng-codex"), "prompts"), fileName))
+    add(candidates, os.joinPath(os.joinPath(os.joinPath(cwd, ".."), "prompts"), fileName))
+    add(candidates, os.joinPath(os.joinPath(os.joinPath(os.joinPath(cwd, ".."), "codex-cheng"), "prompts"), fileName))
+    add(candidates, os.joinPath(os.joinPath(os.joinPath(os.joinPath(cwd, ".."), "cheng-codex"), "prompts"), fileName))
+    for i in 0..<len(candidates):
         let candidate = argAt(candidates, i)
         if len(candidate) > 0 && os.fileExists(candidate):
             return candidate
-        i = i + 1
     return ""
 
 fn basePromptPath(): str =
@@ -450,21 +442,19 @@ fn toLowerAscii(text: str): str =
     if len(text) == 0:
         return ""
     var out = ""
-    var i: int32 = 0
-    while i < len(text):
+    for i in 0..<len(text):
         let ch = text[i]
         if ch >= 'A' && ch <= 'Z':
             out = out + $ char(ord(ch) + 32)
         else:
             out = out + $ ch
-        i = i + 1
     return out
 
 fn fileExtensionLower(path: str): str =
     if len(path) == 0:
         return ""
-    var idx: int32 = len(path) - 1
-    while idx >= 0:
+    for rev in 0..<len(path):
+        let idx = len(path) - rev - 1
         let ch = path[idx]
         if ch == '.':
             if idx + 1 <= len(path) - 1:
@@ -472,7 +462,6 @@ fn fileExtensionLower(path: str): str =
             return ""
         if ch == '/' || ch == '\\':
             break
-        idx = idx - 1
     return ""
 
 fn mimeTypeForPath(path: str): str =
@@ -508,26 +497,26 @@ fn buildInputImageMessage(path: str): str =
     dataUrl = dataUrl + mime
     dataUrl = dataUrl + ";base64,"
     dataUrl = dataUrl + encoded
-    var contentItems: str[] = newSeq[str]()
-    seqAdd(contentItems, jstrObject(seqStr2(jstrPair("type", jstrString("input_image")), jstrPair("image_url", jstrString(dataUrl)))))
-    var msgPairs: str[] = newSeq[str]()
-    seqAdd(msgPairs, jstrPair("type", jstrString("message")))
-    seqAdd(msgPairs, jstrPair("role", jstrString("user")))
-    seqAdd(msgPairs, jstrPair("content", jstrArray(contentItems)))
+    var contentItems: str[] = []
+    add(contentItems, jstrObject(seqStr2(jstrPair("type", jstrString("input_image")), jstrPair("image_url", jstrString(dataUrl)))))
+    var msgPairs: str[] = []
+    add(msgPairs, jstrPair("type", jstrString("message")))
+    add(msgPairs, jstrPair("role", jstrString("user")))
+    add(msgPairs, jstrPair("content", jstrArray(contentItems)))
     return jstrObject(msgPairs)
 
 fn buildInputImageUrlMessage(url: str): str =
     if len(url) == 0:
         return ""
-    var contentItems: str[] = newSeq[str]()
-    seqAdd(contentItems, jstrObject(seqStr2(
+    var contentItems: str[] = []
+    add(contentItems, jstrObject(seqStr2(
         jstrPair("type", jstrString("input_image")),
         jstrPair("image_url", jstrString(url))
     )))
-    var msgPairs: str[] = newSeq[str]()
-    seqAdd(msgPairs, jstrPair("type", jstrString("message")))
-    seqAdd(msgPairs, jstrPair("role", jstrString("user")))
-    seqAdd(msgPairs, jstrPair("content", jstrArray(contentItems)))
+    var msgPairs: str[] = []
+    add(msgPairs, jstrPair("type", jstrString("message")))
+    add(msgPairs, jstrPair("role", jstrString("user")))
+    add(msgPairs, jstrPair("content", jstrArray(contentItems)))
     return jstrObject(msgPairs)
 
 fn parseConfigBool(raw: str, outValue: var bool): bool =
@@ -549,16 +538,14 @@ fn configBoolValueLocal(key: str, defaultValue: bool): bool =
     return defaultValue
 
 fn configBoolValueAny(keys: str[], defaultValue: bool): bool =
-    var idx: int32 = 0
-    while idx < len(keys):
+    for idx in 0..<len(keys):
         var value = defaultValue
         if parseConfigBool(readConfigValue(keys[idx]), value):
             return value
-        idx = idx + 1
     return defaultValue
 
 fn buildToolsJson(disableWebSearch: bool, disableViewImage: bool): str =
-    var tools: str[] = newSeq[str]()
+    var tools: str[] = []
     let enableShell = configBoolValueLocal("features.shell_tool", true)
     let enableCollab = configBoolValueLocal("features.collab", false)
     let enableCollaborationModes = configBoolValueLocal("features.collaboration_modes", true)
@@ -566,80 +553,80 @@ fn buildToolsJson(disableWebSearch: bool, disableViewImage: bool): str =
     let enableWebSearch = (! disableWebSearch) && configBoolValueAny(seqStr4("features.web_search_request", "web_search_request", "tools.web_search", "web_search"), false)
     if enableShell:
         let shellTool = "{\"type\":\"function\",\"name\":\"shell_command\",\"description\":\"Run a shell command\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},\"workdir\":{\"type\":\"string\"},\"login\":{\"type\":\"boolean\"},\"timeout_ms\":{\"type\":\"number\"},\"sandbox_permissions\":{\"type\":\"string\",\"enum\":[\"use_default\",\"require_escalated\"]},\"justification\":{\"type\":\"string\"}},\"required\":[\"command\"]}}"
-        seqAdd(tools, shellTool)
+        add(tools, shellTool)
     let patchTool = "{\"type\":\"function\",\"name\":\"apply_patch\",\"description\":\"Apply a unified diff patch\",\"parameters\":{\"type\":\"object\",\"properties\":{\"patch\":{\"type\":\"string\"}},\"required\":[\"patch\"]}}"
-    seqAdd(tools, patchTool)
+    add(tools, patchTool)
     let planTool = "{\"type\":\"function\",\"name\":\"update_plan\",\"description\":\"Updates the task plan. Provide an optional explanation and a list of plan items, each with a step and status. At most one step can be in_progress at a time.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"explanation\":{\"type\":\"string\"},\"plan\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"step\":{\"type\":\"string\"},\"status\":{\"type\":\"string\"}},\"required\":[\"step\",\"status\"]}}},\"required\":[\"plan\"]}}"
-    seqAdd(tools, planTool)
+    add(tools, planTool)
     if enableCollaborationModes:
         let requestInputTool = "{\"type\":\"function\",\"name\":\"request_user_input\",\"description\":\"Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"questions\":{\"type\":\"array\",\"description\":\"Questions to show the user. Prefer 1 and do not exceed 3\",\"items\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"Stable identifier for mapping answers (snake_case).\"},\"header\":{\"type\":\"string\",\"description\":\"Short header label shown in the UI (12 or fewer chars).\"},\"question\":{\"type\":\"string\",\"description\":\"Single-sentence prompt shown to the user.\"},\"options\":{\"type\":\"array\",\"description\":\"Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \\\"(Recommended)\\\". Do not include an \\\"Other\\\" option in this list; the client will add a free-form \\\"Other\\\" option automatically.\",\"items\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\",\"description\":\"User-facing label (1-5 words).\"},\"description\":{\"type\":\"string\",\"description\":\"One short sentence explaining impact/tradeoff if selected.\"}},\"required\":[\"label\",\"description\"]}}},\"required\":[\"id\",\"header\",\"question\",\"options\"]}}},\"required\":[\"questions\"]}}"
-        seqAdd(tools, requestInputTool)
+        add(tools, requestInputTool)
     if enableCollab:
         let spawnAgentTool = "{\"type\":\"function\",\"name\":\"spawn_agent\",\"description\":\"Spawn a new agent and return its id.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"message\":{\"type\":\"string\",\"description\":\"Initial message to send to the new agent.\"},\"agent_type\":{\"type\":\"string\",\"description\":\"Optional agent type to spawn (default, orchestrator, worker).\"}},\"required\":[\"message\"]}}"
         let sendInputTool = "{\"type\":\"function\",\"name\":\"send_input\",\"description\":\"Send a message to an existing agent.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"Identifier of the agent to message.\"},\"message\":{\"type\":\"string\",\"description\":\"Message to send to the agent.\"},\"interrupt\":{\"type\":\"boolean\",\"description\":\"When true, interrupt the agent before sending the message.\"}},\"required\":[\"id\",\"message\"]}}"
         let waitTool = "{\"type\":\"function\",\"name\":\"wait\",\"description\":\"Wait for agents and return their statuses. If no agent is done, no status get returned.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Identifiers of the agents to wait on.\"},\"timeout_ms\":{\"type\":\"number\",\"description\":\"Optional timeout in milliseconds.\"}},\"required\":[\"ids\"]}}"
         let closeAgentTool = "{\"type\":\"function\",\"name\":\"close_agent\",\"description\":\"Close an agent and return its last known status.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"Identifier of the agent to close.\"}},\"required\":[\"id\"]}}"
-        seqAdd(tools, spawnAgentTool)
-        seqAdd(tools, sendInputTool)
-        seqAdd(tools, waitTool)
-        seqAdd(tools, closeAgentTool)
+        add(tools, spawnAgentTool)
+        add(tools, sendInputTool)
+        add(tools, waitTool)
+        add(tools, closeAgentTool)
     if enableViewImage:
         let viewImageTool = "{\"type\":\"function\",\"name\":\"view_image\",\"description\":\"Attach a local image (by filesystem path) to the conversation context for this turn.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}"
-        seqAdd(tools, viewImageTool)
+        add(tools, viewImageTool)
     if enableWebSearch:
         let webSearchTool = "{\"type\":\"web_search\"}"
-        seqAdd(tools, webSearchTool)
+        add(tools, webSearchTool)
     return jstrArray(tools)
 
 fn buildChatToolsJson(disableViewImage: bool): str =
-    var tools: str[] = newSeq[str]()
+    var tools: str[] = []
     let enableShell = configBoolValueLocal("features.shell_tool", true)
     let enableCollab = configBoolValueLocal("features.collab", false)
     let enableCollaborationModes = configBoolValueLocal("features.collaboration_modes", true)
     let enableViewImage = (! disableViewImage) && configBoolValueAny(seqStr2("features.view_image_tool", "tools.view_image"), true)
     if enableShell:
         let shellTool = "{\"type\":\"function\",\"function\":{\"name\":\"shell_command\",\"description\":\"Run a shell command\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"},\"workdir\":{\"type\":\"string\"},\"login\":{\"type\":\"boolean\"},\"timeout_ms\":{\"type\":\"number\"},\"sandbox_permissions\":{\"type\":\"string\",\"enum\":[\"use_default\",\"require_escalated\"]},\"justification\":{\"type\":\"string\"}},\"required\":[\"command\"]}}}"
-        seqAdd(tools, shellTool)
+        add(tools, shellTool)
     let patchTool = "{\"type\":\"function\",\"function\":{\"name\":\"apply_patch\",\"description\":\"Apply a unified diff patch\",\"parameters\":{\"type\":\"object\",\"properties\":{\"patch\":{\"type\":\"string\"}},\"required\":[\"patch\"]}}}"
-    seqAdd(tools, patchTool)
+    add(tools, patchTool)
     let planTool = "{\"type\":\"function\",\"function\":{\"name\":\"update_plan\",\"description\":\"Updates the task plan. Provide an optional explanation and a list of plan items, each with a step and status. At most one step can be in_progress at a time.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"explanation\":{\"type\":\"string\"},\"plan\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"step\":{\"type\":\"string\"},\"status\":{\"type\":\"string\"}},\"required\":[\"step\",\"status\"]}}},\"required\":[\"plan\"]}}}"
-    seqAdd(tools, planTool)
+    add(tools, planTool)
     if enableCollaborationModes:
         let requestInputTool = "{\"type\":\"function\",\"function\":{\"name\":\"request_user_input\",\"description\":\"Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"questions\":{\"type\":\"array\",\"description\":\"Questions to show the user. Prefer 1 and do not exceed 3\",\"items\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"Stable identifier for mapping answers (snake_case).\"},\"header\":{\"type\":\"string\",\"description\":\"Short header label shown in the UI (12 or fewer chars).\"},\"question\":{\"type\":\"string\",\"description\":\"Single-sentence prompt shown to the user.\"},\"options\":{\"type\":\"array\",\"description\":\"Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \\\"(Recommended)\\\". Do not include an \\\"Other\\\" option in this list; the client will add a free-form \\\"Other\\\" option automatically.\",\"items\":{\"type\":\"object\",\"properties\":{\"label\":{\"type\":\"string\",\"description\":\"User-facing label (1-5 words).\"},\"description\":{\"type\":\"string\",\"description\":\"One short sentence explaining impact/tradeoff if selected.\"}},\"required\":[\"label\",\"description\"]}}},\"required\":[\"id\",\"header\",\"question\",\"options\"]}}},\"required\":[\"questions\"]}}}"
-        seqAdd(tools, requestInputTool)
+        add(tools, requestInputTool)
     if enableCollab:
         let spawnAgentTool = "{\"type\":\"function\",\"function\":{\"name\":\"spawn_agent\",\"description\":\"Spawn a new agent and return its id.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"message\":{\"type\":\"string\",\"description\":\"Initial message to send to the new agent.\"},\"agent_type\":{\"type\":\"string\",\"description\":\"Optional agent type to spawn (default, orchestrator, worker).\"}},\"required\":[\"message\"]}}}"
         let sendInputTool = "{\"type\":\"function\",\"function\":{\"name\":\"send_input\",\"description\":\"Send a message to an existing agent.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"Identifier of the agent to message.\"},\"message\":{\"type\":\"string\",\"description\":\"Message to send to the agent.\"},\"interrupt\":{\"type\":\"boolean\",\"description\":\"When true, interrupt the agent before sending the message.\"}},\"required\":[\"id\",\"message\"]}}}"
         let waitTool = "{\"type\":\"function\",\"function\":{\"name\":\"wait\",\"description\":\"Wait for agents and return their statuses. If no agent is done, no status get returned.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Identifiers of the agents to wait on.\"},\"timeout_ms\":{\"type\":\"number\",\"description\":\"Optional timeout in milliseconds.\"}},\"required\":[\"ids\"]}}}"
         let closeAgentTool = "{\"type\":\"function\",\"function\":{\"name\":\"close_agent\",\"description\":\"Close an agent and return its last known status.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"Identifier of the agent to close.\"}},\"required\":[\"id\"]}}}"
-        seqAdd(tools, spawnAgentTool)
-        seqAdd(tools, sendInputTool)
-        seqAdd(tools, waitTool)
-        seqAdd(tools, closeAgentTool)
+        add(tools, spawnAgentTool)
+        add(tools, sendInputTool)
+        add(tools, waitTool)
+        add(tools, closeAgentTool)
     if enableViewImage:
         let viewImageTool = "{\"type\":\"function\",\"function\":{\"name\":\"view_image\",\"description\":\"Attach a local image (by filesystem path) to the conversation context for this turn.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}}}"
-        seqAdd(tools, viewImageTool)
+        add(tools, viewImageTool)
     return jstrArray(tools)
 
 fn buildChatMessage(role: str, text: str, imageUrl: str): str =
-    var pairs: str[] = newSeq[str]()
-    seqAdd(pairs, jstrPair("role", jstrString(role)))
+    var pairs: str[] = []
+    add(pairs, jstrPair("role", jstrString(role)))
     if len(imageUrl) > 0:
-        var contentItems: str[] = newSeq[str]()
+        var contentItems: str[] = []
         if len(text) > 0:
             let textItem = jstrObject(seqStr2(
                 jstrPair("type", jstrString("text")),
                 jstrPair("text", jstrString(text))
             ))
-            seqAdd(contentItems, textItem)
+            add(contentItems, textItem)
         let imageObj = jstrObject(seqStr2(
             jstrPair("type", jstrString("image_url")),
             jstrPair("image_url", jstrObject(seqStr1(jstrPair("url", jstrString(imageUrl)))))
         ))
-        seqAdd(contentItems, imageObj)
-        seqAdd(pairs, jstrPair("content", jstrArray(contentItems)))
+        add(contentItems, imageObj)
+        add(pairs, jstrPair("content", jstrArray(contentItems)))
     else:
-        seqAdd(pairs, jstrPair("content", jstrString(text)))
+        add(pairs, jstrPair("content", jstrString(text)))
     return jstrObject(pairs)
 
 fn instructionTextForRequest(instructions: str): str =
@@ -647,11 +634,11 @@ fn instructionTextForRequest(instructions: str): str =
     return "You are Codex."
 
 fn buildChatToolMessage(callId: str, content: str): str =
-    var pairs: str[] = newSeq[str]()
-    seqAdd(pairs, jstrPair("role", jstrString("tool")))
+    var pairs: str[] = []
+    add(pairs, jstrPair("role", jstrString("tool")))
     if len(callId) > 0:
-        seqAdd(pairs, jstrPair("tool_call_id", jstrString(callId)))
-    seqAdd(pairs, jstrPair("content", jstrString(content)))
+        add(pairs, jstrPair("tool_call_id", jstrString(callId)))
+    add(pairs, jstrPair("content", jstrString(content)))
     return jstrObject(pairs)
 
 fn extractItemText(payload: str): str =
@@ -710,34 +697,32 @@ fn inputItemToChatMessage(item: str): str =
     return ""
 
 fn buildChatMessages(instructions: str, inputItems: str[]): str[] =
-    var messages: str[] = newSeq[str]()
+    var messages: str[] = []
     let systemText = instructionTextForRequest(instructions)
     if len(systemText) > 0:
-        seqAdd(messages, buildChatMessage("system", systemText, ""))
-    var idx: int32 = 0
-    while idx < len(inputItems):
+        add(messages, buildChatMessage("system", systemText, ""))
+    for idx in 0..<len(inputItems):
         let msg = inputItemToChatMessage(inputItems[idx])
         if len(msg) > 0:
-            seqAdd(messages, msg)
-        idx = idx + 1
+            add(messages, msg)
     return messages
 
 fn buildInputMessage(role: str, text: str): str =
-    var contentItems: str[] = newSeq[str]()
-    seqAdd(contentItems, jstrObject(seqStr2(jstrPair("type", jstrString("input_text")), jstrPair("text", jstrString(text)))))
-    var msgPairs: str[] = newSeq[str]()
-    seqAdd(msgPairs, jstrPair("type", jstrString("message")))
-    seqAdd(msgPairs, jstrPair("role", jstrString(role)))
-    seqAdd(msgPairs, jstrPair("content", jstrArray(contentItems)))
+    var contentItems: str[] = []
+    add(contentItems, jstrObject(seqStr2(jstrPair("type", jstrString("input_text")), jstrPair("text", jstrString(text)))))
+    var msgPairs: str[] = []
+    add(msgPairs, jstrPair("type", jstrString("message")))
+    add(msgPairs, jstrPair("role", jstrString(role)))
+    add(msgPairs, jstrPair("content", jstrArray(contentItems)))
     return jstrObject(msgPairs)
 
 fn buildAssistantMessage(text: str): str =
-    var contentItems: str[] = newSeq[str]()
-    seqAdd(contentItems, jstrObject(seqStr2(jstrPair("type", jstrString("output_text")), jstrPair("text", jstrString(text)))))
-    var msgPairs: str[] = newSeq[str]()
-    seqAdd(msgPairs, jstrPair("type", jstrString("message")))
-    seqAdd(msgPairs, jstrPair("role", jstrString("assistant")))
-    seqAdd(msgPairs, jstrPair("content", jstrArray(contentItems)))
+    var contentItems: str[] = []
+    add(contentItems, jstrObject(seqStr2(jstrPair("type", jstrString("output_text")), jstrPair("text", jstrString(text)))))
+    var msgPairs: str[] = []
+    add(msgPairs, jstrPair("type", jstrString("message")))
+    add(msgPairs, jstrPair("role", jstrString("assistant")))
+    add(msgPairs, jstrPair("content", jstrArray(contentItems)))
     return jstrObject(msgPairs)
 
 fn buildToolCall(callId: str, name: str, arguments: str): str =
@@ -745,11 +730,11 @@ fn buildToolCall(callId: str, name: str, arguments: str): str =
     # function_call item to be present in `input` when sending a matching
     # function_call_output, otherwise they reject with:
     # "No tool call found for function call output with call_id ...".
-    var pairs: str[] = newSeq[str]()
-    seqAdd(pairs, jstrPair("type", jstrString("function_call")))
-    seqAdd(pairs, jstrPair("call_id", jstrString(callId)))
-    seqAdd(pairs, jstrPair("name", jstrString(name)))
-    seqAdd(pairs, jstrPair("arguments", jstrString(arguments)))
+    var pairs: str[] = []
+    add(pairs, jstrPair("type", jstrString("function_call")))
+    add(pairs, jstrPair("call_id", jstrString(callId)))
+    add(pairs, jstrPair("name", jstrString(name)))
+    add(pairs, jstrPair("arguments", jstrString(arguments)))
     return jstrObject(pairs)
 
 fn buildToolOutput(callId: str, content: str, success: bool): str =
@@ -757,10 +742,10 @@ fn buildToolOutput(callId: str, content: str, success: bool): str =
     # objects), not a nested object. Encode tool success into the output text.
     # Keep the `success` parameter for callers, but do not serialize it here.
     success
-    var pairs: str[] = newSeq[str]()
-    seqAdd(pairs, jstrPair("type", jstrString("function_call_output")))
-    seqAdd(pairs, jstrPair("call_id", jstrString(callId)))
-    seqAdd(pairs, jstrPair("output", jstrString(content)))
+    var pairs: str[] = []
+    add(pairs, jstrPair("type", jstrString("function_call_output")))
+    add(pairs, jstrPair("call_id", jstrString(callId)))
+    add(pairs, jstrPair("output", jstrString(content)))
     return jstrObject(pairs)
 
 fn buildResponsesRequest(model: str, instructions: str, inputItems: str[], useTools: bool, outputSchemaJson: str, disableWebSearch: bool, disableViewImage: bool, previousResponseId: str): str =
@@ -768,51 +753,56 @@ fn buildResponsesRequest(model: str, instructions: str, inputItems: str[], useTo
     # Keep `previousResponseId` for future compatibility (OpenAI Responses API
     # supports it), but chatgpt.com/backend-api rejects unknown parameters.
     previousResponseId
-    var pairs: str[] = newSeq[str]()
+    var pairs: str[] = []
     traceModelLocal("buildResponsesRequest.pairs.new")
-    seqAdd(pairs, jstrPair("model", jstrString(model)))
+    add(pairs, jstrPair("model", jstrString(model)))
     traceModelLocal("buildResponsesRequest.model.added")
     let requestInstructions = instructionTextForRequest(instructions)
-    seqAdd(pairs, jstrPair("instructions", jstrString(requestInstructions)))
+    add(pairs, jstrPair("instructions", jstrString(requestInstructions)))
     traceModelLocal("buildResponsesRequest.instructions.added")
-    seqAdd(pairs, jstrPair("input", jstrArray(inputItems)))
+    add(pairs, jstrPair("input", jstrArray(inputItems)))
     traceModelLocal("buildResponsesRequest.input.added")
-    seqAdd(pairs, jstrPair("stream", jstrBool(true)))
+    add(pairs, jstrPair("stream", jstrBool(true)))
     traceModelLocal("buildResponsesRequest.stream.added")
-    seqAdd(pairs, jstrPair("store", jstrBool(false)))
+    add(pairs, jstrPair("store", jstrBool(false)))
     traceModelLocal("buildResponsesRequest.store.added")
     if len(outputSchemaJson) > 0:
         let responseFormat = "{\"type\":\"json_schema\",\"json_schema\":" + outputSchemaJson + "}"
-        seqAdd(pairs, jstrPair("response_format", responseFormat))
+        add(pairs, jstrPair("response_format", responseFormat))
         traceModelLocal("buildResponsesRequest.schema.added")
     if useTools:
         let enableParallel = configBoolValueLocal("features.parallel", true)
-        seqAdd(pairs, jstrPair("tools", buildToolsJson(disableWebSearch, disableViewImage)))
-        seqAdd(pairs, jstrPair("tool_choice", jstrString("auto")))
-        seqAdd(pairs, jstrPair("parallel_tool_calls", jstrBool(enableParallel)))
+        add(pairs, jstrPair("tools", buildToolsJson(disableWebSearch, disableViewImage)))
+        add(pairs, jstrPair("tool_choice", jstrString("auto")))
+        add(pairs, jstrPair("parallel_tool_calls", jstrBool(enableParallel)))
         traceModelLocal("buildResponsesRequest.tools.added")
     traceModelLocal("buildResponsesRequest.before.object")
     return jstrObject(pairs)
 
 fn buildChatRequest(model: str, instructions: str, inputItems: str[], useTools: bool, outputSchemaJson: str, disableViewImage: bool): str =
-    var pairs: str[] = newSeq[str]()
-    seqAdd(pairs, jstrPair("model", jstrString(model)))
+    var pairs: str[] = []
+    add(pairs, jstrPair("model", jstrString(model)))
     let messages = buildChatMessages(instructions, inputItems)
-    seqAdd(pairs, jstrPair("messages", jstrArray(messages)))
+    add(pairs, jstrPair("messages", jstrArray(messages)))
     if len(outputSchemaJson) > 0:
         let responseFormat = "{\"type\":\"json_schema\",\"json_schema\":" + outputSchemaJson + "}"
-        seqAdd(pairs, jstrPair("response_format", responseFormat))
+        add(pairs, jstrPair("response_format", responseFormat))
     if useTools:
-        seqAdd(pairs, jstrPair("tools", buildChatToolsJson(disableViewImage)))
-        seqAdd(pairs, jstrPair("tool_choice", jstrString("auto")))
+        add(pairs, jstrPair("tools", buildChatToolsJson(disableViewImage)))
+        add(pairs, jstrPair("tool_choice", jstrString("auto")))
     return jstrObject(pairs)
 
 fn stripTrailingSlash(text: str): str =
     if len(text) == 0:
         return ""
     var endIdx: int32 = len(text) - 1
-    while endIdx >= 0 && text[endIdx] == '/':
-        endIdx = endIdx - 1
+    for rev in 0..<len(text):
+        let idx = len(text) - rev - 1
+        if text[idx] == '/':
+            endIdx = idx - 1
+            continue
+        endIdx = idx
+        break
     if endIdx < 0:
         return ""
     return __cheng_slice_string(text, 0, endIdx, false)
@@ -880,32 +870,26 @@ fn splitHttpStatus(output: str): HttpSplit =
             return HttpSplit(body: output, status: 0)
         let status = parseHttpStatusLine(first)
         var bodyStart: int32 = -1
-        var i: int32 = 1
-        while i < len(lines):
+        for i in 1..<len(lines):
             if len(lines[i]) == 0:
                 bodyStart = i + 1
                 break
-            i = i + 1
         if bodyStart < 0 || bodyStart >= len(lines):
             return HttpSplit(body: "", status: status)
-        var bodyLines: str[] = newSeq[str]()
-        var j: int32 = bodyStart
-        while j < len(lines):
-            seqAdd(bodyLines, lines[j])
-            j = j + 1
+        var bodyLines: str[] = []
+        for j in bodyStart..<len(lines):
+            add(bodyLines, lines[j])
         let bodyText = joinLinesSimple(bodyLines)
         return HttpSplit(body: bodyText, status: status)
     let statusStart = idx + len(marker)
-    var i: int32 = statusStart
     var code: int32 = 0
     var saw = false
-    while i < len(output):
+    for i in statusStart..<len(output):
         let ch = output[i]
         if ch < '0' || ch > '9':
             break
         code = code * 10 + (ord(ch) - ord('0'))
         saw = true
-        i = i + 1
     var bodyText: str = ""
     if idx > 0:
         bodyText = __cheng_slice_string(output, 0, idx - 1, false)
@@ -915,33 +899,39 @@ fn splitHttpStatus(output: str): HttpSplit =
 
 fn joinLinesSimple(parts: str[]): str =
     var out = ""
-    var idx: int32 = 0
-    while idx < len(parts):
+    for idx in 0..<len(parts):
         if len(out) == 0:
             out = parts[idx]
         else:
             out = out + "\n"
             out = out + parts[idx]
-        idx = idx + 1
     return out
 
 fn parseHttpStatusLine(line: str): int32 =
     if len(line) == 0:
         return 0
     var idx: int32 = 0
-    while idx < len(line) && line[idx] != ' ':
-        idx = idx + 1
-    while idx < len(line) && line[idx] == ' ':
-        idx = idx + 1
+    for scan in idx..<len(line):
+        if line[scan] != ' ':
+            idx = scan + 1
+            continue
+        idx = scan
+        break
+    for scan in idx..<len(line):
+        if line[scan] == ' ':
+            idx = scan + 1
+            continue
+        idx = scan
+        break
     var code: int32 = 0
     var saw = false
-    while idx < len(line):
-        let ch = line[idx]
+    for scan in idx..<len(line):
+        let ch = line[scan]
         if ch < '0' || ch > '9':
             break
         code = code * 10 + (ord(ch) - ord('0'))
         saw = true
-        idx = idx + 1
+        idx = scan + 1
     if saw:
         return code
     return 0
@@ -1045,7 +1035,7 @@ fn extractChatContent(payload: str): str =
     return jsonExtractString(payload, "content")
 
 fn extractChatToolCalls(payload: str): ToolCall[] =
-    var outVal: ToolCall[] = newSeq[ToolCall]()
+    var outVal: ToolCall[] = []
     var idx: int32 = 0
     while true:
         let found = indexOfSubstr(payload, "\"tool_calls\"", idx)
@@ -1064,7 +1054,7 @@ fn extractChatToolCalls(payload: str): ToolCall[] =
                 call.name = name
                 call.arguments = jsonUnescape(argsRaw)
                 call.callId = callId
-                seqAdd(outVal, call)
+                add(outVal, call)
             inner = funcIdx + 9
         idx = found + 10
     var funcIdx: int32 = 0
@@ -1079,12 +1069,12 @@ fn extractChatToolCalls(payload: str): ToolCall[] =
             call.name = name
             call.arguments = jsonUnescape(argsRaw)
             call.callId = ""
-            seqAdd(outVal, call)
+            add(outVal, call)
         funcIdx = found + 9
     return outVal
 
 fn extractFunctionCalls(payload: str): ToolCall[] =
-    var outVal: ToolCall[] = newSeq[ToolCall]()
+    var outVal: ToolCall[] = []
     var idx: int32 = 0
     while true:
         let found = indexOfSubstr(payload, "\"type\":\"function_call\"", idx)
@@ -1098,12 +1088,12 @@ fn extractFunctionCalls(payload: str): ToolCall[] =
             call.name = name
             call.arguments = jsonUnescape(argsRaw)
             call.callId = callId
-            seqAdd(outVal, call)
+            add(outVal, call)
         idx = found + 5
     return outVal
 
 fn extractWebSearchQueries(payload: str): str[] =
-    var outVal: str[] = newSeq[str]()
+    var outVal: str[] = []
     var idx: int32 = 0
     while true:
         let typeIdx = jsonFindKeyAfter(payload, "type", idx)
@@ -1113,7 +1103,7 @@ fn extractWebSearchQueries(payload: str): str[] =
         if kind == "web_search_call":
             let query = jsonExtractStringAfter(payload, "query", typeIdx)
             if len(query) > 0:
-                seqAdd(outVal, query)
+                add(outVal, query)
         idx = typeIdx + 6
     return outVal
 
@@ -1167,7 +1157,7 @@ fn extractFirstFunctionCall(payload: str): ToolCall =
 
 fn callChatCompletionsApi(model: str, instructions: str, inputItems: str[], useTools: bool, outputSchemaJson: str, disableViewImage: bool): ModelResponse =
     traceModelLocal("callChat.begin")
-    var res: ModelResponse = ModelResponse(ok: false, outputText: "", hasToolCall: false, toolCall: ToolCall(name: "", arguments: "", callId: ""), webSearchQueries: newSeq[str](), responseId: "", error: "")
+    var res: ModelResponse = ModelResponse(ok: false, outputText: "", hasToolCall: false, toolCall: ToolCall(name: "", arguments: "", callId: ""), webSearchQueries: [], responseId: "", error: "")
     let auth = loadAuthForResponses()
     if ! auth.ok:
         res.error = "missing auth token"
@@ -1254,7 +1244,7 @@ fn callChatCompletionsApi(model: str, instructions: str, inputItems: str[], useT
         res.toolCall.name = call.name
         res.toolCall.arguments = call.arguments
         res.toolCall.callId = call.callId
-    res.webSearchQueries = newSeq[str]()
+    res.webSearchQueries = []
     res.responseId = extractResponseId(split.body)
     return res
 
@@ -1266,7 +1256,7 @@ fn callResponsesApi(model: str, instructions: str, inputItems: str[], useTools: 
         traceModelLocal("callResponses.route.chat")
         previousResponseId
         return callChatCompletionsApi(model, instructions, inputItems, useTools, outputSchemaJson, disableViewImage)
-    var res: ModelResponse = ModelResponse(ok: false, outputText: "", hasToolCall: false, toolCall: ToolCall(name: "", arguments: "", callId: ""), webSearchQueries: newSeq[str](), responseId: "", error: "")
+    var res: ModelResponse = ModelResponse(ok: false, outputText: "", hasToolCall: false, toolCall: ToolCall(name: "", arguments: "", callId: ""), webSearchQueries: [], responseId: "", error: "")
     let auth = loadAuthForResponses()
     if ! auth.ok:
         res.error = "missing auth token"

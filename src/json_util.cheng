@@ -12,42 +12,38 @@ fn jsonJoinPartsBalanced(parts: str[]): str =
     if n <= 0:
         return ""
     var out: str = ""
-    var i: int32 = 0
-    while i < n:
+    for i in 0..<n:
         let part: str = get_string(parts, i)
         if part != nil:
             out = out + part
-        i = i + 1
     return out
 
 fn jstrEscape(value: str): str =
     if value == nil:
         return ""
     # Build via slices + balanced join to avoid O(n^2) growth and deep `+` chains.
-    var parts: str[] = newSeq[str]()
+    var parts: str[] = []
     var last: int32 = 0
-    var i: int32 = 0
-    while i < len(value):
+    for i in 0..<len(value):
         let ch: char = value[i]
         if ch == '"' || ch == '\\' || ch == '\n' || ch == '\r' || ch == '\t':
             if i > last:
                 let chunk: str = __cheng_slice_string(value, last, i - 1, false)
-                seqAdd(parts, chunk)
+                add(parts, chunk)
             if ch == '"':
-                seqAdd(parts, "\\\"")
+                add(parts, "\\\"")
             elif ch == '\\':
-                seqAdd(parts, "\\\\")
+                add(parts, "\\\\")
             elif ch == '\n':
-                seqAdd(parts, "\\n")
+                add(parts, "\\n")
             elif ch == '\r':
-                seqAdd(parts, "\\r")
+                add(parts, "\\r")
             else:
-                seqAdd(parts, "\\t")
+                add(parts, "\\t")
             last = i + 1
-        i = i + 1
     if last <= len(value) - 1:
         let tail: str = __cheng_slice_string(value, last, len(value) - 1, false)
-        seqAdd(parts, tail)
+        add(parts, tail)
     return jsonJoinPartsBalanced(parts)
 
 fn jstrString(value: str): str =
@@ -79,17 +75,15 @@ fn joinWithComma(items: str[]): str =
     if len(items) == 0:
         return ""
     # Use parts + balanced join to avoid quadratic behavior for large arrays.
-    var parts: str[] = newSeq[str]()
-    var i: int32 = 0
-    while i < len(items):
+    var parts: str[] = []
+    for i in 0..<len(items):
         if i > 0:
-            seqAdd(parts, ",")
+            add(parts, ",")
         let item: str = items[i]
         if item == nil:
-            seqAdd(parts, "")
+            add(parts, "")
         else:
-            seqAdd(parts, item)
-        i = i + 1
+            add(parts, item)
     return jsonJoinPartsBalanced(parts)
 
 fn jstrObject(pairs: str[]): str =
@@ -113,28 +107,28 @@ fn indexOfSubstr(text: str, needle: str, start: int32): int32 =
         return -1
     if len(needle) == 0:
         return start
-    var i: int32 = start
-    let limit: int32 = len(text) - len(needle)
-    while i <= limit:
+    if len(text) < len(needle):
+        return -1
+    let limit = len(text) - len(needle)
+    if start > limit:
+        return -1
+    for i in start..limit:
         var matched = true
-        var j: int32 = 0
-        while j < len(needle):
+        for j in 0..<len(needle):
             if ord(text[i + j]) != ord(needle[j]):
                 matched = false
                 break
-            j = j + 1
         if matched:
             return i
-        i = i + 1
     return -1
 
 fn jsonSkipSpaces(payload: str, startIdx: int32): int32 =
     var idx = startIdx
-    while idx < len(payload):
-        let ch = payload[idx]
+    for scan in startIdx..<len(payload):
+        let ch = payload[scan]
         if ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r':
-            break
-        idx = idx + 1
+            return scan
+        idx = scan + 1
     return idx
 
 fn jsonFindKeyAfter(payload: str, key: str, startIdx: int32): int32 =
@@ -153,11 +147,14 @@ fn jsonExtractStringAfter(payload: str, key: str, startIdx: int32): str =
         return ""
     idx = idx + 1
     var outVal = ""
-    while idx < len(payload):
-        let ch = payload[idx]
+    var skipUntil: int32 = idx - 1
+    for scan in idx..<len(payload):
+        if scan <= skipUntil:
+            continue
+        let ch = payload[scan]
         if ch == '\\':
-            if idx + 1 < len(payload):
-                let next = payload[idx + 1]
+            if scan + 1 < len(payload):
+                let next = payload[scan + 1]
                 if next == 'n':
                     outVal = outVal + "\n"
                 elif next == 'r':
@@ -166,13 +163,12 @@ fn jsonExtractStringAfter(payload: str, key: str, startIdx: int32): str =
                     outVal = outVal + "\t"
                 else:
                     outVal = outVal + $ next
-                idx = idx + 2
+                skipUntil = scan + 1
                 continue
             break
         if ch == '"':
             break
         outVal = outVal + $ ch
-        idx = idx + 1
     return outVal
 
 fn jsonExtractString(payload: str, key: str): str =
@@ -183,18 +179,19 @@ fn jsonFindContainerEnd(payload: str, startIdx: int32, openCh: char, closeCh: ch
         return -1
     if payload[startIdx] != openCh:
         return -1
-    var idx = startIdx
     var depth = 0
     var inString = false
-    while idx < len(payload):
+    var skipUntil: int32 = startIdx - 1
+    for idx in startIdx..<len(payload):
+        if idx <= skipUntil:
+            continue
         let ch = payload[idx]
         if inString:
             if ch == '\\' && idx + 1 < len(payload):
-                idx = idx + 2
+                skipUntil = idx + 1
                 continue
             if ch == '"':
                 inString = false
-            idx = idx + 1
             continue
         if ch == '"':
             inString = true
@@ -204,7 +201,6 @@ fn jsonFindContainerEnd(payload: str, startIdx: int32, openCh: char, closeCh: ch
             depth = depth - 1
             if depth == 0:
                 return idx
-        idx = idx + 1
     return -1
 
 fn jsonExtractRawFieldAfter(payload: str, key: str, startIdx: int32, expectOpen: char): str =
@@ -273,13 +269,13 @@ fn requestUserInputAvailabilityInstruction(mode: str): str =
     return "The `request_user_input` tool is unavailable in " + modeName + " mode. If you call it while in " + modeName + " mode, it will return an error."
 
 fn requestUserInputEmptyResponseJson(): str =
-    return jstrObject(seqStr1(jstrPair("answers", jstrObject(newSeq[str]()))))
+    return jstrObject(seqStr1(jstrPair("answers", jstrObject([]))))
 
 fn requestUserInputQuestionsFromArguments(arguments: str): str =
     let questions = jsonExtractRawArrayField(arguments, "questions")
     if len(questions) > 0:
         return questions
-    return jstrArray(newSeq[str]())
+    return jstrArray([])
 
 fn requestUserInputNormalizeResponse(resultJson: str): str =
     let answers = jsonExtractRawObjectField(resultJson, "answers")
@@ -290,12 +286,10 @@ fn requestUserInputNormalizeResponse(resultJson: str): str =
 fn jsonFirstNonSpaceIndex(payload: str): int32 =
     if payload == nil:
         return -1
-    var i: int32 = 0
-    while i < len(payload):
+    for i in 0..<len(payload):
         let ch = payload[i]
         if ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r':
             return i
-        i = i + 1
     return -1
 
 fn toolPatchTextFromArguments(arguments: str): str =
@@ -326,13 +320,13 @@ fn jsonExtractIntAfter(payload: str, key: str, startIdx: int32, defaultValue: in
         idx = idx + 1
     var value = 0
     var saw = false
-    while idx < len(payload):
-        let ch = payload[idx]
+    for scan in idx..<len(payload):
+        let ch = payload[scan]
         if ch < '0' || ch > '9':
             break
         value = value * 10 + (ord(ch) - ord('0'))
         saw = true
-        idx = idx + 1
+        idx = scan + 1
     if ! saw:
         return defaultValue
     return value * sign
@@ -341,7 +335,7 @@ fn jsonExtractInt(payload: str, key: str, defaultValue: int32): int32 =
     return jsonExtractIntAfter(payload, key, 0, defaultValue)
 
 fn jsonExtractStringArray(payload: str, key: str): str[] =
-    var outVal: str[] = newSeq[str]()
+    var outVal: str[] = []
     let keyIdx = jsonFindKeyAfter(payload, key, 0)
     if keyIdx < 0:
         return outVal
@@ -351,54 +345,68 @@ fn jsonExtractStringArray(payload: str, key: str): str[] =
     idx = jsonSkipSpaces(payload, idx + 1)
     if idx >= len(payload) || payload[idx] != '[':
         return outVal
-    idx = idx + 1
-    while idx < len(payload):
-        idx = jsonSkipSpaces(payload, idx)
-        if idx >= len(payload):
+    var cursor = idx + 1
+    for idx in cursor..<len(payload):
+        if idx < cursor:
+            continue
+        cursor = jsonSkipSpaces(payload, idx)
+        if cursor >= len(payload):
             break
-        let ch = payload[idx]
+        let ch = payload[cursor]
         if ch == ']':
             break
         if ch != '"':
             break
-        idx = idx + 1
+        cursor = cursor + 1
         # Build via slices + balanced join to avoid O(n^2) growth and to reduce
         # exposure to runtime instability in repeated `value = value + ...`.
-        var parts: str[] = newSeq[str]()
-        var last: int32 = idx
-        while idx < len(payload):
-            let c = payload[idx]
-            if c == '\\' && idx + 1 < len(payload):
-                let next = payload[idx + 1]
-                if idx > last:
-                    let chunk: str = __cheng_slice_string(payload, last, idx - 1, false)
-                    seqAdd(parts, chunk)
+        var parts: str[] = []
+        var last: int32 = cursor
+        var valueEnd = cursor
+        var skipUntil: int32 = cursor - 1
+        for scan in cursor..<len(payload):
+            if scan <= skipUntil:
+                continue
+            let c = payload[scan]
+            if c == '\\' && scan + 1 < len(payload):
+                let next = payload[scan + 1]
+                if scan > last:
+                    let chunk: str = __cheng_slice_string(payload, last, scan - 1, false)
+                    add(parts, chunk)
                 if next == 'n':
-                    seqAdd(parts, "\n")
+                    add(parts, "\n")
                 elif next == 'r':
-                    seqAdd(parts, "\r")
+                    add(parts, "\r")
                 elif next == 't':
-                    seqAdd(parts, "\t")
+                    add(parts, "\t")
                 else:
-                    seqAdd(parts, $ next)
-                idx = idx + 2
-                last = idx
+                    add(parts, $ next)
+                valueEnd = scan + 2
+                last = valueEnd
+                skipUntil = scan + 1
                 continue
             if c == '"':
-                if idx > last:
-                    let chunk: str = __cheng_slice_string(payload, last, idx - 1, false)
-                    seqAdd(parts, chunk)
-                idx = idx + 1
+                if scan > last:
+                    let chunk: str = __cheng_slice_string(payload, last, scan - 1, false)
+                    add(parts, chunk)
+                valueEnd = scan + 1
                 break
-            idx = idx + 1
+            valueEnd = scan + 1
         let value: str = jsonJoinPartsBalanced(parts)
-        seqAdd(outVal, value)
-        while idx < len(payload):
-            let sep = payload[idx]
+        add(outVal, value)
+        cursor = valueEnd
+        var sawSep = false
+        for scan in cursor..<len(payload):
+            let sep = payload[scan]
             if sep == ',':
-                idx = idx + 1
+                cursor = scan + 1
+                sawSep = true
                 break
             if sep == ']':
+                cursor = scan
+                sawSep = true
                 break
-            idx = idx + 1
+            cursor = scan + 1
+        if ! sawSep:
+            break
     return outVal

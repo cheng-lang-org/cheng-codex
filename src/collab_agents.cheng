@@ -87,17 +87,17 @@ fn collabWriteState(state: CollabAgentState) =
     let path = collabStatePath(state.id)
     if len(path) == 0:
         return
-    var fields: str[] = newSeq[str]()
-    seqAdd(fields, jstrPair("id", jstrString(state.id)))
-    seqAdd(fields, jstrPair("thread_id", jstrString(state.threadId)))
-    seqAdd(fields, jstrPair("pid", intToStr(state.pid)))
-    seqAdd(fields, jstrPair("status", jstrString(state.statusKind)))
+    var fields: str[] = []
+    add(fields, jstrPair("id", jstrString(state.id)))
+    add(fields, jstrPair("thread_id", jstrString(state.threadId)))
+    add(fields, jstrPair("pid", intToStr(state.pid)))
+    add(fields, jstrPair("status", jstrString(state.statusKind)))
     if len(state.statusMessage) > 0:
-        seqAdd(fields, jstrPair("status_message", jstrString(state.statusMessage)))
-    seqAdd(fields, jstrPair("started_at", int64ToStr(state.startedAt)))
-    seqAdd(fields, jstrPair("updated_at", int64ToStr(state.updatedAt)))
+        add(fields, jstrPair("status_message", jstrString(state.statusMessage)))
+    add(fields, jstrPair("started_at", int64ToStr(state.startedAt)))
+    add(fields, jstrPair("updated_at", int64ToStr(state.updatedAt)))
     if len(state.outputPath) > 0:
-        seqAdd(fields, jstrPair("output_path", jstrString(state.outputPath)))
+        add(fields, jstrPair("output_path", jstrString(state.outputPath)))
     os.writeFile(path, jstrObject(fields))
 
 fn collabReadState(agentId: str, outState: var CollabAgentState): bool =
@@ -120,16 +120,15 @@ fn collabReadState(agentId: str, outState: var CollabAgentState): bool =
     return true
 
 fn collabUpdateStatus(agentId: str, kind: str, message: str) =
-    var state = CollabAgentState(
-        id: agentId,
-        threadId: "",
-        pid: 0,
-        statusKind: "",
-        statusMessage: "",
-        startedAt: 0,
-        updatedAt: 0,
-        outputPath: ""
-    )
+    var state: CollabAgentState
+    state.id = agentId
+    state.threadId = ""
+    state.pid = 0
+    state.statusKind = ""
+    state.statusMessage = ""
+    state.startedAt = 0
+    state.updatedAt = 0
+    state.outputPath = ""
     if ! collabReadState(agentId, state):
         return
     state.statusKind = kind
@@ -264,16 +263,15 @@ fn collabSpawnAgent(argsJson: str, baseInstructions: str, developerInstructions:
     let outputPath = collabOutputPath(agentId)
     let preview = collabPreview(prompt)
     let threadId = createThread(preview, workDir, "collab")
-    var state = CollabAgentState(
-        id: agentId,
-        threadId: threadId,
-        pid: 0,
-        statusKind: "running",
-        statusMessage: "",
-        startedAt: collabNowSeconds(),
-        updatedAt: collabNowSeconds(),
-        outputPath: outputPath
-    )
+    var state: CollabAgentState
+    state.id = agentId
+    state.threadId = threadId
+    state.pid = 0
+    state.statusKind = "running"
+    state.statusMessage = ""
+    state.startedAt = collabNowSeconds()
+    state.updatedAt = collabNowSeconds()
+    state.outputPath = outputPath
     collabWriteState(state)
     let pid = collabSpawnProcess(state, prompt, profile.instructions, developerInstructions, profile.model, approvalPolicy, workDir, "")
     if pid > 0:
@@ -294,16 +292,15 @@ fn collabSendInput(argsJson: str, baseInstructions: str, developerInstructions: 
     var interrupt = false
     if indexOfSubstr(argsJson, "\"interrupt\":true", 0) >= 0:
         interrupt = true
-    var state = CollabAgentState(
-        id: agentId,
-        threadId: "",
-        pid: 0,
-        statusKind: "",
-        statusMessage: "",
-        startedAt: 0,
-        updatedAt: 0,
-        outputPath: ""
-    )
+    var state: CollabAgentState
+    state.id = agentId
+    state.threadId = ""
+    state.pid = 0
+    state.statusKind = ""
+    state.statusMessage = ""
+    state.startedAt = 0
+    state.updatedAt = 0
+    state.outputPath = ""
     if ! collabReadState(agentId, state):
         return CollabToolResult(ok: false, output: "agent not found")
     let statusNorm = normalizePolicy(trimLine(state.statusKind))
@@ -348,28 +345,25 @@ fn collabWaitAgents(argsJson: str): CollabToolResult =
     let startSec = collabNowSeconds()
     let deadline = startSec + int64((timeoutMs + 999) / 1000)
     while true:
-        var statusPairs: str[] = newSeq[str]()
-        var idx: int32 = 0
-        while idx < len(ids):
+        var statusPairs: str[] = []
+        for idx in 0..<len(ids):
             let agentId = ids[idx]
-            var state = CollabAgentState(
-                id: agentId,
-                threadId: "",
-                pid: 0,
-                statusKind: "",
-                statusMessage: "",
-                startedAt: 0,
-                updatedAt: 0,
-                outputPath: ""
-            )
+            var state: CollabAgentState
+            state.id = agentId
+            state.threadId = ""
+            state.pid = 0
+            state.statusKind = ""
+            state.statusMessage = ""
+            state.startedAt = 0
+            state.updatedAt = 0
+            state.outputPath = ""
             if collabReadState(agentId, state):
                 if collabIsFinalStatus(state.statusKind):
                     let statusJson = collabStatusJson(state.statusKind, state.statusMessage)
-                    seqAdd(statusPairs, jstrPair(agentId, statusJson))
+                    add(statusPairs, jstrPair(agentId, statusJson))
             else:
                 let statusJson = collabStatusJson("not_found", "")
-                seqAdd(statusPairs, jstrPair(agentId, statusJson))
-            idx = idx + 1
+                add(statusPairs, jstrPair(agentId, statusJson))
         if len(statusPairs) > 0:
             let resultJson = jstrObject(seqStr2(
                 jstrPair("status", jstrObject(statusPairs)),
@@ -378,7 +372,7 @@ fn collabWaitAgents(argsJson: str): CollabToolResult =
             return CollabToolResult(ok: true, output: resultJson)
         if collabNowSeconds() >= deadline:
             let resultJson = jstrObject(seqStr2(
-                jstrPair("status", jstrObject(newSeq[str]())),
+                jstrPair("status", jstrObject([])),
                 jstrPair("timed_out", jstrBool(true))
             ))
             return CollabToolResult(ok: true, output: resultJson)
@@ -390,16 +384,15 @@ fn collabCloseAgent(argsJson: str): CollabToolResult =
         agentId = jsonExtractString(argsJson, "agent_id")
     if len(agentId) == 0:
         return CollabToolResult(ok: false, output: "missing agent id")
-    var state = CollabAgentState(
-        id: agentId,
-        threadId: "",
-        pid: 0,
-        statusKind: "",
-        statusMessage: "",
-        startedAt: 0,
-        updatedAt: 0,
-        outputPath: ""
-    )
+    var state: CollabAgentState
+    state.id = agentId
+    state.threadId = ""
+    state.pid = 0
+    state.statusKind = ""
+    state.statusMessage = ""
+    state.startedAt = 0
+    state.updatedAt = 0
+    state.outputPath = ""
     if ! collabReadState(agentId, state):
         let resultJson = jstrObject(seqStr1(jstrPair("status", collabStatusJson("not_found", ""))))
         return CollabToolResult(ok: true, output: resultJson)

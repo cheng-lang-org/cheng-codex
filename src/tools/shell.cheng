@@ -13,16 +13,23 @@ fn trimSpacesShell(text: str): str =
         return ""
     var start: int32 = 0
     var stop: int32 = len(text) - 1
-    while start <= stop:
-        let ch = text[start]
-        if ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n':
+    for i in 0..<len(text):
+        if i > stop:
             break
-        start = start + 1
-    while stop >= start:
-        let ch = text[stop]
+        let ch = text[i]
         if ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n':
+            start = i
             break
-        stop = stop - 1
+        start = i + 1
+    for rev in 0..<len(text):
+        let i: int32 = len(text) - 1 - rev
+        if i < start:
+            break
+        let ch = text[i]
+        if ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n':
+            stop = i
+            break
+        stop = i - 1
     if start > stop:
         return ""
     return __cheng_slice_string(text, start, stop, false)

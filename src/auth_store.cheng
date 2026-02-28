@@ -51,7 +51,7 @@ fn resetAuthTokens(tokens: var AuthTokens) =
     tokens.lastRefresh = 0
 
 fn authLogPath(): str =
-    let path = os.getEnv("CHENG_CODEX_LOGIN_LOG")
+    let path = os.getEnv("CODEX_LOGIN_LOG")
     if len(path) == 0:
         let envHome = os.getEnv("CODEX_HOME")
         if len(envHome) > 0:
@@ -64,16 +64,16 @@ fn authLogPath(): str =
 
 fn authLogSanitize(text: str): str =
     var out = ""
-    var i: int32 = 0
     let limit: int32 = 512
-    while i < len(text) && i < limit:
+    for i in 0..<len(text):
+        if i >= limit:
+            break
         let ch = text[i]
         if ch == '\n' || ch == '\r' || ch == '\t':
             out = out + " "
         else:
             # Avoid charToStr (unstable in some compiler/runtime combos); use `$` conversion.
             out = out + $ ch
-        i = i + 1
     if len(text) > limit:
         out = out + "..."
     return out
@@ -118,34 +118,30 @@ fn authTokensAccessToken(tokens: AuthTokens): str =
     return tokens.accessToken
 
 fn splitByCharLocal(text: str, sep: char): str[] =
-    var outVal: str[] = newSeq[str]()
+    var outVal: str[] = []
     if text == nil:
         return outVal
     var start: int32 = 0
-    var i: int32 = 0
-    while i < len(text):
+    for i in 0..<len(text):
         if text[i] == sep:
             if i >= start:
-                seqAdd(outVal, __cheng_slice_string(text, start, i - 1, false))
+                add(outVal, __cheng_slice_string(text, start, i - 1, false))
             else:
-                seqAdd(outVal, "")
+                add(outVal, "")
             start = i + 1
-        i = i + 1
     if start <= len(text) - 1:
-        seqAdd(outVal, __cheng_slice_string(text, start, len(text) - 1, false))
+        add(outVal, __cheng_slice_string(text, start, len(text) - 1, false))
     elif start == len(text):
-        seqAdd(outVal, "")
+        add(outVal, "")
     return outVal
 
 fn joinWithAmpersand(items: str[]): str =
     var out = ""
-    var i: int32 = 0
-    while i < len(items):
+    for i in 0..<len(items):
         if i == 0:
             out = "" + items[i]
         else:
             out = out + "&" + items[i]
-        i = i + 1
     return out
 
 fn authIssuerDefault(): str =
@@ -172,21 +168,20 @@ fn authOriginatorDefault(): str =
 fn parseInt64Simple(text: str, defaultValue: int64): int64 =
     if len(text) == 0:
         return defaultValue
-    var i: int32 = 0
+    var start: int32 = 0
     var sign: int64 = 1
     if text[0] == '-':
         sign = -1
-        i = i + 1
+        start = 1
     var value: int64 = 0
     var saw = false
-    while i < len(text):
+    for i in start..<len(text):
         let ch = text[i]
         if ch < '0' || ch > '9':
             break
         let digit = ord(ch) - ord('0')
         value = value * 10 + int64(digit)
         saw = true
-        i = i + 1
     if ! saw:
         return defaultValue
     return value * sign
@@ -210,52 +205,46 @@ fn authNextTempPath(prefix: str, suffix: str): str =
     return os.joinPath(base, name)
 
 fn splitLinesRaw(text: str): str[] =
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     if text == nil:
         return out
     var start: int32 = 0
-    var i: int32 = 0
-    while i < len(text):
+    for i in 0..<len(text):
         if text[i] == '\n':
             var endIdx: int32 = i - 1
             if endIdx >= start && text[endIdx] == '\r':
                 endIdx = endIdx - 1
             if endIdx >= start:
-                seqAdd(out, __cheng_slice_string(text, start, endIdx, false))
+                add(out, __cheng_slice_string(text, start, endIdx, false))
             else:
-                seqAdd(out, "")
+                add(out, "")
             start = i + 1
-        i = i + 1
     if start <= len(text) - 1:
-        seqAdd(out, __cheng_slice_string(text, start, len(text) - 1, false))
+        add(out, __cheng_slice_string(text, start, len(text) - 1, false))
     elif start == len(text):
-        seqAdd(out, "")
+        add(out, "")
     return out
 
 fn authParseStatusCode(headersText: str): int32 =
     let lines = splitLinesRaw(headersText)
-    var i: int32 = 0
-    while i < len(lines):
+    for i in 0..<len(lines):
         let line = lines[i]
         if hasPrefix(line, "HTTP/"):
             let sp = indexOfSubstr(line, " ", 0)
             if sp >= 0 && sp + 1 < len(line):
                 return int32(parseInt64Simple(trimLine(__cheng_slice_string(line, sp + 1, len(line) - 1, false)), 0))
-        i = i + 1
     return 0
 
 fn authParseHeaderValue(headersText: str, key: str): str =
     let keyLower = normalizePolicy(key)
     let lines = splitLinesRaw(headersText)
-    var i: int32 = 0
-    while i < len(lines):
+    for i in 0..<len(lines):
         let line = lines[i]
         let colon = indexOfSubstr(line, ":", 0)
         if colon > 0:
             let k = normalizePolicy(trimLine(__cheng_slice_string(line, 0, colon - 1, false)))
             if k == keyLower:
                 return trimLine(__cheng_slice_string(line, colon + 1, len(line) - 1, false))
-        i = i + 1
     return ""
 
 fn authHttpRequest(method: str, url: str, body: str, contentType: str): AuthHttpResult =
@@ -336,11 +325,9 @@ fn looksLikeJwt(token: str): bool =
     if len(token) == 0:
         return false
     var dots: int32 = 0
-    var i: int32 = 0
-    while i < len(token):
+    for i in 0..<len(token):
         if token[i] == '.':
             dots = dots + 1
-        i = i + 1
     return dots >= 2
 
 fn base64ValueLocal(c: char): int32 =
@@ -362,8 +349,7 @@ fn decodeBase64Url(text: str): str =
     var buf = ""
     var acc: int64 = 0
     var bits: int32 = 0
-    var i: int32 = 0
-    while i < len(text):
+    for i in 0..<len(text):
         let ch = text[i]
         if ch == '=':
             break
@@ -379,7 +365,6 @@ fn decodeBase64Url(text: str): str =
             # Avoid charToStr (unstable in some compiler/runtime combos); use `$` conversion.
             buf = buf + $ char(outByte)
             bits = bits - 8
-        i = i + 1
     return buf
 
 fn jwtPayload(token: str): json.JsonNode =
@@ -440,34 +425,40 @@ fn authHexValue(ch: char): int32 =
     return -1
 
 fn authHexToBytes(hexText: str): int32[] =
-    var out: int32[] = newSeq[int32]()
+    var out: int32[] = []
     if len(hexText) < 2:
         return out
-    var i: int32 = 0
-    while i + 1 < len(hexText):
+    var skipUntil: int32 = -1
+    for i in 0..<len(hexText):
+        if i <= skipUntil:
+            continue
+        if i + 1 >= len(hexText):
+            break
         let hi = authHexValue(hexText[i])
         let lo = authHexValue(hexText[i + 1])
         if hi < 0 || lo < 0:
-            return newSeq[int32]()
-        seqAdd(out, hi * 16 + lo)
-        i = i + 2
+            return []
+        add(out, hi * 16 + lo)
+        skipUntil = i + 1
     return out
 
 fn authFirstToken(text: str): str =
     if text == nil:
         return ""
     var start: int32 = 0
-    while start < len(text):
-        let ch = text[start]
+    for i in 0..<len(text):
+        let ch = text[i]
         if ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n':
+            start = i
             break
-        start = start + 1
+        start = i + 1
     var stop: int32 = start
-    while stop < len(text):
-        let ch = text[stop]
+    for i in start..<len(text):
+        let ch = text[i]
         if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n':
+            stop = i
             break
-        stop = stop + 1
+        stop = i + 1
     if stop <= start:
         return ""
     return __cheng_slice_string(text, start, stop - 1, false)
@@ -475,19 +466,15 @@ fn authFirstToken(text: str): str =
 fn authFallbackSha256Hex(payload: str): str =
     let alphabet = "0123456789abcdef"
     var seed: int64 = 1469598103934665603
-    var i: int32 = 0
-    while i < len(payload):
+    for i in 0..<len(payload):
         seed = seed ^ int64(ord(payload[i]))
         seed = seed * 1099511628211
-        i = i + 1
     var out = ""
-    var j: int32 = 0
-    while j < 64:
+    for j in 0..<64:
         let nibble = int32(seed & 15)
         let ch = alphabet[nibble]
         out = out + $ ch
         seed = (seed >> 1) ^ (seed << 3) ^ 0x9e3779b97f4a7c15
-        j = j + 1
     return out
 
 fn authSha256Hex(payload: str): str =
@@ -554,32 +541,28 @@ fn encodeBase64UrlSimple(data: int32[]): str =
     return out
 
 fn randomBytesFromUrandom(length: int32): int32[] =
-    var out: int32[] = newSeq[int32]()
+    var out: int32[] = []
     if length <= 0:
         return out
     let f = os.openRead("/dev/urandom")
     if f != nil:
-        var i: int32 = 0
-        while i < length:
+        for i in 0..<length:
             let ch = c_fgetc(f)
             if ch < 0:
                 break
-            seqAdd(out, ch % 256)
-            i = i + 1
+            add(out, ch % 256)
         os.close(f)
         if len(out) == length:
             return out
-    out = newSeq[int32]()
+    out = []
     var seed: int64 = times.toUnix(times.now())
     if seed == 0:
         seed = 1234567
-    var i: int32 = 0
-    while i < length:
+    for i in 0..<length:
         seed = seed * 1103515245 + 12345
         let masked: int64 = seed & 255
         let v: int32 = int32(masked)
-        seqAdd(out, v)
-        i = i + 1
+        add(out, v)
     return out
 
 fn indexOfSubstrAuthJsonLocal(text: str, needle: str, start: int32): int32 =
@@ -589,28 +572,28 @@ fn indexOfSubstrAuthJsonLocal(text: str, needle: str, start: int32): int32 =
         return -1
     if len(needle) == 0:
         return start
-    var i: int32 = start
-    let limit: int32 = len(text) - len(needle)
-    while i <= limit:
+    if len(text) < len(needle):
+        return -1
+    let limit = len(text) - len(needle)
+    if start > limit:
+        return -1
+    for i in start..limit:
         var matched = true
-        var j: int32 = 0
-        while j < len(needle):
+        for j in 0..<len(needle):
             if ord(text[i + j]) != ord(needle[j]):
                 matched = false
                 break
-            j = j + 1
         if matched:
             return i
-        i = i + 1
     return -1
 
 fn jsonSkipSpacesAuthJsonLocal(payload: str, startIdx: int32): int32 =
     var idx: int32 = startIdx
-    while idx < len(payload):
-        let ch = payload[idx]
+    for i in startIdx..<len(payload):
+        let ch = payload[i]
         if ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r':
-            break
-        idx = idx + 1
+            return i
+        idx = i + 1
     return idx
 
 fn jsonExtractStringRawLocal(payload: str, key: str): str =
@@ -628,15 +611,20 @@ fn jsonExtractStringRawLocal(payload: str, key: str): str =
         return ""
     idx = idx + 1
     let startIdx = idx
-    while idx < len(payload):
-        let ch = payload[idx]
+    var skipUntil: int32 = idx - 1
+    for i in idx..<len(payload):
+        if i <= skipUntil:
+            continue
+        let ch = payload[i]
         if ch == '\\':
             # skip escaped byte (auth tokens should not contain escapes)
-            idx = idx + 2
+            idx = i + 2
+            skipUntil = i + 1
             continue
         if ch == '"':
+            idx = i
             break
-        idx = idx + 1
+        idx = i + 1
     if idx >= len(payload) || payload[idx] != '"':
         return ""
     if idx - 1 < startIdx:
@@ -778,28 +766,26 @@ fn readAuthJsonTokens(path: str, tokens: var AuthTokens, apiKey: var str): bool 
     return len(apiKeyValue) > 0 || len(tokens.accessToken) > 0 || len(tokens.idToken) > 0
 
 fn authJsonCandidatePaths(): str[] =
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     let envHome = os.getEnv("CODEX_HOME")
     if len(envHome) > 0:
-        seqAdd(out, os.joinPath(envHome, "auth.json"))
+        add(out, os.joinPath(envHome, "auth.json"))
     let home = os.getEnv("HOME")
     if len(home) > 0:
-        seqAdd(out, os.joinPath(os.joinPath(home, ".codex"), "auth.json"))
+        add(out, os.joinPath(os.joinPath(home, ".codex"), "auth.json"))
     let local = codexAuthJsonPath()
     if len(local) > 0:
-        seqAdd(out, local)
+        add(out, local)
     return out
 
 fn loadAuthJson(tokens: var AuthTokens, apiKey: var str): bool =
     resetAuthTokens(tokens)
     apiKey = ""
     let paths = authJsonCandidatePaths()
-    var i: int32 = 0
-    while i < len(paths):
+    for i in 0..<len(paths):
         let path = paths[i]
         if path != nil && readAuthJsonTokens(path, tokens, apiKey):
             return true
-        i = i + 1
     return false
 
 fn writeAuthJsonTokens(apiKey: str, tokens: AuthTokens): bool =
@@ -809,27 +795,27 @@ fn writeAuthJsonTokens(apiKey: str, tokens: AuthTokens): bool =
     if ! os.dirExists(home):
         os.createDir(home)
     let path = codexAuthJsonPath()
-    var fields: str[] = newSeq[str]()
+    var fields: str[] = []
     if len(tokens.accessToken) > 0 || len(tokens.idToken) > 0 || len(tokens.refreshToken) > 0:
-        seqAdd(fields, jstrPair("auth_mode", jstrString("chatgpt")))
+        add(fields, jstrPair("auth_mode", jstrString("chatgpt")))
     elif len(apiKey) > 0:
-        seqAdd(fields, jstrPair("auth_mode", jstrString("api_key")))
+        add(fields, jstrPair("auth_mode", jstrString("api_key")))
     if len(apiKey) > 0:
-        seqAdd(fields, jstrPair("OPENAI_API_KEY", jstrString(apiKey)))
+        add(fields, jstrPair("OPENAI_API_KEY", jstrString(apiKey)))
     if len(tokens.accessToken) > 0 || len(tokens.idToken) > 0 || len(tokens.refreshToken) > 0:
-        var tokenFields: str[] = newSeq[str]()
+        var tokenFields: str[] = []
         if len(tokens.idToken) > 0:
-            seqAdd(tokenFields, jstrPair("id_token", jstrString(tokens.idToken)))
+            add(tokenFields, jstrPair("id_token", jstrString(tokens.idToken)))
         if len(tokens.accessToken) > 0:
-            seqAdd(tokenFields, jstrPair("access_token", jstrString(tokens.accessToken)))
+            add(tokenFields, jstrPair("access_token", jstrString(tokens.accessToken)))
         if len(tokens.refreshToken) > 0:
-            seqAdd(tokenFields, jstrPair("refresh_token", jstrString(tokens.refreshToken)))
+            add(tokenFields, jstrPair("refresh_token", jstrString(tokens.refreshToken)))
         if len(tokens.accountId) > 0:
-            seqAdd(tokenFields, jstrPair("account_id", jstrString(tokens.accountId)))
-        seqAdd(fields, jstrPair("tokens", jstrObject(tokenFields)))
+            add(tokenFields, jstrPair("account_id", jstrString(tokens.accountId)))
+        add(fields, jstrPair("tokens", jstrObject(tokenFields)))
         let ts = int64ToStr(tokens.lastRefresh)
         if len(ts) > 0:
-            seqAdd(fields, jstrPair("last_refresh", jstrString(ts)))
+            add(fields, jstrPair("last_refresh", jstrString(ts)))
     let content = jstrObject(fields)
     os.writeFile(path, content)
     return true
@@ -846,15 +832,12 @@ fn readAuthJsonApiKey(apiKey: var str): bool =
 fn readAuthJsonMode(mode: var str): bool =
     mode = ""
     let paths = authJsonCandidatePaths()
-    var i: int32 = 0
-    while i < len(paths):
+    for i in 0..<len(paths):
         let path = paths[i]
         if path == nil || len(path) == 0 || ! os.fileExists(path):
-            i = i + 1
             continue
         let content = os.readFile(path)
         if len(content) == 0:
-            i = i + 1
             continue
         var parsedMode = ""
         if authJsonExtractStringValue(content, "auth_mode", parsedMode):
@@ -862,7 +845,6 @@ fn readAuthJsonMode(mode: var str): bool =
             if len(normalized) > 0:
                 mode = normalized
                 return true
-        i = i + 1
     return false
 
 fn readChatgptTokens(tokens: var AuthTokens): bool =
@@ -1097,13 +1079,11 @@ fn ensureWorkspaceAllowed(expected: str, idToken: str, err: var str): bool =
 
 fn formEncode(pairs: str[]): str =
     var out = ""
-    var i: int32 = 0
-    while i < len(pairs):
+    for i in 0..<len(pairs):
         if i == 0:
             out = pairs[i]
         else:
             out = out + "&" + pairs[i]
-        i = i + 1
     return out
 
 fn isUnreservedAuthChar(c: char): bool =
@@ -1125,8 +1105,7 @@ fn urlEncodeQueryComponent(text: str): str =
     if text == nil || len text == 0:
         return ""
     var out: str = ""
-    var i: int32 = 0
-    while i < len text:
+    for i in 0..<len text:
         let c = text[i]
         if c == ' ':
             out = out + "%20"
@@ -1139,7 +1118,6 @@ fn urlEncodeQueryComponent(text: str): str =
             out = out + "%"
             out = out + $ authToHexDigit(code >> 4)
             out = out + $ authToHexDigit(code & 15)
-        i = i + 1
     return out
 
 fn jsonNodeKindName(node: json.JsonNode): str =
@@ -1190,15 +1168,15 @@ fn jsonObjectKeysSummary(node: json.JsonNode, limit: int32): str =
     if node == nil || node.kind != json.JObject:
         return ""
     var out = ""
-    var i: int32 = 0
-    let total = len node.okeys
-    let maxKeys = if limit > 0 && limit < total: limit else: total
-    while i < maxKeys:
+    let total = len(node.okeys)
+    var maxKeys = limit
+    if maxKeys <= 0 || maxKeys > total:
+        maxKeys = total
+    for i in 0..<maxKeys:
         if i == 0:
             out = node.okeys[i]
         else:
             out = out + "," + node.okeys[i]
-        i = i + 1
     if total > maxKeys:
         out = out + ",..."
     return out
@@ -1207,21 +1185,19 @@ fn getNestedTokenField(root: json.JsonNode, key: str): str =
     var value = getStringField(root, key, "")
     if len value > 0:
         return value
-    var containers: str[] = newSeq[str]()
-    seqAdd(containers, "data")
-    seqAdd(containers, "result")
-    seqAdd(containers, "tokens")
-    seqAdd(containers, "token")
-    seqAdd(containers, "oauth")
-    seqAdd(containers, "response")
-    var i: int32 = 0
-    while i < len containers:
+    var containers: str[] = []
+    add(containers, "data")
+    add(containers, "result")
+    add(containers, "tokens")
+    add(containers, "token")
+    add(containers, "oauth")
+    add(containers, "response")
+    for i in 0..<len containers:
         let node = json.jsonGetField(root, containers[i])
         if node != nil && node.kind == json.JObject:
             value = getStringField(node, key, "")
             if len value > 0:
                 return value
-        i = i + 1
     return ""
 
 fn findStringFieldRecursive(node: json.JsonNode, key: str, depth: int32, limit: int32, outPath: var str, outValue: var str): bool =
@@ -1240,8 +1216,7 @@ fn findStringFieldRecursive(node: json.JsonNode, key: str, depth: int32, limit: 
                 return true
         let total = len node.okeys
         let maxKeys = if limit > 0 && limit < total: limit else: total
-        var i: int32 = 0
-        while i < maxKeys:
+        for i in 0..<maxKeys:
             let childKey = node.okeys[i]
             let child = node.ovalues[i]
             if child != nil && (child.kind == json.JObject || child.kind == json.JArray):
@@ -1254,12 +1229,10 @@ fn findStringFieldRecursive(node: json.JsonNode, key: str, depth: int32, limit: 
                     else:
                         outPath = childKey
                     return true
-            i = i + 1
     elif node.kind == json.JArray:
         let total = len node.a
         let maxItems = if limit > 0 && limit < total: limit else: total
-        var i: int32 = 0
-        while i < maxItems:
+        for i in 0..<maxItems:
             let child = node.a[i]
             if child != nil && (child.kind == json.JObject || child.kind == json.JArray):
                 var childPath = ""
@@ -1278,7 +1251,6 @@ fn findStringFieldRecursive(node: json.JsonNode, key: str, depth: int32, limit: 
                         p = p + "]"
                         outPath = p
                     return true
-            i = i + 1
     return false
 
 fn findTokenField(root: json.JsonNode, key: str, outValue: var str, outPath: var str): bool =
@@ -1289,15 +1261,14 @@ fn findTokenField(root: json.JsonNode, key: str, outValue: var str, outPath: var
         outValue = value
         outPath = key
         return true
-    var containers: str[] = newSeq[str]()
-    seqAdd(containers, "data")
-    seqAdd(containers, "result")
-    seqAdd(containers, "tokens")
-    seqAdd(containers, "token")
-    seqAdd(containers, "oauth")
-    seqAdd(containers, "response")
-    var i: int32 = 0
-    while i < len containers:
+    var containers: str[] = []
+    add(containers, "data")
+    add(containers, "result")
+    add(containers, "tokens")
+    add(containers, "token")
+    add(containers, "oauth")
+    add(containers, "response")
+    for i in 0..<len containers:
         let node = json.jsonGetField(root, containers[i])
         if node != nil && node.kind == json.JObject:
             value = getStringField(node, key, "")
@@ -1305,7 +1276,6 @@ fn findTokenField(root: json.JsonNode, key: str, outValue: var str, outPath: var
                 outValue = value
                 outPath = containers[i] + "." + key
                 return true
-        i = i + 1
     var deepPath = ""
     var deepValue = ""
     if findStringFieldRecursive(root, key, 4, 10, deepPath, deepValue):
@@ -1354,12 +1324,12 @@ fn exchangeCodeForTokens(issuer: str, clientId: str, redirectUri: str, codeVerif
     err = ""
     resetAuthTokens(outTokens)
     let url = issuer + "/oauth/token"
-    var formPairs: str[] = newSeq[str]()
-    seqAdd(formPairs, "grant_type=" + web_url.urlEncodeComponent("authorization_code"))
-    seqAdd(formPairs, "code=" + web_url.urlEncodeComponent(code))
-    seqAdd(formPairs, "redirect_uri=" + web_url.urlEncodeComponent(redirectUri))
-    seqAdd(formPairs, "client_id=" + web_url.urlEncodeComponent(clientId))
-    seqAdd(formPairs, "code_verifier=" + web_url.urlEncodeComponent(codeVerifier))
+    var formPairs: str[] = []
+    add(formPairs, "grant_type=" + web_url.urlEncodeComponent("authorization_code"))
+    add(formPairs, "code=" + web_url.urlEncodeComponent(code))
+    add(formPairs, "redirect_uri=" + web_url.urlEncodeComponent(redirectUri))
+    add(formPairs, "client_id=" + web_url.urlEncodeComponent(clientId))
+    add(formPairs, "code_verifier=" + web_url.urlEncodeComponent(codeVerifier))
     let body = formEncode(formPairs)
     let res = httpPostForm(url, body)
     if ! res.ok:
@@ -1506,12 +1476,12 @@ fn obtainApiKeyFromIdToken(issuer: str, clientId: str, idToken: str, apiKey: var
     if len(idToken) == 0:
         return false
     let url = issuer + "/oauth/token"
-    var formPairs: str[] = newSeq[str]()
-    seqAdd(formPairs, "grant_type=" + web_url.urlEncodeComponent("urn:ietf:params:oauth:grant-type:token-exchange"))
-    seqAdd(formPairs, "client_id=" + web_url.urlEncodeComponent(clientId))
-    seqAdd(formPairs, "requested_token=" + web_url.urlEncodeComponent("openai-api-key"))
-    seqAdd(formPairs, "subject_token=" + web_url.urlEncodeComponent(idToken))
-    seqAdd(formPairs, "subject_token_type=" + web_url.urlEncodeComponent("urn:ietf:params:oauth:token-type:id_token"))
+    var formPairs: str[] = []
+    add(formPairs, "grant_type=" + web_url.urlEncodeComponent("urn:ietf:params:oauth:grant-type:token-exchange"))
+    add(formPairs, "client_id=" + web_url.urlEncodeComponent(clientId))
+    add(formPairs, "requested_token=" + web_url.urlEncodeComponent("openai-api-key"))
+    add(formPairs, "subject_token=" + web_url.urlEncodeComponent(idToken))
+    add(formPairs, "subject_token_type=" + web_url.urlEncodeComponent("urn:ietf:params:oauth:token-type:id_token"))
     let body = formEncode(formPairs)
     let res = httpPostForm(url, body)
     if ! res.ok:
@@ -1527,20 +1497,20 @@ fn obtainApiKeyFromIdToken(issuer: str, clientId: str, idToken: str, apiKey: var
     return false
 
 fn buildAuthorizeUrl(issuer: str, clientId: str, redirectUri: str, codeChallenge: str, state: str, workspaceId: str): str =
-    var query: str[] = newSeq[str]()
-    seqAdd(query, "response_type=" + urlEncodeQueryComponent("code"))
-    seqAdd(query, "client_id=" + urlEncodeQueryComponent(clientId))
-    seqAdd(query, "redirect_uri=" + urlEncodeQueryComponent(redirectUri))
-    seqAdd(query, "scope=" + urlEncodeQueryComponent("openid profile email offline_access"))
-    seqAdd(query, "code_challenge=" + urlEncodeQueryComponent(codeChallenge))
-    seqAdd(query, "code_challenge_method=" + urlEncodeQueryComponent("S256"))
-    seqAdd(query, "id_token_add_organizations=true")
-    seqAdd(query, "codex_cli_simplified_flow=true")
-    seqAdd(query, "state=" + urlEncodeQueryComponent(state))
+    var query: str[] = []
+    add(query, "response_type=" + urlEncodeQueryComponent("code"))
+    add(query, "client_id=" + urlEncodeQueryComponent(clientId))
+    add(query, "redirect_uri=" + urlEncodeQueryComponent(redirectUri))
+    add(query, "scope=" + urlEncodeQueryComponent("openid profile email offline_access"))
+    add(query, "code_challenge=" + urlEncodeQueryComponent(codeChallenge))
+    add(query, "code_challenge_method=" + urlEncodeQueryComponent("S256"))
+    add(query, "id_token_add_organizations=true")
+    add(query, "codex_cli_simplified_flow=true")
+    add(query, "state=" + urlEncodeQueryComponent(state))
     let originator = authOriginatorDefault()
-    seqAdd(query, "originator=" + urlEncodeQueryComponent(originator))
+    add(query, "originator=" + urlEncodeQueryComponent(originator))
     if len(workspaceId) > 0:
-        seqAdd(query, "allowed_workspace_id=" + urlEncodeQueryComponent(workspaceId))
+        add(query, "allowed_workspace_id=" + urlEncodeQueryComponent(workspaceId))
     var msg: str = "login authorize originator="
     msg = msg + originator
     msg = msg + " client_id="

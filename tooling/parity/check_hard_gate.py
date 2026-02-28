@@ -59,9 +59,9 @@ REQUIRED_SOURCE_SNIPPETS = {
     "src/config.cheng": ["return os.joinPath(home, \".codex\")"],
     "src/auth_store.cheng": ["return os.joinPath(os.joinPath(home, \".codex\"), \"login.log\")"],
     "src/main.cheng": [
-        "fn collectArgsFromCmdline(): str[] =",
-        "let total: int32 = cmdline.paramCount()",
-        "let rawArgs = collectArgsFromCmdline()",
+        "fn collectArgsFromMain(argc: int32, argv: str*): str[] =",
+        "fn main(argc: int32, argv: str*): int32 =",
+        "let rawArgs = collectArgsFromMain(argc, argv)",
         "if len(envHome) > 0:",
         "if ! os.dirExists(home):",
         "WARNING: proceeding, even though we could not update PATH",
@@ -74,8 +74,6 @@ FORBIDDEN_SOURCE_SNIPPETS = {
     "src/sandbox_runner.cheng": [".codex-cheng"],
     "src/main.cheng": [
         "__cheng_setCmdLine(",
-        "fn main(argc:",
-        "argv: str*",
     ],
 }
 

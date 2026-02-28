@@ -22,30 +22,30 @@ fn appServerTestUsage(): int32 =
     return 0
 
 fn appServerTestRequest(id: int32, methodName: str, paramsJson: str): str =
-    var fields: str[] = newSeq[str]()
-    seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
-    seqAdd(fields, jstrPair("id", intToStr(id)))
-    seqAdd(fields, jstrPair("method", jstrString(methodName)))
+    var fields: str[] = []
+    add(fields, jstrPair("jsonrpc", jstrString("2.0")))
+    add(fields, jstrPair("id", intToStr(id)))
+    add(fields, jstrPair("method", jstrString(methodName)))
     if len(paramsJson) > 0:
-        seqAdd(fields, jstrPair("params", paramsJson))
+        add(fields, jstrPair("params", paramsJson))
     return jstrObject(fields)
 
 fn appServerTestNotification(methodName: str, paramsJson: str): str =
-    var fields: str[] = newSeq[str]()
-    seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
-    seqAdd(fields, jstrPair("method", jstrString(methodName)))
+    var fields: str[] = []
+    add(fields, jstrPair("jsonrpc", jstrString("2.0")))
+    add(fields, jstrPair("method", jstrString(methodName)))
     if len(paramsJson) > 0:
-        seqAdd(fields, jstrPair("params", paramsJson))
+        add(fields, jstrPair("params", paramsJson))
     return jstrObject(fields)
 
 fn appServerTestApprovalResponse(id: int32, decision: str, forSession: bool): str =
-    var resultFields: str[] = newSeq[str]()
-    seqAdd(resultFields, jstrPair("decision", jstrString(decision)))
-    seqAdd(resultFields, jstrPair("forSession", jstrBool(forSession)))
-    var fields: str[] = newSeq[str]()
-    seqAdd(fields, jstrPair("jsonrpc", jstrString("2.0")))
-    seqAdd(fields, jstrPair("id", intToStr(id)))
-    seqAdd(fields, jstrPair("result", jstrObject(resultFields)))
+    var resultFields: str[] = []
+    add(resultFields, jstrPair("decision", jstrString(decision)))
+    add(resultFields, jstrPair("forSession", jstrBool(forSession)))
+    var fields: str[] = []
+    add(fields, jstrPair("jsonrpc", jstrString("2.0")))
+    add(fields, jstrPair("id", intToStr(id)))
+    add(fields, jstrPair("result", jstrObject(resultFields)))
     return jstrObject(fields)
 
 fn appServerTestSendLine(fd: int32, line: str): bool =
@@ -94,10 +94,10 @@ fn appServerTestRunSession(codexBin: str, prompt: str, approvalPolicy: str): int
     ))
     appServerTestSendLine(writeFd, appServerTestRequest(1, "initialize", initParams))
     appServerTestSendLine(writeFd, appServerTestNotification("initialized", ""))
-    var turnFields: str[] = newSeq[str]()
-    seqAdd(turnFields, jstrPair("text", jstrString(prompt)))
+    var turnFields: str[] = []
+    add(turnFields, jstrPair("text", jstrString(prompt)))
     if len(approvalPolicy) > 0:
-        seqAdd(turnFields, jstrPair("approvalPolicy", jstrString(approvalPolicy)))
+        add(turnFields, jstrPair("approvalPolicy", jstrString(approvalPolicy)))
     let turnParams = jstrObject(turnFields)
     appServerTestSendLine(writeFd, appServerTestRequest(2, "turn/start", turnParams))
     var buffer = ""
@@ -125,22 +125,23 @@ fn appServerTestRunSession(codexBin: str, prompt: str, approvalPolicy: str): int
 fn runAppServerTest(args: str[], start: int32): int32 =
     var codexBin = defaultAppServerBin()
     var sub = ""
-    var promptParts: str[] = newSeq[str]()
-    var i: int32 = start
-    while i < len(args):
+    var promptParts: str[] = []
+    var skipUntil: int32 = start - 1
+    for i in start..<len(args):
+        if i <= skipUntil:
+            continue
         let arg = args[i]
         if arg == "--help" || arg == "-h":
             return appServerTestUsage()
         if arg == "--codex-bin" && i + 1 < len(args):
             codexBin = args[i + 1]
-            i = i + 1
+            skipUntil = i + 1
         elif hasPrefix(arg, "--codex-bin:"):
             codexBin = dropPrefix(arg, "--codex-bin:")
         elif len(sub) == 0:
             sub = arg
         else:
-            seqAdd(promptParts, arg)
-        i = i + 1
+            add(promptParts, arg)
     if len(sub) == 0:
         return appServerTestUsage()
     var prompt: str = ""

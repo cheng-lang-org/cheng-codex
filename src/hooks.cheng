@@ -16,7 +16,11 @@ import seqs
 import cheng/codex/common
 import cheng/codex/config
 
-var hooksInternalEvents: str[] = newSeq[str]()
+fn hooksEmptyStrList(): str[] =
+    var out: str[]
+    return out
+
+var hooksInternalEvents: str[] = hooksEmptyStrList()
 
 fn hooksCurrentUtcRfc3339(): str =
     let secs = times.toUnix(times.now())
@@ -52,47 +56,41 @@ fn hooksCurrentUtcRfc3339(): str =
     return int64ToStr(secs)
 
 fn hooksNotifyArgv(): str[] =
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     let raw = readConfigValue("notify")
     if len(raw) == 0:
         return out
     let parts = parseTomlStringArray(raw)
-    var idx: int32 = 0
-    while idx < len(parts):
+    for idx in 0..<len(parts):
         let arg = trimLine(parts[idx])
         if len(arg) > 0:
-            seqAdd(out, arg)
-        idx = idx + 1
+            add(out, arg)
     return out
 
 fn hooksInputMessages(input: str, inputItems: str[]): str[] =
-    var out: str[] = newSeq[str]()
-    var idx: int32 = 0
-    while idx < len(inputItems):
+    var out: str[] = []
+    for idx in 0..<len(inputItems):
         let token = inputItems[idx]
         if hasPrefix(token, "text:"):
-            seqAdd(out, dropPrefix(token, "text:"))
-        idx = idx + 1
+            add(out, dropPrefix(token, "text:"))
     if len(out) == 0 && len(input) > 0:
-        seqAdd(out, input)
+        add(out, input)
     return out
 
 fn hooksLegacyNotifyPayload(threadId: str, turnId: str, cwd: str, inputMessages: str[], lastAssistantMessage: str): str =
-    var fields: str[] = newSeq[str]()
-    seqAdd(fields, jstrPair("type", jstrString("agent-turn-complete")))
-    seqAdd(fields, jstrPair("thread-id", jstrString(threadId)))
-    seqAdd(fields, jstrPair("turn-id", jstrString(turnId)))
-    seqAdd(fields, jstrPair("cwd", jstrString(cwd)))
-    var inputsJson: str[] = newSeq[str]()
-    var idx: int32 = 0
-    while idx < len(inputMessages):
-        seqAdd(inputsJson, jstrString(inputMessages[idx]))
-        idx = idx + 1
-    seqAdd(fields, jstrPair("input-messages", jstrArray(inputsJson)))
+    var fields: str[] = []
+    add(fields, jstrPair("type", jstrString("agent-turn-complete")))
+    add(fields, jstrPair("thread-id", jstrString(threadId)))
+    add(fields, jstrPair("turn-id", jstrString(turnId)))
+    add(fields, jstrPair("cwd", jstrString(cwd)))
+    var inputsJson: str[] = []
+    for idx in 0..<len(inputMessages):
+        add(inputsJson, jstrString(inputMessages[idx]))
+    add(fields, jstrPair("input-messages", jstrArray(inputsJson)))
     var lastVal = jstrNull()
     if len(lastAssistantMessage) > 0:
         lastVal = jstrString(lastAssistantMessage)
-    seqAdd(fields, jstrPair("last-assistant-message", lastVal))
+    add(fields, jstrPair("last-assistant-message", lastVal))
     return jstrObject(fields)
 
 fn hooksExecDetached(commandText: str, cwd: str) =
@@ -115,12 +113,10 @@ fn dispatchLegacyNotifyAfterAgent(threadId: str, turnId: str, cwd: str, input: s
     if len(argv) == 0:
         return
     var cmd = ""
-    var idx: int32 = 0
-    while idx < len(argv):
+    for idx in 0..<len(argv):
         if idx > 0:
             cmd = cmd + " "
         cmd = cmd + shellQuote(argv[idx])
-        idx = idx + 1
     var payloadCwd = cwd
     if len(payloadCwd) == 0:
         payloadCwd = currentDirSafe()
@@ -143,16 +139,16 @@ fn hooksToolKind(toolName: str): str =
 fn hooksToolInput(toolName: str, command: str, diff: str): str =
     let kind = hooksToolKind(toolName)
     if kind == "local_shell":
-        var cmdList: str[] = newSeq[str]()
+        var cmdList: str[] = []
         if len(command) > 0:
-            seqAdd(cmdList, jstrString(command))
-        var paramsFields: str[] = newSeq[str]()
-        seqAdd(paramsFields, jstrPair("command", jstrArray(cmdList)))
-        seqAdd(paramsFields, jstrPair("workdir", jstrNull()))
-        seqAdd(paramsFields, jstrPair("timeout_ms", jstrNull()))
-        seqAdd(paramsFields, jstrPair("sandbox_permissions", jstrNull()))
-        seqAdd(paramsFields, jstrPair("prefix_rule", jstrNull()))
-        seqAdd(paramsFields, jstrPair("justification", jstrNull()))
+            add(cmdList, jstrString(command))
+        var paramsFields: str[] = []
+        add(paramsFields, jstrPair("command", jstrArray(cmdList)))
+        add(paramsFields, jstrPair("workdir", jstrNull()))
+        add(paramsFields, jstrPair("timeout_ms", jstrNull()))
+        add(paramsFields, jstrPair("sandbox_permissions", jstrNull()))
+        add(paramsFields, jstrPair("prefix_rule", jstrNull()))
+        add(paramsFields, jstrPair("justification", jstrNull()))
         let params = jstrObject(paramsFields)
         return jstrObject(seqStr2(
             jstrPair("input_type", jstrString("local_shell")),
@@ -190,7 +186,7 @@ fn hooksToolOutputPreview(commandOutput: str, diff: str, toolOutput: str): str =
 fn hooksRecordInternalEvent(payload: str) =
     if len(payload) == 0:
         return
-    seqAdd(hooksInternalEvents, payload)
+    add(hooksInternalEvents, payload)
     let trace = normalizePolicy(trimLine(os.getEnv("CODEX_TRACE_HOOKS")))
     if trace == "1" || trace == "true" || trace == "yes":
         printErr("[hooks] " + payload)
@@ -228,20 +224,20 @@ fn dispatchAfterToolUseInternal(
     let mutating = normalizePolicy(trimLine(toolName)) == "apply_patch" || len(trimLine(diff)) > 0
     let outputPreview = hooksToolOutputPreview(commandOutput, diff, toolOutput)
     let toolInput = hooksToolInput(toolName, command, diff)
-    var eventFields: str[] = newSeq[str]()
-    seqAdd(eventFields, jstrPair("event_type", jstrString("after_tool_use")))
-    seqAdd(eventFields, jstrPair("turn_id", jstrString(normalizedTurnId)))
-    seqAdd(eventFields, jstrPair("call_id", jstrString(normalizedCallId)))
-    seqAdd(eventFields, jstrPair("tool_name", jstrString(toolName)))
-    seqAdd(eventFields, jstrPair("tool_kind", jstrString(hooksToolKind(toolName))))
-    seqAdd(eventFields, jstrPair("tool_input", toolInput))
-    seqAdd(eventFields, jstrPair("executed", jstrBool(executed)))
-    seqAdd(eventFields, jstrPair("success", jstrBool(ok)))
-    seqAdd(eventFields, jstrPair("duration_ms", "0"))
-    seqAdd(eventFields, jstrPair("mutating", jstrBool(mutating)))
-    seqAdd(eventFields, jstrPair("sandbox", jstrString(normalizePolicy(trimLine(sandbox)))))
-    seqAdd(eventFields, jstrPair("sandbox_policy", jstrString(normalizePolicy(trimLine(sandboxPolicy)))))
-    seqAdd(eventFields, jstrPair("output_preview", jstrString(outputPreview)))
+    var eventFields: str[] = []
+    add(eventFields, jstrPair("event_type", jstrString("after_tool_use")))
+    add(eventFields, jstrPair("turn_id", jstrString(normalizedTurnId)))
+    add(eventFields, jstrPair("call_id", jstrString(normalizedCallId)))
+    add(eventFields, jstrPair("tool_name", jstrString(toolName)))
+    add(eventFields, jstrPair("tool_kind", jstrString(hooksToolKind(toolName))))
+    add(eventFields, jstrPair("tool_input", toolInput))
+    add(eventFields, jstrPair("executed", jstrBool(executed)))
+    add(eventFields, jstrPair("success", jstrBool(ok)))
+    add(eventFields, jstrPair("duration_ms", "0"))
+    add(eventFields, jstrPair("mutating", jstrBool(mutating)))
+    add(eventFields, jstrPair("sandbox", jstrString(normalizePolicy(trimLine(sandbox)))))
+    add(eventFields, jstrPair("sandbox_policy", jstrString(normalizePolicy(trimLine(sandboxPolicy)))))
+    add(eventFields, jstrPair("output_preview", jstrString(outputPreview)))
     let payloadFields = seqStr4(
         jstrPair("session_id", jstrString(sessionId)),
         jstrPair("cwd", jstrString(payloadCwd)),

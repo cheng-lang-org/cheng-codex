@@ -1,6 +1,5 @@
 # Cloud tasks CLI (codex cloud)
 
-import system
 import cheng/decentralized/json_parse
 import std/os
 import seqs
@@ -118,8 +117,7 @@ fn cloudUrlEncodeComponent(text: str): str =
     if text == nil:
         return ""
     var out: str = ""
-    var i: int32 = 0
-    while i < len(text):
+    for i in 0..<len(text):
         let ch = text[i]
         if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' || ch == '~':
             out = out + $ ch
@@ -128,7 +126,6 @@ fn cloudUrlEncodeComponent(text: str): str =
             out = out + "%"
             out = out + $ cloudHexDigitLocal((byteVal >> 4) & 15)
             out = out + $ cloudHexDigitLocal(byteVal & 15)
-        i = i + 1
     return out
 
 fn cloudStatusJson(status: CloudStatus): str =
@@ -394,14 +391,12 @@ fn cloudParseIntLocal(text: str, defaultValue: int32): int32 =
     let s = trimLine(text)
     if len(s) == 0:
         return defaultValue
-    var i: int32 = 0
     var value: int32 = 0
-    while i < len(s):
+    for i in 0..<len(s):
         let ch = s[i]
         if ch < '0' || ch > '9':
             return defaultValue
         value = value * 10 + (ord(ch) - ord('0'))
-        i = i + 1
     return value
 
 fn cloudNextTempPath(prefix: str, suffix: str): str =
@@ -443,19 +438,19 @@ fn cloudIndexOfSubstr(text: str, needle: str, start: int32): int32 =
         return -1
     if len(needle) == 0:
         return start
-    var i: int32 = start
-    let limit: int32 = len(text) - len(needle)
-    while i <= limit:
+    if len(text) < len(needle):
+        return -1
+    let limit = len(text) - len(needle)
+    if start > limit:
+        return -1
+    for i in start..limit:
         var matched = true
-        var j: int32 = 0
-        while j < len(needle):
+        for j in 0..<len(needle):
             if ord(text[i + j]) != ord(needle[j]):
                 matched = false
                 break
-            j = j + 1
         if matched:
             return i
-        i = i + 1
     return -1
 
 fn normalizeCloudBaseUrl(url: str): str =
@@ -541,70 +536,63 @@ fn cloudBrowserTaskUrl(baseUrl: str, taskId: str): str =
     return out
 
 fn cloudSplitByChar(text: str, sep: char): str[] =
-    var outVal: str[] = newSeq[str]()
+    var outVal: str[] = []
     if text == nil:
         return outVal
     var start: int32 = 0
-    var i: int32 = 0
-    while i < len(text):
+    for i in 0..<len(text):
         if text[i] == sep:
             if i >= start:
-                seqAdd(outVal, __cheng_slice_string(text, start, i - 1, false))
+                add(outVal, __cheng_slice_string(text, start, i - 1, false))
             else:
-                seqAdd(outVal, "")
+                add(outVal, "")
             start = i + 1
-        i = i + 1
     if start <= len(text) - 1:
-        seqAdd(outVal, __cheng_slice_string(text, start, len(text) - 1, false))
+        add(outVal, __cheng_slice_string(text, start, len(text) - 1, false))
     elif start == len(text):
-        seqAdd(outVal, "")
+        add(outVal, "")
     return outVal
 
 fn cloudParseInt32(text: str, defaultValue: int32): int32 =
     if len(text) == 0:
         return defaultValue
-    var i: int32 = 0
     var sign = 1
+    var start: int32 = 0
     if text[0] == '-':
         sign = -1
-        i = i + 1
+        start = 1
     var value: int32 = 0
     var saw = false
-    while i < len(text):
+    for i in start..<len(text):
         let ch = text[i]
         if ch < '0' || ch > '9':
             break
         value = value * 10 + (ord(ch) - ord('0'))
         saw = true
-        i = i + 1
     if ! saw:
         return defaultValue
     return value * sign
 
 fn cloudParseStatusCode(headersText: str): int32 =
     let lines = splitLinesSimple(headersText)
-    var i: int32 = 0
-    while i < len(lines):
+    for i in 0..<len(lines):
         let line = argAt(lines, i)
         if hasPrefix(line, "HTTP/"):
             let sp = cloudIndexOfSubstr(line, " ", 0)
             if sp >= 0 && sp + 1 < len(line):
                 return cloudParseInt32(trimLine(__cheng_slice_string(line, sp + 1, len(line) - 1, false)), 0)
-        i = i + 1
     return 0
 
 fn cloudParseHeaderValue(headersText: str, key: str): str =
     let keyLower = normalizePolicy(key)
     let lines = splitLinesSimple(headersText)
-    var i: int32 = 0
-    while i < len(lines):
+    for i in 0..<len(lines):
         let line = argAt(lines, i)
         let colon = cloudIndexOfSubstr(line, ":", 0)
         if colon > 0:
             let k = normalizePolicy(trimLine(__cheng_slice_string(line, 0, colon - 1, false)))
             if k == keyLower:
                 return trimLine(__cheng_slice_string(line, colon + 1, len(line) - 1, false))
-        i = i + 1
     return ""
 
 fn cloudHttpStatusTextLocal(code: int32): str =
@@ -764,14 +752,12 @@ fn cloudParseAttemptsStrict(text: str): CloudParseI32 =
     let s = trimLine(text)
     if len(s) == 0:
         return out
-    var i: int32 = 0
     var value: int32 = 0
-    while i < len(s):
+    for i in 0..<len(s):
         let ch = s[i]
         if ch < '0' || ch > '9':
             return out
         value = value * 10 + (ord(ch) - ord('0'))
-        i = i + 1
     if value < 1 || value > 4:
         out.err = "attempts must be between 1 and 4"
         return out
@@ -790,14 +776,12 @@ fn cloudParseLimitStrict(text: str): CloudParseI32 =
     let s = trimLine(text)
     if len(s) == 0:
         return out
-    var i: int32 = 0
     var value: int32 = 0
-    while i < len(s):
+    for i in 0..<len(s):
         let ch = s[i]
         if ch < '0' || ch > '9':
             return out
         value = value * 10 + (ord(ch) - ord('0'))
-        i = i + 1
     if value < 1 || value > 20:
         out.err = "limit must be between 1 and 20"
         return out
@@ -897,15 +881,12 @@ fn diffSummaryFromDiff(diff: str): CloudSummary =
     if len(diff) == 0:
         return out
     let lines = splitLinesSimple(diff)
-    var i: int32 = 0
-    while i < len(lines):
+    for i in 0..<len(lines):
         let line = argAt(lines, i)
         if hasPrefix(line, "diff --git "):
             out.filesChanged = out.filesChanged + 1
-            i = i + 1
             continue
         if hasPrefix(line, "+++") || hasPrefix(line, "---") || hasPrefix(line, "@@"):
-            i = i + 1
             continue
         if len(line) > 0:
             let ch = line[0]
@@ -913,15 +894,13 @@ fn diffSummaryFromDiff(diff: str): CloudSummary =
                 out.linesAdded = out.linesAdded + 1
             elif ch == '-':
                 out.linesRemoved = out.linesRemoved + 1
-        i = i + 1
     if out.filesChanged == 0 && len(trimLine(diff)) > 0:
         out.filesChanged = 1
     return out
 
 fn extractDiffFromTurn(turn: json.JsonNode): str =
     let items = jsonGetArray(turn, "output_items")
-    var i: int32 = 0
-    while i < jstrArrayLen(items):
+    for i in 0..<jstrArrayLen(items):
         let item = jstrArrayItem(items, i)
         let kind = getStringField(item, "type", "")
         if kind == "output_diff":
@@ -937,7 +916,6 @@ fn extractDiffFromTurn(turn: json.JsonNode): str =
             let diff = getStringField(output, "diff", "")
             if len(diff) > 0:
                 return diff
-        i = i + 1
     return ""
 
 fn extractDiffFromDetails(root: json.JsonNode): str =
@@ -1046,28 +1024,23 @@ fn cloudZeroPad9Local(value: int32): str =
         v = 0
     if v > 999999999:
         v = 999999999
-    var digits: str[] = newSeq[str]()
+    var digits: str[] = []
     var place: int32 = 100000000
-    var i: int32 = 0
-    while i < 9:
+    for i in 0..<9:
         let d = int32(v / place)
         v = v - d * place
         place = int32(place / 10)
-        seqAdd(digits, $ char(ord('0') + d))
-        i = i + 1
+        add(digits, $ char(ord('0') + d))
     return joinPartsBalanced(digits)
 
 fn cloudTrimTrailingZerosLocal(text: str): str =
     if text == nil:
         return ""
-    var endIdx: int32 = len(text) - 1
-    while endIdx >= 0:
+    for rev in 0..<len(text):
+        let endIdx: int32 = len(text) - 1 - rev
         if text[endIdx] != '0':
-            break
-        endIdx = endIdx - 1
-    if endIdx < 0:
-        return ""
-    return "" + __cheng_slice_string(text, 0, endIdx, false)
+            return "" + __cheng_slice_string(text, 0, endIdx, false)
+    return ""
 
 fn cloudFormatRfc3339Utc(secs: int64, nanos: int32): str =
     let base = cloudDateFormatSecondsLocal(secs, true, "%Y-%m-%dT%H:%M:%S")
@@ -1139,20 +1112,35 @@ fn attemptLess(a: CloudAttemptDiff, b: CloudAttemptDiff): bool =
     return false
 
 fn sortAttempts(attempts: var CloudAttemptDiff[]) =
-    var i: int32 = 1
-    while i < len(attempts):
-        var j: int32 = i
-        while j > 0 && attemptLess(attempts[j], attempts[j - 1]):
-            let tmp = attempts[j - 1]
-            attempts[j - 1] = attempts[j]
-            attempts[j] = tmp
-            j = j - 1
-        i = i + 1
+    let total = attempts.len
+    if total <= 1:
+        return
+    var used: int32[] = []
+    var sorted: CloudAttemptDiff[] = []
+    while sorted.len < total:
+        var found = false
+        var bestIdx: int32 = -1
+        for i in 0..<total:
+            var alreadyUsed = false
+            for ui in 0..<used.len:
+                if used[ui] == i:
+                    alreadyUsed = true
+                    break
+            if alreadyUsed:
+                continue
+            if !found || attemptLess(attempts[i], attempts[bestIdx]):
+                bestIdx = i
+                found = true
+        if !found:
+            break
+        add(used, bestIdx)
+        add(sorted, attempts[bestIdx])
+    attempts = sorted
 
 fn collectAttemptDiffsLocal(baseUrl: str, token: str, accountId: str, taskId: str): CloudAttemptCollect =
     var out: CloudAttemptCollect
     out.ok = false
-    out.attempts = newSeq[CloudAttemptDiff]()
+    out.attempts = []
     out.err = ""
     let url = cloudApiPath(baseUrl, "/tasks/" + taskId)
     let res = cloudHttpRequest("GET", url, url, "", token, accountId)
@@ -1174,7 +1162,7 @@ fn collectAttemptDiffsLocal(baseUrl: str, token: str, accountId: str, taskId: st
             attempt.hasPlacement = true
             attempt.placement = int32(placement)
         attempt.diff = diff
-        seqAdd(out.attempts, attempt)
+        add(out.attempts, attempt)
     let assistant = jsonGetObject(root, "current_assistant_turn")
     let turnId = getStringField(assistant, "id", "")
     if len(turnId) > 0:
@@ -1189,8 +1177,7 @@ fn collectAttemptDiffsLocal(baseUrl: str, token: str, accountId: str, taskId: st
         if sibRes.ok:
             let sibRoot = cloudParseJson(sibRes.body)
             let siblings = jsonGetArray(sibRoot, "sibling_turns")
-            var idx: int32 = 0
-            while idx < jstrArrayLen(siblings):
+            for idx in 0..<jstrArrayLen(siblings):
                 let turn = jstrArrayItem(siblings, idx)
                 let diffText = extractDiffFromTurn(turn)
                 if len(diffText) > 0:
@@ -1204,8 +1191,7 @@ fn collectAttemptDiffsLocal(baseUrl: str, token: str, accountId: str, taskId: st
                         attempt.hasCreated = true
                         attempt.createdAt = int64(created)
                     attempt.diff = diffText
-                    seqAdd(out.attempts, attempt)
-                idx = idx + 1
+                    add(out.attempts, attempt)
         else:
             var msg = sibRes.error
             if len(msg) == 0:
@@ -1267,8 +1253,8 @@ fn readQueryFromStdin(): str =
 fn listEnvironmentsLocal(baseUrl: str, token: str, accountId: str): CloudEnvList =
     var out: CloudEnvList
     out.ok = false
-    out.ids = newSeq[str]()
-    out.labels = newSeq[str]()
+    out.ids = []
+    out.labels = []
     out.err = ""
     let url = cloudApiPath(baseUrl, "/environments")
     let res = cloudHttpRequest("GET", url, url, "", token, accountId)
@@ -1281,14 +1267,12 @@ fn listEnvironmentsLocal(baseUrl: str, token: str, accountId: str): CloudEnvList
     if ! jsonIsArray(root):
         out.err = "invalid environments response"
         return out
-    var i: int32 = 0
-    while i < jstrArrayLen(root):
+    for i in 0..<jstrArrayLen(root):
         let row = jstrArrayItem(root, i)
         let id = getStringField(row, "id", "")
         if len(id) > 0:
-            seqAdd(out.ids, id)
-            seqAdd(out.labels, getStringField(row, "label", ""))
-        i = i + 1
+            add(out.ids, id)
+            add(out.labels, getStringField(row, "label", ""))
     out.ok = true
     return out
 
@@ -1308,23 +1292,19 @@ fn resolveEnvironmentIdLocal(baseUrl: str, token: str, accountId: str, requested
     if len(envs.ids) == 0:
         out.err = "no cloud environments are available for this workspace"
         return out
-    var i: int32 = 0
-    while i < len(envs.ids):
+    for i in 0..<len(envs.ids):
         if argAt(envs.ids, i) == trimmed:
             out.ok = true
             out.id = argAt(envs.ids, i)
             return out
-        i = i + 1
     let target = normalizePolicy(trimmed)
     var matchId = ""
     var matchCount: int32 = 0
-    i = 0
-    while i < len(envs.ids):
+    for i in 0..<len(envs.ids):
         let label = normalizePolicy(argAt(envs.labels, i))
         if len(label) > 0 && label == target:
             matchId = argAt(envs.ids, i)
             matchCount = matchCount + 1
-        i = i + 1
     if matchCount == 1:
         out.ok = true
         out.id = matchId
@@ -1333,8 +1313,7 @@ fn resolveEnvironmentIdLocal(baseUrl: str, token: str, accountId: str, requested
         # Accept duplicates when all matching rows share the same id.
         var allSame = true
         var firstId = ""
-        i = 0
-        while i < len(envs.ids):
+        for i in 0..<len(envs.ids):
             let label = normalizePolicy(argAt(envs.labels, i))
             if len(label) > 0 && label == target:
                 if len(firstId) == 0:
@@ -1342,7 +1321,6 @@ fn resolveEnvironmentIdLocal(baseUrl: str, token: str, accountId: str, requested
                 elif argAt(envs.ids, i) != firstId:
                     allSame = false
                     break
-            i = i + 1
         if allSame && len(firstId) > 0:
             out.ok = true
             out.id = firstId
@@ -1361,7 +1339,7 @@ fn parseCreateTaskId(payload: str): str =
     return getStringField(root, "id", "")
 
 fn buildCreateTaskBody(envId: str, branch: str, attempts: int32, prompt: str): str =
-    var inputItems: str[] = newSeq[str]()
+    var inputItems: str[] = []
     let userMsg = jstrObject(seqStr3(
         jstrPair("type", jstrString("message")),
         jstrPair("role", jstrString("user")),
@@ -1372,36 +1350,34 @@ fn buildCreateTaskBody(envId: str, branch: str, attempts: int32, prompt: str): s
             ))
         )))
     ))
-    seqAdd(inputItems, userMsg)
+    add(inputItems, userMsg)
     let startingDiff = os.getEnv("CODEX_STARTING_DIFF")
     if len(startingDiff) > 0:
-        seqAdd(inputItems, jstrObject(seqStr2(
+        add(inputItems, jstrObject(seqStr2(
             jstrPair("type", jstrString("pre_apply_patch")),
             jstrPair("output_diff", jstrObject(seqStr1(
                 jstrPair("diff", jstrString(startingDiff))
             )))
         )))
-    var fields: str[] = newSeq[str]()
-    seqAdd(fields, jstrPair("new_task", jstrObject(seqStr3(
+    var fields: str[] = []
+    add(fields, jstrPair("new_task", jstrObject(seqStr3(
         jstrPair("environment_id", jstrString(envId)),
         jstrPair("branch", jstrString(branch)),
         jstrPair("run_environment_in_qa_mode", jstrBool(false))
     ))))
-    seqAdd(fields, jstrPair("input_items", jstrArray(inputItems)))
+    add(fields, jstrPair("input_items", jstrArray(inputItems)))
     if attempts > 1:
-        seqAdd(fields, jstrPair("metadata", jstrObject(seqStr1(
+        add(fields, jstrPair("metadata", jstrObject(seqStr1(
             jstrPair("best_of_n", intToStr(attempts))
         ))))
     return jstrObject(fields)
 
 fn cloudJoinWithSep(parts: str[], sep: str): str =
     var out = ""
-    var i: int32 = 0
-    while i < len(parts):
+    for i in 0..<len(parts):
         if len(out) > 0:
             out = out + sep
         out = out + argAt(parts, i)
-        i = i + 1
     return out
 
 fn cloudTaskEnvLabelLocal(task: CloudTaskSummary): str =
@@ -1410,11 +1386,11 @@ fn cloudTaskEnvLabelLocal(task: CloudTaskSummary): str =
     return task.environmentId
 
 fn cloudTaskMetaLineLocal(task: CloudTaskSummary): str =
-    var parts: str[] = newSeq[str]()
+    var parts: str[] = []
     let label = cloudTaskEnvLabelLocal(task)
     if len(label) > 0:
-        seqAdd(parts, label)
-    seqAdd(parts, formatRelativeTime(task.updatedAt))
+        add(parts, label)
+    add(parts, formatRelativeTime(task.updatedAt))
     return cloudJoinWithSep(parts, "  •  ")
 
 fn cloudPrintTaskStatusLines(task: CloudTaskSummary, indent: str) =
@@ -1438,7 +1414,7 @@ fn jsonGetAny(node: json.JsonNode, key: str): json.JsonNode =
 fn cloudListTasksPageLocal(baseUrl: str, token: str, accountId: str, envId: str, limit: int32, cursor: str): CloudTaskListPage =
     var out: CloudTaskListPage
     out.ok = false
-    out.tasks = newSeq[CloudTaskSummary]()
+    out.tasks = []
     out.cursor = ""
     out.hasCursor = false
     out.err = ""
@@ -1468,8 +1444,7 @@ fn cloudListTasksPageLocal(baseUrl: str, token: str, accountId: str, envId: str,
         out.err = "invalid tasks response"
         return out
     let items = jsonGetArray(root, "items")
-    var i: int32 = 0
-    while i < jstrArrayLen(items):
+    for i in 0..<jstrArrayLen(items):
         let item = jstrArrayItem(items, i)
         let display = jsonGetObject(item, "task_status_display")
         var summary: CloudTaskSummary
@@ -1489,8 +1464,7 @@ fn cloudListTasksPageLocal(baseUrl: str, token: str, accountId: str, envId: str,
         let attemptInfo = attemptTotalFromDisplay(display)
         summary.hasAttemptTotal = attemptInfo.ok
         summary.attemptTotal = attemptInfo.total
-        seqAdd(out.tasks, summary)
-        i = i + 1
+        add(out.tasks, summary)
     let cursorNode = jsonGetAny(root, "cursor")
     if cursorNode != nil && cursorNode.kind == json.JString:
         let c = cursorNode.getStr()
@@ -1503,7 +1477,7 @@ fn cloudListTasksPageLocal(baseUrl: str, token: str, accountId: str, envId: str,
 fn collectCloudTasksLocal(baseUrl: str, token: str, accountId: str): CloudTasksCollect =
     var out: CloudTasksCollect
     out.ok = false
-    out.tasks = newSeq[CloudTaskSummary]()
+    out.tasks = []
     out.err = ""
     let page = cloudListTasksPageLocal(baseUrl, token, accountId, "", 20, "")
     if ! page.ok:
@@ -1517,8 +1491,7 @@ fn renderCloudTaskList(tasks: CloudTaskSummary[]) =
     printErr("\x1b[2J\x1b[H")
     tuiHeader("Codex Cloud")
     printErr("")
-    var i: int32 = 0
-    while i < len(tasks):
+    for i in 0..<len(tasks):
         let task = tasks[i]
         # Build incrementally to avoid deep temporary chains.
         var label: str = "["
@@ -1546,7 +1519,6 @@ fn renderCloudTaskList(tasks: CloudTaskSummary[]) =
         metaLine = metaLine + envText
         printErr(metaLine)
         printErr("   " + summaryLine(task.summary))
-        i = i + 1
     printErr("")
 
 fn selectCloudTask(tasks: CloudTaskSummary[]): str =
@@ -1585,35 +1557,34 @@ fn runCloudTui(baseUrl: str, token: str, accountId: str): int32 =
     if action == "d" || action == "diff":
         let attemptText = cloudPrompt("Attempt (default 1):")
         let attempt = cloudParseIntLocal(attemptText, 1)
-        var subArgs = newSeq[str]()
-        seqAdd(subArgs, taskId)
-        seqAdd(subArgs, "--attempt")
-        seqAdd(subArgs, intToStr(attempt))
+        var subArgs: str[]
+        add(subArgs, taskId)
+        add(subArgs, "--attempt")
+        add(subArgs, intToStr(attempt))
         return runCloudDiff(subArgs, 0)
     if action == "a" || action == "apply":
         let attemptText = cloudPrompt("Attempt (default 1):")
         let attempt = cloudParseIntLocal(attemptText, 1)
-        var subArgs = newSeq[str]()
-        seqAdd(subArgs, taskId)
-        seqAdd(subArgs, "--attempt")
-        seqAdd(subArgs, intToStr(attempt))
+        var subArgs: str[]
+        add(subArgs, taskId)
+        add(subArgs, "--attempt")
+        add(subArgs, intToStr(attempt))
         return runCloudApply(subArgs, 0)
-    var statusArgs = newSeq[str]()
-    seqAdd(statusArgs, taskId)
+    var statusArgs: str[]
+    add(statusArgs, taskId)
     return runCloudStatus(statusArgs, 0)
 
 fn cloudPrettyTaskListJson(page: CloudTaskListPage, baseUrl: str): str =
     # Match serde_json::to_string_pretty formatting for this specific payload shape.
-    var parts: str[] = newSeq[str]()
-    seqAdd(parts, "{\n")
+    var parts: str[] = []
+    add(parts, "{\n")
     if len(page.tasks) == 0:
-        seqAdd(parts, "  \"tasks\": [],\n")
+        add(parts, "  \"tasks\": [],\n")
     else:
-        seqAdd(parts, "  \"tasks\": [\n")
-        var i: int32 = 0
-        while i < len(page.tasks):
+        add(parts, "  \"tasks\": [\n")
+        for i in 0..<len(page.tasks):
             let task = page.tasks[i]
-            seqAdd(parts, "    {\n")
+            add(parts, "    {\n")
             let indent = "      "
             # id
             var line: str = indent
@@ -1621,7 +1592,7 @@ fn cloudPrettyTaskListJson(page: CloudTaskListPage, baseUrl: str): str =
             line = line + ": "
             line = line + jstrString(task.id)
             line = line + ",\n"
-            seqAdd(parts, line)
+            add(parts, line)
             # url
             let url = cloudBrowserTaskUrl(baseUrl, task.id)
             line = indent
@@ -1629,21 +1600,21 @@ fn cloudPrettyTaskListJson(page: CloudTaskListPage, baseUrl: str): str =
             line = line + ": "
             line = line + jstrString(url)
             line = line + ",\n"
-            seqAdd(parts, line)
+            add(parts, line)
             # title
             line = indent
             line = line + jstrString("title")
             line = line + ": "
             line = line + jstrString(task.title)
             line = line + ",\n"
-            seqAdd(parts, line)
+            add(parts, line)
             # status
             line = indent
             line = line + jstrString("status")
             line = line + ": "
             line = line + jstrString(cloudStatusJson(task.status))
             line = line + ",\n"
-            seqAdd(parts, line)
+            add(parts, line)
             # updated_at
             let updated = cloudFormatRfc3339Utc(task.updatedAt, task.updatedAtNanos)
             line = indent
@@ -1651,7 +1622,7 @@ fn cloudPrettyTaskListJson(page: CloudTaskListPage, baseUrl: str): str =
             line = line + ": "
             line = line + jstrString(updated)
             line = line + ",\n"
-            seqAdd(parts, line)
+            add(parts, line)
             # environment_id (Option)
             var envIdJson = jstrNull()
             if len(task.environmentId) > 0:
@@ -1661,7 +1632,7 @@ fn cloudPrettyTaskListJson(page: CloudTaskListPage, baseUrl: str): str =
             line = line + ": "
             line = line + envIdJson
             line = line + ",\n"
-            seqAdd(parts, line)
+            add(parts, line)
             # environment_label (Option)
             var envLabelJson = jstrNull()
             if len(task.environmentLabel) > 0:
@@ -1671,36 +1642,36 @@ fn cloudPrettyTaskListJson(page: CloudTaskListPage, baseUrl: str): str =
             line = line + ": "
             line = line + envLabelJson
             line = line + ",\n"
-            seqAdd(parts, line)
+            add(parts, line)
             # summary
-            seqAdd(parts, indent + jstrString("summary") + ": {\n")
+            add(parts, indent + jstrString("summary") + ": {\n")
             let indent2 = "        "
             line = indent2
             line = line + jstrString("files_changed")
             line = line + ": "
             line = line + intToStr(task.summary.filesChanged)
             line = line + ",\n"
-            seqAdd(parts, line)
+            add(parts, line)
             line = indent2
             line = line + jstrString("lines_added")
             line = line + ": "
             line = line + intToStr(task.summary.linesAdded)
             line = line + ",\n"
-            seqAdd(parts, line)
+            add(parts, line)
             line = indent2
             line = line + jstrString("lines_removed")
             line = line + ": "
             line = line + intToStr(task.summary.linesRemoved)
             line = line + "\n"
-            seqAdd(parts, line)
-            seqAdd(parts, indent + "},\n")
+            add(parts, line)
+            add(parts, indent + "},\n")
             # is_review
             line = indent
             line = line + jstrString("is_review")
             line = line + ": "
             line = line + jstrBool(task.isReview)
             line = line + ",\n"
-            seqAdd(parts, line)
+            add(parts, line)
             # attempt_total (Option)
             var attemptJson = jstrNull()
             if task.hasAttemptTotal:
@@ -1710,14 +1681,13 @@ fn cloudPrettyTaskListJson(page: CloudTaskListPage, baseUrl: str): str =
             line = line + ": "
             line = line + attemptJson
             line = line + "\n"
-            seqAdd(parts, line)
-            seqAdd(parts, "    }")
+            add(parts, line)
+            add(parts, "    }")
             if i + 1 < len(page.tasks):
-                seqAdd(parts, ",\n")
+                add(parts, ",\n")
             else:
-                seqAdd(parts, "\n")
-            i = i + 1
-        seqAdd(parts, "  ],\n")
+                add(parts, "\n")
+        add(parts, "  ],\n")
     # cursor (Option)
     var cursorJson = jstrNull()
     if page.hasCursor:
@@ -1727,8 +1697,8 @@ fn cloudPrettyTaskListJson(page: CloudTaskListPage, baseUrl: str): str =
     cursorLine = cursorLine + ": "
     cursorLine = cursorLine + cursorJson
     cursorLine = cursorLine + "\n"
-    seqAdd(parts, cursorLine)
-    seqAdd(parts, "}")
+    add(parts, cursorLine)
+    add(parts, "}")
     return joinPartsBalanced(parts)
 
 fn cloudNotSignedIn(): int32 =
@@ -1748,19 +1718,19 @@ fn runCloudListCommand(args: str[], start: int32): int32 =
     var cursor = ""
     var jsonOut = false
     var stopParsing = false
-    var i: int32 = start
-    while i < len(args):
+    var skipUntil: int32 = start - 1
+    for i in start..<len(args):
+        if i <= skipUntil:
+            continue
         let arg = argAt(args, i)
         if ! stopParsing && (arg == "--help" || arg == "-h"):
             return printCloudListHelp()
         if ! stopParsing && arg == "--":
             stopParsing = true
-            i = i + 1
             continue
         if ! stopParsing && cloudIsOptionLike(arg):
             if arg == "--json":
                 jsonOut = true
-                i = i + 1
                 continue
             if arg == "--env":
                 if i + 1 >= len(args):
@@ -1773,11 +1743,10 @@ fn runCloudListCommand(args: str[], start: int32): int32 =
                         return cloudUsageMissingValue("--env <ENV_ID>", "")
                     return cloudUsageUnexpectedArg(next, "codex cloud list [OPTIONS]", "")
                 envFilter = next
-                i = i + 2
+                skipUntil = i + 1
                 continue
             if hasPrefix(arg, "--env="):
                 envFilter = dropPrefix(arg, "--env=")
-                i = i + 1
                 continue
             if arg == "--limit":
                 if i + 1 >= len(args):
@@ -1793,7 +1762,7 @@ fn runCloudListCommand(args: str[], start: int32): int32 =
                 if ! parsed.ok:
                     return cloudUsageInvalidValue(next, "--limit <N>", parsed.err)
                 limit = parsed.value
-                i = i + 2
+                skipUntil = i + 1
                 continue
             if hasPrefix(arg, "--limit="):
                 let raw = dropPrefix(arg, "--limit=")
@@ -1801,7 +1770,6 @@ fn runCloudListCommand(args: str[], start: int32): int32 =
                 if ! parsed.ok:
                     return cloudUsageInvalidValue(raw, "--limit <N>", parsed.err)
                 limit = parsed.value
-                i = i + 1
                 continue
             if arg == "--cursor":
                 if i + 1 >= len(args):
@@ -1814,11 +1782,10 @@ fn runCloudListCommand(args: str[], start: int32): int32 =
                         return cloudUsageMissingValue("--cursor <CURSOR>", "")
                     return cloudUsageUnexpectedArg(next, "codex cloud list [OPTIONS]", "")
                 cursor = next
-                i = i + 2
+                skipUntil = i + 1
                 continue
             if hasPrefix(arg, "--cursor="):
                 cursor = dropPrefix(arg, "--cursor=")
-                i = i + 1
                 continue
             return cloudUsageUnexpectedArg(arg, "codex cloud list [OPTIONS]", "")
         # No positional args are accepted for list.
@@ -1846,14 +1813,12 @@ fn runCloudListCommand(args: str[], start: int32): int32 =
     if len(page.tasks) == 0:
         printLine("No tasks found.")
         return 0
-    var idx: int32 = 0
-    while idx < len(page.tasks):
+    for idx in 0..<len(page.tasks):
         let task = page.tasks[idx]
         printLine(cloudBrowserTaskUrl(baseUrl, task.id))
         cloudPrintTaskStatusLines(task, "  ")
         if idx + 1 < len(page.tasks):
             printLine("")
-        idx = idx + 1
     if page.hasCursor:
         printLine("")
         printLine("To fetch the next page, run codex cloud list --cursor='" + page.cursor + "'")
@@ -1867,14 +1832,15 @@ fn runCloudExec(args: str[], start: int32): int32 =
     var query = ""
     var sawQuery = false
     var stopParsing = false
-    var i: int32 = start
-    while i < len(args):
+    var skipUntil: int32 = start - 1
+    for i in start..<len(args):
+        if i <= skipUntil:
+            continue
         let arg = argAt(args, i)
         if ! stopParsing && (arg == "--help" || arg == "-h"):
             return printCloudExecHelp()
         if ! stopParsing && arg == "--":
             stopParsing = true
-            i = i + 1
             continue
         if ! stopParsing && cloudIsOptionLike(arg):
             if arg == "--env":
@@ -1894,12 +1860,11 @@ fn runCloudExec(args: str[], start: int32): int32 =
                     return cloudUsageUnexpectedArg(next, "codex cloud exec [OPTIONS] --env <ENV_ID> [QUERY]", tip)
                 envId = next
                 sawEnv = true
-                i = i + 2
+                skipUntil = i + 1
                 continue
             if hasPrefix(arg, "--env="):
                 envId = dropPrefix(arg, "--env=")
                 sawEnv = true
-                i = i + 1
                 continue
             if arg == "--attempts":
                 if i + 1 >= len(args):
@@ -1920,7 +1885,7 @@ fn runCloudExec(args: str[], start: int32): int32 =
                 if ! parsed.ok:
                     return cloudUsageInvalidValue(next, "--attempts <ATTEMPTS>", parsed.err)
                 attempts = parsed.value
-                i = i + 2
+                skipUntil = i + 1
                 continue
             if hasPrefix(arg, "--attempts="):
                 let raw = dropPrefix(arg, "--attempts=")
@@ -1928,7 +1893,6 @@ fn runCloudExec(args: str[], start: int32): int32 =
                 if ! parsed.ok:
                     return cloudUsageInvalidValue(raw, "--attempts <ATTEMPTS>", parsed.err)
                 attempts = parsed.value
-                i = i + 1
                 continue
             if arg == "--branch":
                 if i + 1 >= len(args):
@@ -1946,11 +1910,10 @@ fn runCloudExec(args: str[], start: int32): int32 =
                     tip = tip + "'"
                     return cloudUsageUnexpectedArg(next, "codex cloud exec [OPTIONS] --env <ENV_ID> [QUERY]", tip)
                 branch = next
-                i = i + 2
+                skipUntil = i + 1
                 continue
             if hasPrefix(arg, "--branch="):
                 branch = dropPrefix(arg, "--branch=")
-                i = i + 1
                 continue
             var tip: str = "to pass '"
             tip = tip + arg
@@ -1964,7 +1927,6 @@ fn runCloudExec(args: str[], start: int32): int32 =
             sawQuery = true
         else:
             return cloudUsageUnexpectedArg(arg, "codex cloud exec [OPTIONS] --env <ENV_ID> [QUERY]", "")
-        i = i + 1
     if ! sawEnv:
         if sawQuery:
             return cloudUsageMissingRequired("--env <ENV_ID>", "codex cloud exec --env <ENV_ID> <QUERY>")
@@ -2016,14 +1978,12 @@ fn runCloudStatus(args: str[], start: int32): int32 =
     var rawTask = ""
     var sawTask = false
     var stopParsing = false
-    var i: int32 = start
-    while i < len(args):
+    for i in start..<len(args):
         let arg = argAt(args, i)
         if ! stopParsing && (arg == "--help" || arg == "-h"):
             return printCloudStatusHelp()
         if ! stopParsing && arg == "--":
             stopParsing = true
-            i = i + 1
             continue
         if ! stopParsing && cloudIsOptionLike(arg):
             var tip: str = ""
@@ -2035,7 +1995,6 @@ fn runCloudStatus(args: str[], start: int32): int32 =
             sawTask = true
         else:
             return cloudUsageUnexpectedArg(arg, "codex cloud status [OPTIONS] <TASK_ID>", "")
-        i = i + 1
     if ! sawTask:
         return cloudUsageMissingRequired("<TASK_ID>", "codex cloud status <TASK_ID>")
     let auth = loadCloudAuthInfo()
@@ -2070,14 +2029,15 @@ fn runCloudDiff(args: str[], start: int32): int32 =
     var sawTask = false
     var attempt: int32 = 1
     var stopParsing = false
-    var i: int32 = start
-    while i < len(args):
+    var skipUntil: int32 = start - 1
+    for i in start..<len(args):
+        if i <= skipUntil:
+            continue
         let arg = argAt(args, i)
         if ! stopParsing && (arg == "--help" || arg == "-h"):
             return printCloudDiffHelp()
         if ! stopParsing && arg == "--":
             stopParsing = true
-            i = i + 1
             continue
         if ! stopParsing && cloudIsOptionLike(arg):
             if arg == "--attempt":
@@ -2099,7 +2059,7 @@ fn runCloudDiff(args: str[], start: int32): int32 =
                 if ! parsed.ok:
                     return cloudUsageInvalidValue(next, "--attempt <N>", parsed.err)
                 attempt = parsed.value
-                i = i + 2
+                skipUntil = i + 1
                 continue
             if hasPrefix(arg, "--attempt="):
                 let raw = dropPrefix(arg, "--attempt=")
@@ -2107,7 +2067,6 @@ fn runCloudDiff(args: str[], start: int32): int32 =
                 if ! parsed.ok:
                     return cloudUsageInvalidValue(raw, "--attempt <N>", parsed.err)
                 attempt = parsed.value
-                i = i + 1
                 continue
             var tip: str = "to pass '"
             tip = tip + arg
@@ -2120,7 +2079,6 @@ fn runCloudDiff(args: str[], start: int32): int32 =
             sawTask = true
         else:
             return cloudUsageUnexpectedArg(arg, "codex cloud diff [OPTIONS] <TASK_ID>", "")
-        i = i + 1
     if ! sawTask:
         return cloudUsageMissingRequired("<TASK_ID>", "codex cloud diff <TASK_ID>")
     let auth = loadCloudAuthInfo()
@@ -2187,14 +2145,15 @@ fn runCloudApply(args: str[], start: int32): int32 =
     var sawTask = false
     var attempt: int32 = 1
     var stopParsing = false
-    var i: int32 = start
-    while i < len(args):
+    var skipUntil: int32 = start - 1
+    for i in start..<len(args):
+        if i <= skipUntil:
+            continue
         let arg = argAt(args, i)
         if ! stopParsing && (arg == "--help" || arg == "-h"):
             return printCloudApplyHelp()
         if ! stopParsing && arg == "--":
             stopParsing = true
-            i = i + 1
             continue
         if ! stopParsing && cloudIsOptionLike(arg):
             if arg == "--attempt":
@@ -2216,7 +2175,7 @@ fn runCloudApply(args: str[], start: int32): int32 =
                 if ! parsed.ok:
                     return cloudUsageInvalidValue(next, "--attempt <N>", parsed.err)
                 attempt = parsed.value
-                i = i + 2
+                skipUntil = i + 1
                 continue
             if hasPrefix(arg, "--attempt="):
                 let raw = dropPrefix(arg, "--attempt=")
@@ -2224,7 +2183,6 @@ fn runCloudApply(args: str[], start: int32): int32 =
                 if ! parsed.ok:
                     return cloudUsageInvalidValue(raw, "--attempt <N>", parsed.err)
                 attempt = parsed.value
-                i = i + 1
                 continue
             var tip: str = "to pass '"
             tip = tip + arg
@@ -2237,7 +2195,6 @@ fn runCloudApply(args: str[], start: int32): int32 =
             sawTask = true
         else:
             return cloudUsageUnexpectedArg(arg, "codex cloud apply [OPTIONS] <TASK_ID>", "")
-        i = i + 1
     if ! sawTask:
         return cloudUsageMissingRequired("<TASK_ID>", "codex cloud apply <TASK_ID>")
     let taskId = parseTaskIdLocal(rawTask)
@@ -2261,46 +2218,38 @@ fn cloudEditDistanceLocal(a: str, b: str): int32 =
         return len(s2)
     if len(s2) == 0:
         return len(s1)
-    var prev: int32[] = newSeq[int32]()
-    var j: int32 = 0
-    while j <= len(s2):
-        seqAdd(prev, j)
-        j = j + 1
-    var i: int32 = 0
-    while i < len(s1):
-        var curr: int32[] = newSeq[int32]()
-        seqAdd(curr, i + 1)
-        j = 0
-        while j < len(s2):
+    var prev: int32[] = []
+    for j in 0..len(s2):
+        add(prev, j)
+    for i in 0..<len(s1):
+        var curr: int32[] = []
+        add(curr, i + 1)
+        for j in 0..<len(s2):
             let cost = if s1[i] == s2[j]: 0 else: 1
             let del = prev[j + 1] + 1
             let ins = curr[j] + 1
             let sub = prev[j] + cost
             let v = cloudMin3Local(del, ins, sub)
-            seqAdd(curr, v)
-            j = j + 1
+            add(curr, v)
         prev = curr
-        i = i + 1
     return prev[len(s2)]
 
 fn cloudSuggestCloudSubcommandLocal(name: str): str =
-    var candidates: str[] = newSeq[str]()
-    seqAdd(candidates, "exec")
-    seqAdd(candidates, "status")
-    seqAdd(candidates, "list")
-    seqAdd(candidates, "apply")
-    seqAdd(candidates, "diff")
-    seqAdd(candidates, "help")
+    var candidates: str[] = []
+    add(candidates, "exec")
+    add(candidates, "status")
+    add(candidates, "list")
+    add(candidates, "apply")
+    add(candidates, "diff")
+    add(candidates, "help")
     var best = ""
     var bestDist: int32 = 999
-    var i: int32 = 0
-    while i < len(candidates):
+    for i in 0..<len(candidates):
         let cand = argAt(candidates, i)
         let d = cloudEditDistanceLocal(name, cand)
         if d < bestDist:
             bestDist = d
             best = cand
-        i = i + 1
     if len(best) > 0 && bestDist <= 3:
         return best
     return ""
@@ -2359,8 +2308,8 @@ fn runCloudHelpCommand(args: str[], start: int32): int32 =
 fn runCloudLocal(args: str[], start: int32): int32 =
     cloudTraceLocal("runCloudLocal.enter")
     var stopParsing = false
-    var i: int32 = start
-    while i < len(args):
+    var subIdx: int32 = len(args)
+    for i in start..<len(args):
         let arg = argAt(args, i)
         if ! stopParsing && (arg == "--help" || arg == "-h"):
             return printCloudHelp()
@@ -2368,18 +2317,18 @@ fn runCloudLocal(args: str[], start: int32): int32 =
             return cloudPrintVersion()
         if ! stopParsing && arg == "--":
             stopParsing = true
-            i = i + 1
-            break
+            continue
         if ! stopParsing && cloudIsOptionLike(arg):
             return cloudUsageUnexpectedArg(arg, "codex cloud [OPTIONS] [COMMAND]", "")
+        subIdx = i
         break
-    if i >= len(args):
+    if subIdx >= len(args):
         let auth = loadCloudAuthInfo()
         if ! auth.ok:
             return cloudNotSignedIn()
         let baseUrl = loadCloudBaseUrl()
         return runCloudTui(baseUrl, auth.token, auth.accountId)
-    let sub = argAt(args, i)
+    let sub = argAt(args, subIdx)
     if sub == "help":
         return runCloudHelpCommand(args, i + 1)
     if sub == "exec":

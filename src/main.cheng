@@ -1,4 +1,3 @@
-import cmdline
 import system
 import std/os
 import std/times
@@ -46,16 +45,22 @@ const
 
 var arg0PathEntryDir: str = ""
 var arg0PathSetupError: str = ""
+var arg0MainPathRaw: str = ""
 
-fn collectArgsFromCmdline(): str[] =
+fn mainArgAt(argc: int32, argv: str*, idx: int32): str =
+    if argc <= 0 || argv == nil:
+        return ""
+    if idx < 0 || idx >= argc:
+        return ""
+    let slot = ptr_add(void*(argv), idx * 8)
+    return $ *str*(slot)
+
+fn collectArgsFromMain(argc: int32, argv: str*): str[] =
     var out: str[]
-    let total: int32 = cmdline.paramCount()
-    if total <= 0:
+    if argc <= 1 || argv == nil:
         return out
-    var i: int32 = 1
-    while i <= total:
-        seqAdd(out, $ cmdline.paramStr(i))
-        i = i + 1
+    for i in 1..<argc:
+        add(out, mainArgAt(argc, argv, i))
     return out
 
 fn traceMainLocal(msg: str) =
@@ -334,11 +339,9 @@ fn streqSafe(a: str, b: str): bool =
         return false
     if len(a) != len(b):
         return false
-    var i: int32 = 0
-    while i < len(a):
+    for i in 0..<len(a):
         if ord(a[i]) != ord(b[i]):
             return false
-        i = i + 1
     return true
 
 fn parseGlobalOverrides(args: str[]): ParsedArgs =
@@ -346,21 +349,21 @@ fn parseGlobalOverrides(args: str[]): ParsedArgs =
     var outArgs: str[]
     var overrides: str[]
     var err = ""
-    var i: int32 = 0
-    while i < len(args):
+    var skipUntil: int32 = -1
+    for i in 0..<len(args):
+        if i <= skipUntil:
+            continue
         let arg: str = get[str](args, i)
         if arg == "--":
             # Preserve the delimiter: some subcommands (e.g. sandbox) need it.
-            seqAdd(outArgs, ownedStr(arg))
-            var j: int32 = i + 1
-            while j < len(args):
-                seqAdd(outArgs, ownedStr(get[str](args, j)))
-                j = j + 1
+            add(outArgs, ownedStr(arg))
+            for j in i + 1..<len(args):
+                add(outArgs, ownedStr(get[str](args, j)))
             break
         if arg == "-c" || arg == "--config":
             if i + 1 < len(args):
-                seqAdd(overrides, ownedStr(get[str](args, i + 1)))
-                i = i + 1
+                add(overrides, ownedStr(get[str](args, i + 1)))
+                skipUntil = i + 1
             else:
                 err = "missing value for --config"
                 break
@@ -368,8 +371,8 @@ fn parseGlobalOverrides(args: str[]): ParsedArgs =
             if i + 1 < len(args):
                 let override = featureOverride(ownedStr(get[str](args, i + 1)), true, err)
                 if len(override) > 0:
-                    seqAdd(overrides, ownedStr(override))
-                i = i + 1
+                    add(overrides, ownedStr(override))
+                skipUntil = i + 1
             else:
                 err = "missing value for --enable"
                 break
@@ -377,14 +380,13 @@ fn parseGlobalOverrides(args: str[]): ParsedArgs =
             if i + 1 < len(args):
                 let override = featureOverride(ownedStr(get[str](args, i + 1)), false, err)
                 if len(override) > 0:
-                    seqAdd(overrides, ownedStr(override))
-                i = i + 1
+                    add(overrides, ownedStr(override))
+                skipUntil = i + 1
             else:
                 err = "missing value for --disable"
                 break
         else:
-            seqAdd(outArgs, ownedStr(arg))
-        i = i + 1
+            add(outArgs, ownedStr(arg))
     res.args = outArgs
     res.overrides = overrides
     res.err = err
@@ -392,14 +394,12 @@ fn parseGlobalOverrides(args: str[]): ParsedArgs =
 
 fn joinShellArgs(args: str[], start: int32): str =
     var out = ""
-    var i: int32 = start
-    while i < len(args):
+    for i in start..<len(args):
         let part = shellQuote(argAt(args, i))
         if len(out) == 0:
             out = part
         else:
             out = out + " " + part
-        i = i + 1
     return out
 
 fn completionCommands(): str =
@@ -411,22 +411,21 @@ fn runCompletion(args: str[], start: int32): int32 =
     var shell = "bash"
     var sawShell = false
     var showHelp = false
-    var i: int32 = start
-    while i < len(args):
+    var afterDelim = false
+    for i in start..<len(args):
         let arg = ownedStr(get[str](args, i))
+        if afterDelim:
+            if sawShell:
+                printErr("error: unexpected argument '" + arg + "' found")
+                return 2
+            shell = arg
+            sawShell = true
+            continue
         if arg == "--help" || arg == "-h":
             showHelp = true
         elif arg == "--":
             # Stop parsing options; remaining tokens are positionals.
-            i = i + 1
-            while i < len(args):
-                if sawShell:
-                    printErr("error: unexpected argument '" + ownedStr(get[str](args, i)) + "' found")
-                    return 2
-                shell = ownedStr(get[str](args, i))
-                sawShell = true
-                i = i + 1
-            break
+            afterDelim = true
         elif hasPrefix(arg, "-"):
             printErr("error: unexpected argument '" + arg + "' found")
             return 2
@@ -437,7 +436,6 @@ fn runCompletion(args: str[], start: int32): int32 =
                 return 2
             shell = arg
             sawShell = true
-        i = i + 1
     if showHelp:
         if ! wantsLongHelp(args, start):
             printLine("Generate shell completion scripts")
@@ -599,8 +597,7 @@ fn printFeaturesDisableHelp(): int32 =
 
 fn parseFeatureSetCommandArgs(args: str[], start: int32): FeatureSetCommandArgs =
     var parsed: FeatureSetCommandArgs = FeatureSetCommandArgs(feature: "", showHelp: false, err: "")
-    var i: int32 = start
-    while i < len(args):
+    for i in start..<len(args):
         let arg = argAt(args, i)
         if arg == "--help" || arg == "-h":
             parsed.showHelp = true
@@ -613,7 +610,6 @@ fn parseFeatureSetCommandArgs(args: str[], start: int32): FeatureSetCommandArgs 
         else:
             parsed.err = "unexpected argument '" + arg + "' found"
             return parsed
-        i = i + 1
     return parsed
 
 fn runFeaturesSet(args: str[], start: int32, enabled: bool): int32 =
@@ -890,8 +886,7 @@ fn runSandboxPlatform(platform: str, args: str[], start: int32): int32 =
     var logDenials = false
     var cmdParts: str[]
     var optionsEnded = false
-    var i: int32 = start
-    while i < len(args):
+    for i in start..<len(args):
         let arg = argAt(args, i)
         if ! optionsEnded:
             if arg == "--help":
@@ -908,15 +903,12 @@ fn runSandboxPlatform(platform: str, args: str[], start: int32): int32 =
                 return printSandboxWindowsHelpShort()
             if arg == "--full-auto":
                 fullAuto = true
-                i = i + 1
                 continue
             if platform == "macos" && arg == "--log-denials":
                 logDenials = true
-                i = i + 1
                 continue
             if arg == "--":
                 optionsEnded = true
-                i = i + 1
                 continue
             if hasPrefix(arg, "-"):
                 var tip = ""
@@ -926,8 +918,7 @@ fn runSandboxPlatform(platform: str, args: str[], start: int32): int32 =
                 return sandboxUnexpectedArgWithUsage(arg, usage, tip)
             # First non-option starts the command; remaining tokens are command args.
             optionsEnded = true
-        seqAdd(cmdParts, ownedStr(arg))
-        i = i + 1
+        add(cmdParts, ownedStr(arg))
 
     let osKind = detectOsKind()
     if platform == "macos" && osKind != "macos":
@@ -1088,12 +1079,10 @@ fn closedLoopReportDir(workDir: str): str =
 
 fn closedLoopJoin(items: str[], sep: str): str =
     var out = ""
-    var i: int32 = 0
-    while i < len(items):
+    for i in 0..<len(items):
         if len(out) > 0:
             out = out + sep
         out = out + items[i]
-        i = i + 1
     return out
 
 fn closedLoopTempDir(): str =
@@ -1123,7 +1112,7 @@ fn closedLoopResolveBin(workDir: str): str =
     return ""
 
 fn closedLoopRecordStep(steps: var ClosedLoopStep[], name: str, status: str, exitCode: int32, detail: str) =
-    seqAdd(steps, ClosedLoopStep(name: name, status: status, exitCode: exitCode, detail: detail))
+    add(steps, ClosedLoopStep(name: name, status: status, exitCode: exitCode, detail: detail))
 
 fn closedLoopWriteReports(steps: ClosedLoopStep[], reportDir: str) =
     let tsvPath = os.joinPath(reportDir, "report.tsv")
@@ -1132,27 +1121,25 @@ fn closedLoopWriteReports(steps: ClosedLoopStep[], reportDir: str) =
     var tsvParts: str[]
     var stepObjs: str[]
     var anyFail = false
-    var i: int32 = 0
-    while i < len(steps):
+    for i in 0..<len(steps):
         let step = steps[i]
         if step.status == "fail":
             anyFail = true
-        seqAdd(tsvParts, step.name)
-        seqAdd(tsvParts, "\t")
-        seqAdd(tsvParts, step.status)
-        seqAdd(tsvParts, "\t")
-        seqAdd(tsvParts, intToStr(step.exitCode))
-        seqAdd(tsvParts, "\t")
-        seqAdd(tsvParts, step.detail)
-        seqAdd(tsvParts, "\n")
+        add(tsvParts, step.name)
+        add(tsvParts, "\t")
+        add(tsvParts, step.status)
+        add(tsvParts, "\t")
+        add(tsvParts, intToStr(step.exitCode))
+        add(tsvParts, "\t")
+        add(tsvParts, step.detail)
+        add(tsvParts, "\n")
         let fields = seqStr4(
             jstrPair("name", jstrString(step.name)),
             jstrPair("status", jstrString(step.status)),
             jstrPair("exit_code", intToStr(step.exitCode)),
             jstrPair("detail", jstrString(step.detail))
         )
-        seqAdd(stepObjs, jstrObject(fields))
-        i = i + 1
+        add(stepObjs, jstrObject(fields))
     var result: str = "pass"
     if anyFail:
         result = "fail"
@@ -1179,16 +1166,14 @@ fn closedLoopWriteReports(steps: ClosedLoopStep[], reportDir: str) =
 fn closedLoopCheckPreflight(workDir: str, detail: var str): int32 =
     var missing: str[]
     var files = seqStr4("SPEC.md", "CONTRACT.md", "ACCEPTANCE.md", "TASK_MATRIX.yaml")
-    var i: int32 = 0
-    while i < len(files):
+    for i in 0..<len(files):
         let path = os.joinPath(workDir, files[i])
         if ! os.fileExists(path):
-            seqAdd(missing, files[i])
+            add(missing, files[i])
         else:
             let content = os.readFile(path)
             if content == nil || len(content) == 0:
-                seqAdd(missing, files[i])
-        i = i + 1
+                add(missing, files[i])
     if len(missing) > 0:
         detail = "missing: " + closedLoopJoin(missing, ", ")
         return 1
@@ -1209,13 +1194,13 @@ fn closedLoopCheckExecpolicy(workDir: str, detail: var str): int32 =
     let rulesText = "prefix_rule(\\n    pattern = [\\\"git\\\", \\\"push\\\"],\\n    decision = \\\"forbidden\\\",\\n)\\n"
     os.writeFile(rulesPath, rulesText)
     var args: str[]
-    seqAdd(args, "check")
-    seqAdd(args, "--rules")
-    seqAdd(args, rulesPath)
-    seqAdd(args, "git")
-    seqAdd(args, "push")
-    seqAdd(args, "origin")
-    seqAdd(args, "main")
+    add(args, "check")
+    add(args, "--rules")
+    add(args, rulesPath)
+    add(args, "git")
+    add(args, "push")
+    add(args, "origin")
+    add(args, "main")
     detail = "execpolicy check"
     return runExecpolicy(args, 0)
 
@@ -1240,14 +1225,14 @@ fn closedLoopCheckExecSmoke(workDir: str, detail: var str): int32 =
     let tmpDir = closedLoopTempDir()
     let lastMsg = os.joinPath(tmpDir, "last_message.txt")
     var args: str[]
-    seqAdd(args, "--json")
-    seqAdd(args, "--cd")
-    seqAdd(args, workDir)
-    seqAdd(args, "--output-last-message")
-    seqAdd(args, lastMsg)
-    seqAdd(args, "--ask-for-approval")
-    seqAdd(args, "never")
-    seqAdd(args, "Say OK.")
+    add(args, "--json")
+    add(args, "--cd")
+    add(args, workDir)
+    add(args, "--output-last-message")
+    add(args, lastMsg)
+    add(args, "--ask-for-approval")
+    add(args, "never")
+    add(args, "Say OK.")
     detail = "exec smoke"
     let code = runExec(args, 0)
     if code != 0:
@@ -1367,70 +1352,71 @@ fn runShip(args: str[], start: int32): int32 =
 
 fn appServerMethodNames(): str[] =
     var names: str[]
-    seqAdd(names, "initialize")
-    seqAdd(names, "initialized")
-    seqAdd(names, "thread/start")
-    seqAdd(names, "thread/resume")
-    seqAdd(names, "thread/fork")
-    seqAdd(names, "thread/list")
-    seqAdd(names, "thread/loaded/list")
-    seqAdd(names, "thread/archive")
-    seqAdd(names, "thread/rollback")
-    seqAdd(names, "turn/start")
-    seqAdd(names, "turn/interrupt")
-    seqAdd(names, "review/start")
-    seqAdd(names, "command/exec")
-    seqAdd(names, "model/list")
-    seqAdd(names, "collaborationMode/list")
-    seqAdd(names, "skills/list")
-    seqAdd(names, "skills/config/write")
-    seqAdd(names, "mcpServerStatus/list")
-    seqAdd(names, "config/read")
-    seqAdd(names, "config/value/write")
-    seqAdd(names, "config/batchWrite")
-    seqAdd(names, "config/mcpServer/reload")
-    seqAdd(names, "configRequirements/read")
-    seqAdd(names, "account/read")
-    seqAdd(names, "account/login/start")
-    seqAdd(names, "account/login/cancel")
-    seqAdd(names, "account/logout")
-    seqAdd(names, "account/rateLimits/read")
-    seqAdd(names, "feedback/upload")
-    seqAdd(names, "mcpServer/oauth/login")
+    add(names, "initialize")
+    add(names, "initialized")
+    add(names, "thread/start")
+    add(names, "thread/resume")
+    add(names, "thread/fork")
+    add(names, "thread/list")
+    add(names, "thread/loaded/list")
+    add(names, "thread/archive")
+    add(names, "thread/rollback")
+    add(names, "turn/start")
+    add(names, "turn/interrupt")
+    add(names, "review/start")
+    add(names, "command/exec")
+    add(names, "model/list")
+    add(names, "collaborationMode/list")
+    add(names, "skills/list")
+    add(names, "skills/config/write")
+    add(names, "mcpServerStatus/list")
+    add(names, "config/read")
+    add(names, "config/value/write")
+    add(names, "config/batchWrite")
+    add(names, "config/mcpServer/reload")
+    add(names, "configRequirements/read")
+    add(names, "account/read")
+    add(names, "account/login/start")
+    add(names, "account/login/cancel")
+    add(names, "account/logout")
+    add(names, "account/rateLimits/read")
+    add(names, "feedback/upload")
+    add(names, "mcpServer/oauth/login")
     return names
 
 fn tsStringUnion(items: str[]): str =
     var out = ""
-    var i: int32 = 0
-    while i < len(items):
+    for i in 0..<len(items):
         if len(out) > 0:
             out = out + " | "
         out = out + "'"
         out = out + items[i]
         out = out + "'"
-        i = i + 1
     if len(out) == 0:
         return "str"
     return out
 
 fn jsonEnumList(items: str[]): str =
     var out = ""
-    var i: int32 = 0
-    while i < len(items):
+    for i in 0..<len(items):
         if len(out) > 0:
             out = out + ", "
         out = out + "\""
         out = out + items[i]
         out = out + "\""
-        i = i + 1
     return out
 
 fn normalizePathRoot(path: str): str =
     if path == nil || len(path) == 0:
         return ""
     var stop = len(path) - 1
-    while stop >= 0 && path[stop] == '/':
-        stop = stop - 1
+    for rev in 0..<len(path):
+        let idx = len(path) - rev - 1
+        if path[idx] == '/':
+            stop = idx - 1
+            continue
+        stop = idx
+        break
     if stop < 0:
         return ""
     if stop == len(path) - 1:
@@ -1476,14 +1462,11 @@ fn copyProtocolFiles(srcDir: str, destDir: str, extFilter: str): bool =
         return false
     let files = os.walkDirRec(srcDir)
     var wrote = false
-    var idx: int32 = 0
-    while idx < len(files):
+    for idx in 0..<len(files):
         let srcPath = ownedStr(files[idx])
         if ! os.fileExists(srcPath):
-            idx = idx + 1
             continue
         if len(extFilter) > 0 && ! endsWithSuffix(srcPath, extFilter):
-            idx = idx + 1
             continue
         let rel = ownedStr(pathRelative(srcDir, srcPath))
         var destPath: str = ""
@@ -1499,15 +1482,16 @@ fn copyProtocolFiles(srcDir: str, destDir: str, extFilter: str): bool =
             contentText = content
         os.writeFile(destPath, contentText)
         wrote = true
-        idx = idx + 1
     return wrote
 
 fn runAppServerGenerateTs(args: str[], start: int32): int32 =
     var outDir = ""
     var prettierBin = ""
     var experimental = false
-    var i: int32 = start
-    while i < len(args):
+    var skipUntil: int32 = start - 1
+    for i in start..<len(args):
+        if i <= skipUntil:
+            continue
         let arg = argAt(args, i)
         if arg == "--help" || arg == "-h":
             printLine("[experimental] Generate TypeScript bindings for the app server protocol")
@@ -1532,14 +1516,14 @@ fn runAppServerGenerateTs(args: str[], start: int32): int32 =
             return 0
         if (arg == "--out" || arg == "-o") && i + 1 < len(args):
             outDir = ownedStr(argAt(args, i + 1))
-            i = i + 1
+            skipUntil = i + 1
         elif hasPrefix(arg, "--out:"):
             outDir = ownedStr(dropPrefix(arg, "--out:"))
         elif hasPrefix(arg, "-o:"):
             outDir = ownedStr(dropPrefix(arg, "-o:"))
         elif (arg == "--prettier" || arg == "-p") && i + 1 < len(args):
             prettierBin = ownedStr(argAt(args, i + 1))
-            i = i + 1
+            skipUntil = i + 1
         elif hasPrefix(arg, "--prettier:"):
             prettierBin = ownedStr(dropPrefix(arg, "--prettier:"))
         elif hasPrefix(arg, "-p:"):
@@ -1549,7 +1533,6 @@ fn runAppServerGenerateTs(args: str[], start: int32): int32 =
         else:
             printErr("unknown option: " + arg)
             return 2
-        i = i + 1
     if len(outDir) == 0:
         printErr("missing required option: --out")
         return 2
@@ -1574,8 +1557,10 @@ fn runAppServerGenerateTs(args: str[], start: int32): int32 =
 fn runAppServerGenerateJson(args: str[], start: int32): int32 =
     var outDir = ""
     var experimental = false
-    var i: int32 = start
-    while i < len(args):
+    var skipUntil: int32 = start - 1
+    for i in start..<len(args):
+        if i <= skipUntil:
+            continue
         let arg = argAt(args, i)
         if arg == "--help" || arg == "-h":
             printLine("[experimental] Generate JSON Schema for the app server protocol")
@@ -1597,7 +1582,7 @@ fn runAppServerGenerateJson(args: str[], start: int32): int32 =
             return 0
         if (arg == "--out" || arg == "-o") && i + 1 < len(args):
             outDir = ownedStr(argAt(args, i + 1))
-            i = i + 1
+            skipUntil = i + 1
         elif hasPrefix(arg, "--out:"):
             outDir = ownedStr(dropPrefix(arg, "--out:"))
         elif hasPrefix(arg, "-o:"):
@@ -1607,7 +1592,6 @@ fn runAppServerGenerateJson(args: str[], start: int32): int32 =
         else:
             printErr("unknown option: " + arg)
             return 2
-        i = i + 1
     if len(outDir) == 0:
         printErr("missing required option: --out")
         return 2
@@ -1660,8 +1644,7 @@ fn printApplyHelpShort(): int32 =
 
 fn runApply(args: str[], start: int32): int32 =
     var taskIdArg = ""
-    var i: int32 = start
-    while i < len(args):
+    for i in start..<len(args):
         let arg = argAt(args, i)
         if arg == "--help":
             return printApplyHelp()
@@ -1678,7 +1661,6 @@ fn runApply(args: str[], start: int32): int32 =
         else:
             printErr("error: unexpected argument '" + arg + "' found")
             return 2
-        i = i + 1
     if len(taskIdArg) == 0:
         printErr("error: missing required argument <TASK_ID>")
         return 2
@@ -1744,28 +1726,24 @@ fn arg0LowerAscii(text: str): str =
     if text == nil:
         return ""
     var out = ""
-    var i: int32 = 0
-    while i < len(text):
+    for i in 0..<len(text):
         let ch = text[i]
         if ch >= 'A' && ch <= 'Z':
             out = out + $ char(ord(ch) + 32)
         else:
             out = out + $ ch
-        i = i + 1
     return out
 
 fn arg0UpperAscii(text: str): str =
     if text == nil:
         return ""
     var out = ""
-    var i: int32 = 0
-    while i < len(text):
+    for i in 0..<len(text):
         let ch = text[i]
         if ch >= 'a' && ch <= 'z':
             out = out + $ char(ord(ch) - 32)
         else:
             out = out + $ ch
-        i = i + 1
     return out
 
 fn arg0NormalizeExeName(name: str): str =
@@ -1779,7 +1757,7 @@ fn arg0NormalizeExeName(name: str): str =
     return lowered
 
 fn arg0CurrentExePath(): str =
-    let raw = trimLine(cmdline.paramStr(0))
+    let raw = trimLine(arg0MainPathRaw)
     if len(raw) == 0:
         return ""
     if os.isAbsolute(raw):
@@ -1796,9 +1774,8 @@ fn arg0CurrentExeName(): str =
     return arg0NormalizeExeName(os.extractFilename(exePath))
 
 fn arg0SetEnv(key: str, value: str) =
-    if len(key) == 0:
-        return
-    cSetEnv(key, value, 1)
+    key
+    value
 
 fn arg0SetPathSetupError(msg: str): bool =
     arg0PathSetupError = trimLine(msg)
@@ -1819,11 +1796,9 @@ fn arg0IsValidEnvKey(key: str): bool =
     let first = key[0]
     if ! ((first >= 'A' && first <= 'Z') || (first >= 'a' && first <= 'z') || first == '_'):
         return false
-    var i: int32 = 1
-    while i < len(key):
+    for i in 1..<len(key):
         let ch = key[i]
         if (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_':
-            i = i + 1
             continue
         return false
     return true
@@ -1847,11 +1822,9 @@ fn arg0ApplyDotenvFile(path: str) =
     if content == nil || len(content) == 0:
         return
     let lines = splitLinesSimple(content)
-    var idx: int32 = 0
-    while idx < len(lines):
+    for idx in 0..<len(lines):
         var line = trimLine(lines[idx])
         if len(line) == 0 || line[0] == '#':
-            idx = idx + 1
             continue
         if hasPrefix(line, "export "):
             if len(line) > 7:
@@ -1859,20 +1832,16 @@ fn arg0ApplyDotenvFile(path: str) =
             else:
                 line = ""
         if len(line) == 0:
-            idx = idx + 1
             continue
         let eq = indexOfSubstr(line, "=", 0)
         if eq <= 0:
-            idx = idx + 1
             continue
         let key = trimLine(__cheng_slice_string(line, 0, eq - 1, false))
         var value = trimLine(__cheng_slice_string(line, eq + 1, len(line) - 1, false))
         if ! arg0IsValidEnvKey(key) || arg0ShouldFilterEnvKey(key):
-            idx = idx + 1
             continue
         value = arg0TrimOuterQuotes(value)
         arg0SetEnv(key, value)
-        idx = idx + 1
 
 fn arg0LoadDotenvFiltered() =
     let dotenvPath = os.joinPath(codexHomeDir(), ".env")
@@ -1913,33 +1882,25 @@ fn arg0JanitorCleanup(tempRoot: str, keepPath: str): str =
         return ""
     let paths = os.walkDirRec(tempRoot)
     var warning = ""
-    var idx: int32 = 0
-    while idx < len(paths):
+    for idx in 0..<len(paths):
         let path = trimLine(paths[idx])
         if len(path) == 0 || path == keepPath:
-            idx = idx + 1
             continue
         if ! os.dirExists(path):
-            idx = idx + 1
             continue
         if os.parentDir(path) != tempRoot:
-            idx = idx + 1
             continue
         if ! hasPrefix(os.extractFilename(path), "codex-arg0"):
-            idx = idx + 1
             continue
         let lockPath = os.joinPath(path, ARG0_LOCK_FILENAME)
         if ! os.fileExists(lockPath):
-            idx = idx + 1
             continue
         let lockPid = arg0ReadLockPid(lockPath)
         if arg0PidSeemsAlive(lockPid):
-            idx = idx + 1
             continue
         arg0ShellDeleteDir(path)
         if os.dirExists(path) && len(warning) == 0:
             warning = path
-        idx = idx + 1
     return warning
 
 fn arg0WriteAliasScript(path: str, exePath: str, commandMode: str) =
@@ -2100,10 +2061,8 @@ fn runThreads(): int32 =
     if len(lines) == 0:
         printLine("threads: none")
         return 0
-    var idx: int32 = 0
-    while idx < len(lines):
+    for idx in 0..<len(lines):
         printLine(lines[idx])
-        idx = idx + 1
     return 0
 
 fn maskApiKey(key: str): str =
@@ -2256,8 +2215,10 @@ fn runLogin(args: str[], start: int32): int32 =
     var clientOverride = ""
     var sub = ""
     var subIndex: int32 = -1
-    var i: int32 = start
-    while i < len(args):
+    var skipUntil: int32 = start - 1
+    for i in start..<len(args):
+        if i <= skipUntil:
+            continue
         let arg = argAt(args, i)
         if arg == "--help":
             return printLoginHelp()
@@ -2269,19 +2230,19 @@ fn runLogin(args: str[], start: int32): int32 =
             if i + 1 >= len(args):
                 return loginUnexpectedArgWithUsage(arg, "codex login [OPTIONS] [COMMAND]")
             deprecatedApiKey = argAt(args, i + 1)
-            i = i + 1
+            skipUntil = i + 1
         elif arg == "--device-auth":
             useDevice = true
         elif arg == "--experimental_issuer":
             if i + 1 >= len(args):
                 return loginUnexpectedArgWithUsage(arg, "codex login [OPTIONS] [COMMAND]")
             issuerOverride = argAt(args, i + 1)
-            i = i + 1
+            skipUntil = i + 1
         elif arg == "--experimental_client-id":
             if i + 1 >= len(args):
                 return loginUnexpectedArgWithUsage(arg, "codex login [OPTIONS] [COMMAND]")
             clientOverride = argAt(args, i + 1)
-            i = i + 1
+            skipUntil = i + 1
         elif hasPrefix(arg, "-"):
             return loginUnexpectedArgWithUsage(arg, "codex login [OPTIONS] [COMMAND]")
         else:
@@ -2289,7 +2250,6 @@ fn runLogin(args: str[], start: int32): int32 =
             sub = arg
             subIndex = i
             break
-        i = i + 1
 
     if len(deprecatedApiKey) > 0:
         printErr("The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`.")
@@ -2297,9 +2257,8 @@ fn runLogin(args: str[], start: int32): int32 =
 
     if len(sub) > 0:
         if sub == "status":
-            var j: int32 = subIndex + 1
-            while j < len(args):
-                let tok = argAt(args, j)
+            if subIndex + 1 < len(args):
+                let tok = argAt(args, subIndex + 1)
                 if tok == "--help" || tok == "-h":
                     return printLoginStatusHelp()
                 return loginUnexpectedArgWithUsage(tok, "codex login status [OPTIONS]")
@@ -2456,29 +2415,25 @@ fn splitByCharLocal(text: str, sep: char): str[] =
     if text == nil:
         return outVal
     var start: int32 = 0
-    var i: int32 = 0
-    while i < len(text):
+    for i in 0..<len(text):
         if text[i] == sep:
             if i >= start:
-                seqAdd(outVal, __cheng_slice_string(text, start, i - 1, false))
+                add(outVal, __cheng_slice_string(text, start, i - 1, false))
             else:
-                seqAdd(outVal, "")
+                add(outVal, "")
             start = i + 1
-        i = i + 1
     if start <= len(text) - 1:
-        seqAdd(outVal, __cheng_slice_string(text, start, len(text) - 1, false))
+        add(outVal, __cheng_slice_string(text, start, len(text) - 1, false))
     elif start == len(text):
-        seqAdd(outVal, "")
+        add(outVal, "")
     return outVal
 
 fn appendCommaSeparatedLocal(outList: var str[], raw: str) =
     let parts = splitByCharLocal(raw, ',')
-    var i: int32 = 0
-    while i < len(parts):
+    for i in 0..<len(parts):
         let part = trimLine(argAt(parts, i))
         if len(part) > 0:
-            seqAdd(outList, part)
-        i = i + 1
+            add(outList, part)
 
 fn printRootUnexpectedArg(arg: str, tip: str): int32 =
     # Match clap-ish formatting and exit codes.
@@ -2553,8 +2508,10 @@ fn parseRootCli(args: str[]): RootCliParse =
     parsed.errTip = ""
     var stopParsing = false
     var sawPrompt = false
-    var i: int32 = 0
-    while i < len(args):
+    var skipUntil: int32 = -1
+    for i in 0..<len(args):
+        if i <= skipUntil:
+            continue
         let arg = argAt(args, i)
         if ! stopParsing && (arg == "--help" || arg == "-h"):
             parsed.showHelp = true
@@ -2564,7 +2521,6 @@ fn parseRootCli(args: str[]): RootCliParse =
             return parsed
         if ! stopParsing && arg == "--":
             stopParsing = true
-            i = i + 1
             continue
         if ! stopParsing && isOptionLikeLocal(arg):
             if arg == "--image" || arg == "-i":
@@ -2572,27 +2528,27 @@ fn parseRootCli(args: str[]): RootCliParse =
                     parsed.errArg = arg
                     parsed.errTip = "missing value"
                     return parsed
-                var j: int32 = i + 1
                 var consumed = false
-                while j < len(args):
+                for j in i + 1..<len(args):
                     let v = argAt(args, j)
                     if v == "--" || isOptionLikeLocal(v):
                         break
-                    appendCommaSeparatedLocal(parsed.opts.images, v)
+                    var images = parsed.opts.images
+                    appendCommaSeparatedLocal(images, v)
+                    parsed.opts.images = images
                     consumed = true
-                    j = j + 1
+                    skipUntil = j
                 if ! consumed:
                     parsed.errArg = arg
                     parsed.errTip = "missing value"
                     return parsed
-                i = j - 1
             elif arg == "--model" || arg == "-m":
                 if i + 1 >= len(args):
                     parsed.errArg = arg
                     parsed.errTip = "missing value"
                     return parsed
                 parsed.opts.model = argAt(args, i + 1)
-                i = i + 1
+                skipUntil = i + 1
             elif arg == "--oss":
                 parsed.opts.oss = true
             elif arg == "--local-provider":
@@ -2601,28 +2557,28 @@ fn parseRootCli(args: str[]): RootCliParse =
                     parsed.errTip = "missing value"
                     return parsed
                 parsed.opts.ossProvider = argAt(args, i + 1)
-                i = i + 1
+                skipUntil = i + 1
             elif arg == "--profile" || arg == "-p":
                 if i + 1 >= len(args):
                     parsed.errArg = arg
                     parsed.errTip = "missing value"
                     return parsed
                 parsed.opts.profile = argAt(args, i + 1)
-                i = i + 1
+                skipUntil = i + 1
             elif arg == "--sandbox" || arg == "-s":
                 if i + 1 >= len(args):
                     parsed.errArg = arg
                     parsed.errTip = "missing value"
                     return parsed
                 parsed.opts.sandboxMode = argAt(args, i + 1)
-                i = i + 1
+                skipUntil = i + 1
             elif arg == "--ask-for-approval" || arg == "-a":
                 if i + 1 >= len(args):
                     parsed.errArg = arg
                     parsed.errTip = "missing value"
                     return parsed
                 parsed.opts.approvalPolicy = argAt(args, i + 1)
-                i = i + 1
+                skipUntil = i + 1
             elif arg == "--full-auto":
                 parsed.opts.fullAuto = true
             elif arg == "--dangerously-bypass-approvals-and-sandbox" || arg == "--yolo":
@@ -2633,7 +2589,7 @@ fn parseRootCli(args: str[]): RootCliParse =
                     parsed.errTip = "missing value"
                     return parsed
                 parsed.opts.cwd = argAt(args, i + 1)
-                i = i + 1
+                skipUntil = i + 1
             elif arg == "--search":
                 parsed.opts.webSearch = true
             elif arg == "--add-dir":
@@ -2641,15 +2597,14 @@ fn parseRootCli(args: str[]): RootCliParse =
                     parsed.errArg = arg
                     parsed.errTip = "missing value"
                     return parsed
-                seqAdd(parsed.opts.addDirs, argAt(args, i + 1))
-                i = i + 1
+                add(parsed.opts.addDirs, argAt(args, i + 1))
+                skipUntil = i + 1
             elif arg == "--no-alt-screen":
                 parsed.opts.noAltScreen = true
             else:
                 parsed.errArg = arg
                 parsed.errTip = "to pass '" + arg + "' as a value, use '-- " + arg + "'"
                 return parsed
-            i = i + 1
             continue
         # Positional token (or after `--`).
         if ! sawPrompt && ! stopParsing && isRootCommandTokenLocal(arg):
@@ -2666,7 +2621,6 @@ fn parseRootCli(args: str[]): RootCliParse =
         else:
             parsed.errArg = arg
             return parsed
-        i = i + 1
     return parsed
 
 fn mergeTuiOpts(base: ExecOptions, sub: ExecOptions): ExecOptions =
@@ -2694,10 +2648,8 @@ fn mergeTuiOpts(base: ExecOptions, sub: ExecOptions): ExecOptions =
     if len(sub.images) > 0:
         out.images = sub.images
     if len(sub.addDirs) > 0:
-        var i: int32 = 0
-        while i < len(sub.addDirs):
-            seqAdd(out.addDirs, argAt(sub.addDirs, i))
-            i = i + 1
+        for i in 0..<len(sub.addDirs):
+            add(out.addDirs, argAt(sub.addDirs, i))
     if sub.noAltScreen:
         out.noAltScreen = true
     if len(sub.prompt) > 0:
@@ -2716,8 +2668,10 @@ fn parseTuiSessionArgs(args: str[], start: int32, allowLastWithId: bool): TuiSes
     parsed.errArg = ""
     parsed.errTip = ""
     var stopParsing = false
-    var i: int32 = start
-    while i < len(args):
+    var skipUntil: int32 = start - 1
+    for i in start..<len(args):
+        if i <= skipUntil:
+            continue
         let arg = argAt(args, i)
         if ! stopParsing && (arg == "--help" || arg == "-h"):
             parsed.showHelp = true
@@ -2727,7 +2681,6 @@ fn parseTuiSessionArgs(args: str[], start: int32, allowLastWithId: bool): TuiSes
             return parsed
         if ! stopParsing && arg == "--":
             stopParsing = true
-            i = i + 1
             continue
         if ! stopParsing && isOptionLikeLocal(arg):
             if arg == "--last":
@@ -2739,27 +2692,27 @@ fn parseTuiSessionArgs(args: str[], start: int32, allowLastWithId: bool): TuiSes
                     parsed.errArg = arg
                     parsed.errTip = "missing value"
                     return parsed
-                var j: int32 = i + 1
                 var consumed = false
-                while j < len(args):
+                for j in i + 1..<len(args):
                     let v = argAt(args, j)
                     if v == "--" || isOptionLikeLocal(v):
                         break
-                    appendCommaSeparatedLocal(parsed.opts.images, v)
+                    var images = parsed.opts.images
+                    appendCommaSeparatedLocal(images, v)
+                    parsed.opts.images = images
                     consumed = true
-                    j = j + 1
+                    skipUntil = j
                 if ! consumed:
                     parsed.errArg = arg
                     parsed.errTip = "missing value"
                     return parsed
-                i = j - 1
             elif arg == "--model" || arg == "-m":
                 if i + 1 >= len(args):
                     parsed.errArg = arg
                     parsed.errTip = "missing value"
                     return parsed
                 parsed.opts.model = argAt(args, i + 1)
-                i = i + 1
+                skipUntil = i + 1
             elif arg == "--oss":
                 parsed.opts.oss = true
             elif arg == "--local-provider":
@@ -2768,28 +2721,28 @@ fn parseTuiSessionArgs(args: str[], start: int32, allowLastWithId: bool): TuiSes
                     parsed.errTip = "missing value"
                     return parsed
                 parsed.opts.ossProvider = argAt(args, i + 1)
-                i = i + 1
+                skipUntil = i + 1
             elif arg == "--profile" || arg == "-p":
                 if i + 1 >= len(args):
                     parsed.errArg = arg
                     parsed.errTip = "missing value"
                     return parsed
                 parsed.opts.profile = argAt(args, i + 1)
-                i = i + 1
+                skipUntil = i + 1
             elif arg == "--sandbox" || arg == "-s":
                 if i + 1 >= len(args):
                     parsed.errArg = arg
                     parsed.errTip = "missing value"
                     return parsed
                 parsed.opts.sandboxMode = argAt(args, i + 1)
-                i = i + 1
+                skipUntil = i + 1
             elif arg == "--ask-for-approval" || arg == "-a":
                 if i + 1 >= len(args):
                     parsed.errArg = arg
                     parsed.errTip = "missing value"
                     return parsed
                 parsed.opts.approvalPolicy = argAt(args, i + 1)
-                i = i + 1
+                skipUntil = i + 1
             elif arg == "--full-auto":
                 parsed.opts.fullAuto = true
             elif arg == "--dangerously-bypass-approvals-and-sandbox" || arg == "--yolo":
@@ -2800,7 +2753,7 @@ fn parseTuiSessionArgs(args: str[], start: int32, allowLastWithId: bool): TuiSes
                     parsed.errTip = "missing value"
                     return parsed
                 parsed.opts.cwd = argAt(args, i + 1)
-                i = i + 1
+                skipUntil = i + 1
             elif arg == "--search":
                 parsed.opts.webSearch = true
             elif arg == "--add-dir":
@@ -2808,15 +2761,14 @@ fn parseTuiSessionArgs(args: str[], start: int32, allowLastWithId: bool): TuiSes
                     parsed.errArg = arg
                     parsed.errTip = "missing value"
                     return parsed
-                seqAdd(parsed.opts.addDirs, argAt(args, i + 1))
-                i = i + 1
+                add(parsed.opts.addDirs, argAt(args, i + 1))
+                skipUntil = i + 1
             elif arg == "--no-alt-screen":
                 parsed.opts.noAltScreen = true
             else:
                 parsed.errArg = arg
                 parsed.errTip = "to pass '" + arg + "' as a value, use '-- " + arg + "'"
                 return parsed
-            i = i + 1
             continue
         # Positionals: [SESSION_ID] [PROMPT]
         if len(parsed.sessionId) == 0:
@@ -2826,7 +2778,6 @@ fn parseTuiSessionArgs(args: str[], start: int32, allowLastWithId: bool): TuiSes
         else:
             parsed.errArg = arg
             return parsed
-        i = i + 1
     if parsed.last && ! allowLastWithId && len(parsed.sessionId) > 0:
         parsed.errArg = parsed.sessionId
         parsed.errTip = "the argument '" + parsed.sessionId + "' cannot be used with --last"
@@ -3353,14 +3304,12 @@ fn debugKnownAppServerSubcommand(name: str): bool =
     return name == "send-message-v2" || name == "help"
 
 fn debugHasFlagBeforeDelim(args: str[], start: int32, flag: str): bool =
-    var i: int32 = start
-    while i < len(args):
+    for i in start..<len(args):
         let tok = argAt(args, i)
         if tok == "--":
             break
         if tok == flag:
             return true
-        i = i + 1
     return false
 
 fn runDebugAppServerSendMessage(args: str[], start: int32): int32 =
@@ -3374,12 +3323,10 @@ fn runDebugAppServerSendMessage(args: str[], start: int32): int32 =
     var messageAfterDelim = false
     var extra = ""
     var extraAfterDelim = false
-    var i: int32 = start
-    while i < len(args):
+    for i in start..<len(args):
         let tok = argAt(args, i)
         if tok == "--":
             sawDelim = true
-            i = i + 1
             continue
         if len(message) == 0:
             message = tok
@@ -3388,7 +3335,6 @@ fn runDebugAppServerSendMessage(args: str[], start: int32): int32 =
             extra = tok
             extraAfterDelim = sawDelim
             break
-        i = i + 1
 
     if len(message) == 0:
         printErr("error: the following required arguments were not provided:")
@@ -3410,9 +3356,9 @@ fn runDebugAppServerSendMessage(args: str[], start: int32): int32 =
         return debugUnexpectedArgWithUsage(message, "codex debug app-server send-message-v2 [OPTIONS] <USER_MESSAGE>", tip)
 
     var localArgs: str[]
-    seqAdd(localArgs, "app-server-test")
-    seqAdd(localArgs, "send-message-v2")
-    seqAdd(localArgs, message)
+    add(localArgs, "app-server-test")
+    add(localArgs, "send-message-v2")
+    add(localArgs, message)
     return runAppServerTest(localArgs, 1)
 
 fn runDebugAppServerCommand(args: str[], start: int32): int32 =
@@ -3601,9 +3547,10 @@ fn dispatchCommand(args: str[]): int32 =
     printUsage()
     return 2
 
-fn main(): int32 =
+fn main(argc: int32, argv: str*): int32 =
     traceMainLocal("main.begin")
-    let rawArgs = collectArgsFromCmdline()
+    arg0MainPathRaw = mainArgAt(argc, argv, 0)
+    let rawArgs = collectArgsFromMain(argc, argv)
     traceMainLocal("main.args.collected=" + intToStr(len(rawArgs)))
     let arg0AliasDispatch = runArg0CompatAliasDispatch(rawArgs)
     if arg0AliasDispatch >= 0:

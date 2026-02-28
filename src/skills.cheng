@@ -1,6 +1,5 @@
 # Skills + project instructions support for codex-cheng
 
-import system
 import std/os
 import seqs
 
@@ -55,47 +54,43 @@ fn cloneSkillText(value: str): str =
     if value == nil:
         return ""
     var out = ""
-    var i: int32 = 0
-    while i < len(value):
+    for i in 0..<len(value):
         let ch = value[i]
         out = out + $ ch
-        i = i + 1
     return out
 
 fn joinLines(lines: str[]): str =
     var out = ""
-    var i: int32 = 0
-    while i < len(lines):
+    for i in 0..<len(lines):
         if i == 0:
             out = lines[i]
         else:
             out = out + "\n" + lines[i]
-        i = i + 1
     return out
 
 fn normalizePathSeparators(path: str): str =
     if len(path) == 0:
         return ""
     var out = ""
-    var i: int32 = 0
-    while i < len(path):
+    for i in 0..<len(path):
         let ch = path[i]
         if ch == '\\':
             out = out + "/"
         else:
             out = out + $ ch
-        i = i + 1
     return out
 
 fn trimTrailingSlash(path: str): str =
     if len(path) == 0:
         return ""
     var endIdx: int32 = len(path) - 1
-    while endIdx >= 0:
-        let ch = path[endIdx]
+    for rev in 0..<len(path):
+        let idx = len(path) - rev - 1
+        let ch = path[idx]
         if ch != '/' && ch != '\\':
+            endIdx = idx
             break
-        endIdx = endIdx - 1
+        endIdx = idx - 1
     if endIdx < 0:
         return ""
     return __cheng_slice_string(path, 0, endIdx, false)
@@ -104,19 +99,23 @@ fn pathBaseName(path: str): str =
     if len(path) == 0:
         return ""
     var endIdx: int32 = len(path) - 1
-    while endIdx >= 0:
-        let ch = path[endIdx]
+    for rev in 0..<len(path):
+        let idx = len(path) - rev - 1
+        let ch = path[idx]
         if ch != '/' && ch != '\\':
+            endIdx = idx
             break
-        endIdx = endIdx - 1
+        endIdx = idx - 1
     if endIdx < 0:
         return ""
     var startIdx = endIdx
-    while startIdx >= 0:
-        let ch = path[startIdx]
+    for rev in 0..endIdx:
+        let idx = endIdx - rev
+        let ch = path[idx]
         if ch == '/' || ch == '\\':
+            startIdx = idx
             break
-        startIdx = startIdx - 1
+        startIdx = idx - 1
     startIdx = startIdx + 1
     return __cheng_slice_string(path, startIdx, endIdx, false)
 
@@ -181,26 +180,22 @@ fn isSystemScope(scope: str): bool =
     return normalizePolicy(scope) == "system"
 
 fn hasStringItem(items: str[], value: str): bool =
-    var idx: int32 = 0
-    while idx < len(items):
+    for idx in 0..<len(items):
         if items[idx] == value:
             return true
-        idx = idx + 1
     return false
 
 fn findStringIndex(items: str[], value: str): int32 =
-    var idx: int32 = 0
-    while idx < len(items):
+    for idx in 0..<len(items):
         if items[idx] == value:
             return idx
-        idx = idx + 1
     return -1
 
 fn clearSkillsCache() =
     return
 
 fn skillConfigEntries(): SkillConfigEntry[] =
-    var entries: SkillConfigEntry[] = newSeq[SkillConfigEntry]()
+    var entries: SkillConfigEntry[] = []
     let path = codexConfigPath()
     if len(path) == 0 || !os.fileExists(path):
         return entries
@@ -208,31 +203,28 @@ fn skillConfigEntries(): SkillConfigEntry[] =
     if len(content) == 0:
         return entries
     let lines = splitLinesSimple(content)
-    var idx: int32 = 0
     var inEntry = false
     var currentPath = ""
     var currentEnabled = false
-    while idx < len(lines):
+    for idx in 0..<len(lines):
         let raw = lines[idx]
         let trimmed = trimLine(raw)
         if trimmed == SKILLS_CONFIG_MARKER:
             if inEntry && len(currentPath) > 0:
                 let normalized = normalizeSkillPathForCompare(currentPath, currentDirSafe())
-                seqAdd(entries, SkillConfigEntry(path: normalized, enabled: currentEnabled))
+                add(entries, SkillConfigEntry(path: normalized, enabled: currentEnabled))
             inEntry = true
             currentPath = ""
             currentEnabled = false
-            idx = idx + 1
             continue
         if inEntry:
             if len(trimmed) > 0 && trimmed[0] == '[':
                 if len(currentPath) > 0:
                     let normalized = normalizeSkillPathForCompare(currentPath, currentDirSafe())
-                    seqAdd(entries, SkillConfigEntry(path: normalized, enabled: currentEnabled))
+                    add(entries, SkillConfigEntry(path: normalized, enabled: currentEnabled))
                 inEntry = false
                 continue
             if len(trimmed) == 0 || trimmed[0] == '#':
-                idx = idx + 1
                 continue
             let eq = findChar(trimmed, '=')
             if eq > 0:
@@ -243,30 +235,27 @@ fn skillConfigEntries(): SkillConfigEntry[] =
                         currentPath = parseYamlValue(valueText)
                     elif key == "enabled":
                         currentEnabled = parseBoolValue(valueText, false)
-        idx = idx + 1
     if inEntry && len(currentPath) > 0:
         let normalized = normalizeSkillPathForCompare(currentPath, currentDirSafe())
-        seqAdd(entries, SkillConfigEntry(path: normalized, enabled: currentEnabled))
+        add(entries, SkillConfigEntry(path: normalized, enabled: currentEnabled))
     return entries
 
 fn skillDisabledPaths(): str[] =
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     let entries = skillConfigEntries()
-    var idx: int32 = 0
-    while idx < len(entries):
+    for idx in 0..<len(entries):
         let entry = entries[idx]
         if !entry.enabled && len(entry.path) > 0:
             if !hasStringItem(out, entry.path):
-                seqAdd(out, entry.path)
-        idx = idx + 1
+                add(out, entry.path)
     return out
 
 fn skillConfigBlockLines(path: str): str[] =
-    var out: str[] = newSeq[str]()
-    seqAdd(out, SKILLS_CONFIG_MARKER)
+    var out: str[] = []
+    add(out, SKILLS_CONFIG_MARKER)
     let encoded = "\"" + escapeConfigValue(path) + "\""
-    seqAdd(out, "path = " + encoded)
-    seqAdd(out, "enabled = false")
+    add(out, "path = " + encoded)
+    add(out, "enabled = false")
     return out
 
 fn writeSkillConfigEntry(path: str, enabled: bool): bool =
@@ -279,27 +268,30 @@ fn writeSkillConfigEntry(path: str, enabled: bool): bool =
     let home = codexHomeDir()
     if len(home) > 0 && !os.dirExists(home):
         os.createDir(home)
-    var lines: str[] = newSeq[str]()
+    var lines: str[] = []
     if os.fileExists(cfgPath):
         let content = os.readFile(cfgPath)
         if len(content) > 0:
             lines = splitLinesSimple(content)
-    var blocksStart: int32[] = newSeq[int32]()
-    var blocksEnd: int32[] = newSeq[int32]()
-    var blocksPath: str[] = newSeq[str]()
-    var i: int32 = 0
-    while i < len(lines):
+    var blocksStart: int32[] = []
+    var blocksEnd: int32[] = []
+    var blocksPath: str[] = []
+    var skipUntil: int32 = -1
+    for i in 0..<len(lines):
+        if i <= skipUntil:
+            continue
         let trimmed = trimLine(lines[i])
         if trimmed == SKILLS_CONFIG_MARKER:
             let startIdx = i
             var blockPath = ""
-            var j: int32 = i + 1
-            while j < len(lines):
+            var nextIdx = i + 1
+            for j in i + 1..<len(lines):
                 let inner = trimLine(lines[j])
                 if len(inner) > 0 && inner[0] == '[':
+                    nextIdx = j
                     break
                 if len(inner) == 0 || inner[0] == '#':
-                    j = j + 1
+                    nextIdx = j + 1
                     continue
                 let eq = findChar(inner, '=')
                 if eq > 0:
@@ -307,58 +299,49 @@ fn writeSkillConfigEntry(path: str, enabled: bool): bool =
                     if key == "path" && eq + 1 <= len(inner) - 1:
                         let valText = trimLine(__cheng_slice_string(inner, eq + 1, len(inner) - 1, false))
                         blockPath = parseYamlValue(valText)
-                j = j + 1
-            let endIdx = j - 1
+                nextIdx = j + 1
+            let endIdx = nextIdx - 1
             let normalizedBlock = normalizeSkillPathForCompare(blockPath, currentDirSafe())
-            seqAdd(blocksStart, startIdx)
-            seqAdd(blocksEnd, endIdx)
-            seqAdd(blocksPath, normalizedBlock)
-            i = j
-        else:
-            i = i + 1
+            add(blocksStart, startIdx)
+            add(blocksEnd, endIdx)
+            add(blocksPath, normalizedBlock)
+            skipUntil = endIdx
     var targetIdx = -1
-    var b: int32 = 0
-    while b < len(blocksPath):
+    for b in 0..<len(blocksPath):
         if blocksPath[b] == normalized:
             targetIdx = b
             break
-        b = b + 1
     if enabled:
         if targetIdx >= 0:
-            var outLines: str[] = newSeq[str]()
-            var lineIdx: int32 = 0
             let dropStart = blocksStart[targetIdx]
             let dropEnd = blocksEnd[targetIdx]
-            while lineIdx < len(lines):
+            var outLines: str[] = []
+            for lineIdx in 0..<len(lines):
                 if lineIdx < dropStart || lineIdx > dropEnd:
-                    seqAdd(outLines, lines[lineIdx])
-                lineIdx = lineIdx + 1
+                    add(outLines, lines[lineIdx])
             lines = outLines
     else:
         let newBlock = skillConfigBlockLines(normalized)
         if targetIdx >= 0:
-            var outLines: str[] = newSeq[str]()
-            var lineIdx: int32 = 0
+            var outLines: str[] = []
             let keepStart = blocksStart[targetIdx]
             let keepEnd = blocksEnd[targetIdx]
-            while lineIdx < len(lines):
-                if lineIdx == keepStart:
-                    var nbIdx: int32 = 0
-                    while nbIdx < len(newBlock):
-                        seqAdd(outLines, newBlock[nbIdx])
-                        nbIdx = nbIdx + 1
-                    lineIdx = keepEnd + 1
+            var lineSkipUntil = -1
+            for lineIdx in 0..<len(lines):
+                if lineIdx <= lineSkipUntil:
                     continue
-                seqAdd(outLines, lines[lineIdx])
-                lineIdx = lineIdx + 1
+                if lineIdx == keepStart:
+                    for nbIdx in 0..<len(newBlock):
+                        add(outLines, newBlock[nbIdx])
+                    lineSkipUntil = keepEnd
+                    continue
+                add(outLines, lines[lineIdx])
             lines = outLines
         else:
             if len(lines) > 0 && len(trimLine(lines[len(lines) - 1])) > 0:
-                seqAdd(lines, "")
-            var nbIdx: int32 = 0
-            while nbIdx < len(newBlock):
-                seqAdd(lines, newBlock[nbIdx])
-                nbIdx = nbIdx + 1
+                add(lines, "")
+            for nbIdx in 0..<len(newBlock):
+                add(lines, newBlock[nbIdx])
     let output = joinLines(lines)
     os.writeFile(cfgPath, output + "\n")
     return true
@@ -378,23 +361,23 @@ fn findGitRoot(startDir: str): str =
     return ""
 
 fn skillRootsForCwd(cwd: str): SkillRoot[] =
-    var roots: SkillRoot[] = newSeq[SkillRoot]()
+    var roots: SkillRoot[] = []
     cwd
     let rootDir = currentDirSafe()
     let repoSkills = os.joinPath(os.joinPath(rootDir, ".codex"), SKILLS_DIR_NAME)
     if os.dirExists(repoSkills):
-        seqAdd(roots, SkillRoot(path: repoSkills, scope: "repo"))
+        add(roots, SkillRoot(path: repoSkills, scope: "repo"))
     let home = codexHomeDir()
     if len(home) > 0:
         let userSkills = os.joinPath(home, SKILLS_DIR_NAME)
         if os.dirExists(userSkills):
-            seqAdd(roots, SkillRoot(path: userSkills, scope: "user"))
+            add(roots, SkillRoot(path: userSkills, scope: "user"))
         let systemSkills = os.joinPath(userSkills, ".system")
         if os.dirExists(systemSkills):
-            seqAdd(roots, SkillRoot(path: systemSkills, scope: "system"))
+            add(roots, SkillRoot(path: systemSkills, scope: "system"))
     let adminSkills = "/etc/codex/skills"
     if os.dirExists(adminSkills):
-        seqAdd(roots, SkillRoot(path: adminSkills, scope: "admin"))
+        add(roots, SkillRoot(path: adminSkills, scope: "admin"))
     return roots
 
 fn parseSkillFrontmatter(content: str, outName: var str, outDescription: var str, outShort: var str, outErr: var str): bool =
@@ -417,8 +400,7 @@ fn parseSkillFrontmatter(content: str, outName: var str, outDescription: var str
     if fmEnd - 1 >= headerStart:
         header = __cheng_slice_string(content, headerStart, fmEnd - 1, false)
     let searchKeys = seqStr4("name", "description", "short-description", "short_description")
-    var keyIdx: int32 = 0
-    while keyIdx < len(searchKeys):
+    for keyIdx in 0..<len(searchKeys):
         let key = searchKeys[keyIdx]
         let pattern = "\n" + key + ":"
         var pos = indexOfSubstr(header, pattern, 0)
@@ -445,7 +427,6 @@ fn parseSkillFrontmatter(content: str, outName: var str, outDescription: var str
                 outDescription = value
             elif key == "short-description" || key == "short_description":
                 outShort = value
-        keyIdx = keyIdx + 1
     if len(outName) == 0:
         outErr = "missing field `name`"
         return false
@@ -466,7 +447,7 @@ fn parseSkillFrontmatter(content: str, outName: var str, outDescription: var str
 fn addSkillError(outOutcome: var SkillLoadOutcome, path: str, message: str) =
     if len(path) == 0 || len(message) == 0:
         return
-    seqAdd(outOutcome.errors, SkillError(path: path, message: message))
+    add(outOutcome.errors, SkillError(path: path, message: message))
 
 fn loadSkillMetadata(path: str, scope: str, disabledPaths: str[], outOutcome: var SkillLoadOutcome) =
     traceSkillsLocal("loadSkillMetadata.begin")
@@ -497,7 +478,7 @@ fn loadSkillMetadata(path: str, scope: str, disabledPaths: str[], outOutcome: va
     if hasStringItem(disabledPaths, normalizedPath):
         enabled = false
     traceSkillsLocal("loadSkillMetadata.emit")
-    seqAdd(outOutcome.skills, SkillMetadata(
+    add(outOutcome.skills, SkillMetadata(
         name: name,
         description: description,
         shortDescription: shortDesc,
@@ -515,8 +496,7 @@ fn discoverSkillsUnderPath(rootPath: str, scope: str, outOutcome: var SkillLoadO
     let files = os.walkDirRec(rootPath)
     traceSkillsLocal("discoverSkillsUnderPath.files=" + intToStr(len(files)))
     var loaded: int32 = 0
-    var idx: int32 = 0
-    while idx < len(files):
+    for idx in 0..<len(files):
         if loaded >= SKILLS_MAX_DIRS:
             break
         let path = files[idx]
@@ -526,43 +506,39 @@ fn discoverSkillsUnderPath(rootPath: str, scope: str, outOutcome: var SkillLoadO
             if endsWithSuffix(path, SKILLS_FILENAME):
                 loadSkillMetadata(path, scope, outOutcome.disabledPaths, outOutcome)
                 loaded = loaded + 1
-        idx = idx + 1
     traceSkillsLocal("discoverSkillsUnderPath.end")
 
 fn discoverSkillsUnderRoot(root: SkillRoot, outOutcome: var SkillLoadOutcome) =
     discoverSkillsUnderPath(root.path, root.scope, outOutcome)
 
 fn dedupeSkills(outOutcome: var SkillLoadOutcome) =
-    var seen: str[] = newSeq[str]()
-    var filtered: SkillMetadata[] = newSeq[SkillMetadata]()
-    var idx: int32 = 0
-    while idx < len(outOutcome.skills):
+    var seen: str[] = []
+    var filtered: SkillMetadata[] = []
+    for idx in 0..<len(outOutcome.skills):
         let skill = outOutcome.skills[idx]
         if !hasStringItem(seen, skill.path):
-            seqAdd(seen, skill.path)
-            seqAdd(filtered, skill)
-        idx = idx + 1
+            add(seen, skill.path)
+            add(filtered, skill)
     outOutcome.skills = filtered
 
 fn sortSkills(outOutcome: var SkillLoadOutcome) =
     let total = len(outOutcome.skills)
     if total <= 1:
         return
-    var used: str[] = newSeq[str]()
-    var sorted: SkillMetadata[] = newSeq[SkillMetadata]()
+    var used: str[] = []
+    var sorted: SkillMetadata[] = []
     while len(sorted) < total:
         var found = false
-        var best = SkillMetadata(name: "", description: "", shortDescription: "", path: "", scope: "", enabled: false)
-        var idx: int32 = 0
-        while idx < total:
+        var bestIdx: int32 = -1
+        for idx in 0..<total:
             let cur = outOutcome.skills[idx]
             if hasStringItem(used, cur.path):
-                idx = idx + 1
                 continue
             if !found:
-                best = cur
+                bestIdx = idx
                 found = true
             else:
+                let best = outOutcome.skills[bestIdx]
                 let rankCur = skillScopeRank(cur.scope)
                 let rankBest = skillScopeRank(best.scope)
                 var better = false
@@ -574,12 +550,11 @@ fn sortSkills(outOutcome: var SkillLoadOutcome) =
                     elif cur.name == best.name && cur.path < best.path:
                         better = true
                 if better:
-                    best = cur
-            idx = idx + 1
+                    bestIdx = idx
         if !found:
             break
-        seqAdd(used, best.path)
-        seqAdd(sorted, best)
+        add(used, outOutcome.skills[bestIdx].path)
+        add(sorted, outOutcome.skills[bestIdx])
     outOutcome.skills = sorted
 
 fn loadSkillsForCwd(cwd: str, forceReload: bool): SkillLoadOutcome =
@@ -587,63 +562,58 @@ fn loadSkillsForCwd(cwd: str, forceReload: bool): SkillLoadOutcome =
     cwd
     let baseCwd = currentDirSafe()
     var outcome = SkillLoadOutcome(
-        skills: newSeq[SkillMetadata](),
-        errors: newSeq[SkillError](),
-        disabledPaths: newSeq[str]()
+        skills: [],
+        errors: [],
+        disabledPaths: []
     )
     traceSkillsLocal("loadSkillsForCwd.after.disabled")
     forceReload
-    var rootPaths: str[] = newSeq[str]()
-    var rootScopes: str[] = newSeq[str]()
+    var rootPaths: str[] = []
+    var rootScopes: str[] = []
     let repoSkills = os.joinPath(os.joinPath(baseCwd, ".codex"), SKILLS_DIR_NAME)
     if os.dirExists(repoSkills):
-        seqAdd(rootPaths, repoSkills)
-        seqAdd(rootScopes, "repo")
+        add(rootPaths, repoSkills)
+        add(rootScopes, "repo")
     let home = codexHomeDir()
     if len(home) > 0:
         let userSkills = os.joinPath(home, SKILLS_DIR_NAME)
         if os.dirExists(userSkills):
-            seqAdd(rootPaths, userSkills)
-            seqAdd(rootScopes, "user")
+            add(rootPaths, userSkills)
+            add(rootScopes, "user")
         let systemSkills = os.joinPath(userSkills, ".system")
         if os.dirExists(systemSkills):
-            seqAdd(rootPaths, systemSkills)
-            seqAdd(rootScopes, "system")
+            add(rootPaths, systemSkills)
+            add(rootScopes, "system")
     let adminSkills = "/etc/codex/skills"
     if os.dirExists(adminSkills):
-        seqAdd(rootPaths, adminSkills)
-        seqAdd(rootScopes, "admin")
+        add(rootPaths, adminSkills)
+        add(rootScopes, "admin")
     traceSkillsLocal("loadSkillsForCwd.after.roots count=" + intToStr(len(rootPaths)))
-    var idx: int32 = 0
-    while idx < len(rootPaths):
+    for idx in 0..<len(rootPaths):
         let rootPath = rootPaths[idx]
         let rootScope = rootScopes[idx]
         discoverSkillsUnderPath(rootPath, rootScope, outcome)
-        idx = idx + 1
     dedupeSkills(outcome)
     sortSkills(outcome)
     traceSkillsLocal("loadSkillsForCwd.end")
     return outcome
 
 fn enabledSkills(outcome: SkillLoadOutcome): SkillMetadata[] =
-    var out: SkillMetadata[] = newSeq[SkillMetadata]()
-    var idx: int32 = 0
-    while idx < len(outcome.skills):
+    var out: SkillMetadata[] = []
+    for idx in 0..<len(outcome.skills):
         let skill = outcome.skills[idx]
         if skill.enabled:
-            seqAdd(out, skill)
-        idx = idx + 1
+            add(out, skill)
     return out
 
 fn renderSkillsSection(skills: SkillMetadata[]): str =
     if len(skills) == 0:
         return ""
-    var lines: str[] = newSeq[str]()
-    seqAdd(lines, "## Skills")
-    seqAdd(lines, "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.")
-    seqAdd(lines, "### Available skills")
-    var idx: int32 = 0
-    while idx < len(skills):
+    var lines: str[] = []
+    add(lines, "## Skills")
+    add(lines, "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.")
+    add(lines, "### Available skills")
+    for idx in 0..<len(skills):
         let skill = skills[idx]
         # Build incrementally to avoid deep temporary chains.
         var line: str = "- "
@@ -653,25 +623,24 @@ fn renderSkillsSection(skills: SkillMetadata[]): str =
         line = line + " (file: "
         line = line + skill.path
         line = line + ")"
-        seqAdd(lines, line)
-        idx = idx + 1
-    seqAdd(lines, "### How to use skills")
-    seqAdd(lines, "- Discovery: The list above is the skills available in this session (name + description + file path). Skill bodies live on disk at the listed paths.")
-    seqAdd(lines, "- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.")
-    seqAdd(lines, "- Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.")
-    seqAdd(lines, "- How to use a skill (progressive disclosure):")
-    seqAdd(lines, "  1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.")
-    seqAdd(lines, "  2) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything.")
-    seqAdd(lines, "  3) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.")
-    seqAdd(lines, "  4) If `assets/` or templates exist, reuse them instead of recreating from scratch.")
-    seqAdd(lines, "- Coordination and sequencing:")
-    seqAdd(lines, "  - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.")
-    seqAdd(lines, "  - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.")
-    seqAdd(lines, "- Context hygiene:")
-    seqAdd(lines, "  - Keep context small: summarize long sections instead of pasting them; only load extra files when needed.")
-    seqAdd(lines, "  - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.")
-    seqAdd(lines, "  - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.")
-    seqAdd(lines, "- Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue.")
+        add(lines, line)
+    add(lines, "### How to use skills")
+    add(lines, "- Discovery: The list above is the skills available in this session (name + description + file path). Skill bodies live on disk at the listed paths.")
+    add(lines, "- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.")
+    add(lines, "- Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.")
+    add(lines, "- How to use a skill (progressive disclosure):")
+    add(lines, "  1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.")
+    add(lines, "  2) If `SKILL.md` points to extra folders such as `references/`, load only the specific files needed for the request; don't bulk-load everything.")
+    add(lines, "  3) If `scripts/` exist, prefer running or patching them instead of retyping large code blocks.")
+    add(lines, "  4) If `assets/` or templates exist, reuse them instead of recreating from scratch.")
+    add(lines, "- Coordination and sequencing:")
+    add(lines, "  - If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them.")
+    add(lines, "  - Announce which skill(s) you're using and why (one short line). If you skip an obvious skill, say why.")
+    add(lines, "- Context hygiene:")
+    add(lines, "  - Keep context small: summarize long sections instead of pasting them; only load extra files when needed.")
+    add(lines, "  - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.")
+    add(lines, "  - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.")
+    add(lines, "- Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue.")
     return cloneSkillText(joinLines(lines))
 
 fn readUserInstructionsFromHome(): str =
@@ -693,24 +662,22 @@ fn readUserInstructionsFromHome(): str =
     return ""
 
 fn projectDocCandidates(): str[] =
-    var out: str[] = newSeq[str]()
-    seqAdd(out, PROJECT_DOC_OVERRIDE_FILENAME)
-    seqAdd(out, PROJECT_DOC_FILENAME)
+    var out: str[] = []
+    add(out, PROJECT_DOC_OVERRIDE_FILENAME)
+    add(out, PROJECT_DOC_FILENAME)
     return out
 
 fn discoverProjectDocPaths(cwd: str): str[] =
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     cwd
     let rootDir = currentDirSafe()
     let candidates = projectDocCandidates()
-    var c: int32 = 0
-    while c < len(candidates):
+    for c in 0..<len(candidates):
         let name = candidates[c]
         if len(name) > 0:
             let candidate = os.joinPath(rootDir, name)
             if os.fileExists(candidate):
-                seqAdd(out, candidate)
-        c = c + 1
+                add(out, candidate)
     return out
 
 fn readProjectDocs(cwd: str): str =
@@ -718,9 +685,10 @@ fn readProjectDocs(cwd: str): str =
     if len(paths) == 0:
         return ""
     var remaining: int32 = PROJECT_DOC_MAX_BYTES
-    var parts: str[] = newSeq[str]()
-    var idx: int32 = 0
-    while idx < len(paths) && remaining > 0:
+    var parts: str[] = []
+    for idx in 0..<len(paths):
+        if remaining <= 0:
+            break
         let path = paths[idx]
         if os.fileExists(path):
             let content = os.readFile(path)
@@ -730,9 +698,8 @@ fn readProjectDocs(cwd: str): str =
                     var sliceText = trimmed
                     if len(sliceText) > remaining:
                         sliceText = __cheng_slice_string(sliceText, 0, remaining - 1, false)
-                    seqAdd(parts, sliceText)
+                    add(parts, sliceText)
                     remaining = remaining - len(sliceText)
-        idx = idx + 1
     return joinLines(parts)
 
 fn buildUserInstructionsText(cwd: str): str =
@@ -785,37 +752,33 @@ fn buildUserInstructionsMessage(cwd: str): str =
     return cachedUserInstructionsMessage
 
 fn skillMetadataJson(skill: SkillMetadata): str =
-    var fields: str[] = newSeq[str]()
-    seqAdd(fields, jstrPair("name", jstrString(skill.name)))
-    seqAdd(fields, jstrPair("description", jstrString(skill.description)))
+    var fields: str[] = []
+    add(fields, jstrPair("name", jstrString(skill.name)))
+    add(fields, jstrPair("description", jstrString(skill.description)))
     if len(skill.shortDescription) > 0:
-        seqAdd(fields, jstrPair("shortDescription", jstrString(skill.shortDescription)))
-    seqAdd(fields, jstrPair("path", jstrString(skill.path)))
-    seqAdd(fields, jstrPair("scope", jstrString(skill.scope)))
-    seqAdd(fields, jstrPair("enabled", jstrBool(skill.enabled)))
+        add(fields, jstrPair("shortDescription", jstrString(skill.shortDescription)))
+    add(fields, jstrPair("path", jstrString(skill.path)))
+    add(fields, jstrPair("scope", jstrString(skill.scope)))
+    add(fields, jstrPair("enabled", jstrBool(skill.enabled)))
     return jstrObject(fields)
 
 fn skillErrorJson(err: SkillError): str =
-    var fields: str[] = newSeq[str]()
-    seqAdd(fields, jstrPair("path", jstrString(err.path)))
-    seqAdd(fields, jstrPair("message", jstrString(err.message)))
+    var fields: str[] = []
+    add(fields, jstrPair("path", jstrString(err.path)))
+    add(fields, jstrPair("message", jstrString(err.message)))
     return jstrObject(fields)
 
 fn skillsListEntryJson(cwd: str, outcome: SkillLoadOutcome): str =
-    var skillsJson: str[] = newSeq[str]()
-    var idx: int32 = 0
-    while idx < len(outcome.skills):
-        seqAdd(skillsJson, skillMetadataJson(outcome.skills[idx]))
-        idx = idx + 1
-    var errorsJson: str[] = newSeq[str]()
-    idx = 0
-    while idx < len(outcome.errors):
-        seqAdd(errorsJson, skillErrorJson(outcome.errors[idx]))
-        idx = idx + 1
-    var fields: str[] = newSeq[str]()
-    seqAdd(fields, jstrPair("cwd", jstrString(cwd)))
-    seqAdd(fields, jstrPair("skills", jstrArray(skillsJson)))
-    seqAdd(fields, jstrPair("errors", jstrArray(errorsJson)))
+    var skillsJson: str[] = []
+    for idx in 0..<len(outcome.skills):
+        add(skillsJson, skillMetadataJson(outcome.skills[idx]))
+    var errorsJson: str[] = []
+    for idx in 0..<len(outcome.errors):
+        add(errorsJson, skillErrorJson(outcome.errors[idx]))
+    var fields: str[] = []
+    add(fields, jstrPair("cwd", jstrString(cwd)))
+    add(fields, jstrPair("skills", jstrArray(skillsJson)))
+    add(fields, jstrPair("errors", jstrArray(errorsJson)))
     return jstrObject(fields)
 
 fn loadSkillInstructionMessage(cwd: str, name: str, path: str): str =
@@ -825,8 +788,7 @@ fn loadSkillInstructionMessage(cwd: str, name: str, path: str): str =
         return ""
     let normalized = normalizeSkillPathForCompare(path, cwd)
     let outcome = loadSkillsForCwd(cwd, false)
-    var idx: int32 = 0
-    while idx < len(outcome.skills):
+    for idx in 0..<len(outcome.skills):
         let skill = outcome.skills[idx]
         if skill.name == name && normalizeSkillPathForCompare(skill.path, cwd) == normalized:
             if !skill.enabled:
@@ -845,5 +807,4 @@ fn loadSkillInstructionMessage(cwd: str, name: str, path: str): str =
                 body = body + "\n</skill>"
                 return buildInputMessage("user", body)
             return ""
-        idx = idx + 1
     return ""

@@ -14,10 +14,10 @@ implementation in this repo.
 
 This project currently expects the Cheng toolchain from the cheng-lang repo
 (renamed from cheng-lang).
-Set `CHENG_ROOT` to your cheng-lang checkout (default: `../cheng-lang`) and run:
+Set `ROOT` to your cheng-lang checkout (default: `../cheng-lang`) and run:
 
 ```
-cd "$CHENG_ROOT"
+cd "$ROOT"
 ./src/tooling/chengc.sh /absolute/path/to/cheng-codex/src/main.cheng --name:cheng-codex
 ```
 

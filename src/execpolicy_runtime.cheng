@@ -1,6 +1,5 @@
 # Execpolicy runtime evaluation + amendments
 
-import system
 import std/os
 import seqs
 type
@@ -32,19 +31,17 @@ fn execPolicyFeatureEnabled(): bool =
     return configBoolValue("features.exec_policy", false)
 
 fn listRuleFiles(dirPath: str): str[] =
-    var out: str[] = newSeq[str]()
+    var out: str[] = []
     if len(dirPath) == 0 || ! os.dirExists(dirPath):
         return out
     let entries: seq_WalkDirEntry = os.walkDir(dirPath)
-    var i: int32 = 0
-    while i < entries.len:
-        let entry: WalkDirEntry = get_WalkDirEntry(entries, i)
+    for i in 0..<entries.len:
+        let entry: WalkDirEntry = os_get_WalkDirEntry(entries, i)
         let kind: PathComponent = entry.kind
         let path: str = entry.path
         if kind == pcFile || kind == pcLinkToFile:
             if endsWithSuffix(path, ".rules"):
-                seqAdd(out, path)
-        i = i + 1
+                add(out, path)
     # simple bubble sort for stability
     var swapped = true
     while swapped:
@@ -61,7 +58,7 @@ fn listRuleFiles(dirPath: str): str[] =
 
 fn loadExecPolicyRules(outRules: var ExecPolicyRule[], err: var str): bool =
     err = ""
-    outRules = newSeq[ExecPolicyRule]()
+    outRules = []
     if ! execPolicyFeatureEnabled():
         return true
     let rulesDir = os.joinPath(codexHomeDir(), "rules")
@@ -76,36 +73,30 @@ fn isPolicyMatch(ruleMatch: ExecPolicyRuleMatch): bool =
     return ruleMatch.isPolicy
 
 fn hasPolicyMatchWithDecision(matches: ExecPolicyRuleMatch[], decision: str): bool =
-    var i: int32 = 0
-    while i < len(matches):
+    for i in 0..<len(matches):
         if matches[i].isPolicy && normalizePolicy(matches[i].decision) == decision:
             return true
-        i = i + 1
     return false
 
 fn firstHeuristicMatch(matches: ExecPolicyRuleMatch[], decision: str): str[] =
-    var empty: str[] = newSeq[str]()
-    var i: int32 = 0
-    while i < len(matches):
+    var empty: str[] = []
+    for i in 0..<len(matches):
         let item = matches[i]
         if ! item.isPolicy && normalizePolicy(item.decision) == decision:
             return item.command
-        i = i + 1
     return empty
 
 fn tryDeriveExecpolicyAmendmentForPrompt(matches: ExecPolicyRuleMatch[]): str[] =
-    var empty: str[] = newSeq[str]()
+    var empty: str[] = []
     if hasPolicyMatchWithDecision(matches, "prompt"):
         return empty
     return firstHeuristicMatch(matches, "prompt")
 
 fn tryDeriveExecpolicyAmendmentForAllow(matches: ExecPolicyRuleMatch[]): str[] =
-    var empty: str[] = newSeq[str]()
-    var i: int32 = 0
-    while i < len(matches):
+    var empty: str[] = []
+    for i in 0..<len(matches):
         if matches[i].isPolicy:
             return empty
-        i = i + 1
     return firstHeuristicMatch(matches, "allow")
 
 fn derivePromptReason(matches: ExecPolicyRuleMatch[]): str =
@@ -125,11 +116,9 @@ fn appendExecPolicyAllowRule(prefixTokens: str[], err: var str): bool =
     if ! os.dirExists(rulesDir):
         os.createDir(rulesDir)
     let rulesPath = os.joinPath(rulesDir, "default.rules")
-    var tokensJson: str[] = newSeq[str]()
-    var i: int32 = 0
-    while i < len(prefixTokens):
-        seqAdd(tokensJson, jstrString(prefixTokens[i]))
-        i = i + 1
+    var tokensJson: str[] = []
+    for i in 0..<len(prefixTokens):
+        add(tokensJson, jstrString(prefixTokens[i]))
     let pattern = "[" + joinWithComma(tokensJson) + "]"
     let ruleLine = "prefix_rule(pattern=" + pattern + ", decision=\"allow\")"
     var content = ""
@@ -146,55 +135,49 @@ fn appendExecPolicyAllowRule(prefixTokens: str[], err: var str): bool =
 fn evaluateExecPolicyRequirement(commandTokens: str[], approvalPolicy: str, sandboxMode: str, sandboxPermissions: str, err: var str): ExecApprovalRequirement =
     err = ""
     if ! execPolicyFeatureEnabled():
-        return ExecApprovalRequirement(kind: execReqSkip, reason: "", bypassSandbox: false, proposedExecpolicyAmendment: newSeq[str]())
+        return ExecApprovalRequirement(kind: execReqSkip, reason: "", bypassSandbox: false, proposedExecpolicyAmendment: [])
     var rules: ExecPolicyRule[]
     var loadErr = ""
     if ! loadExecPolicyRules(rules, loadErr):
         let reason = "execpolicy parse error: " + loadErr
         err = reason
-        return ExecApprovalRequirement(kind: execReqForbidden, reason: reason, bypassSandbox: false, proposedExecpolicyAmendment: newSeq[str]())
+        return ExecApprovalRequirement(kind: execReqForbidden, reason: reason, bypassSandbox: false, proposedExecpolicyAmendment: [])
     var commands: str[][] = parseShellLcPlainCommands(commandTokens)
     if len(commands) == 0:
-        commands = newSeq[str[]]()
-        seqAdd(commands, commandTokens)
-    var matches: ExecPolicyRuleMatch[] = newSeq[ExecPolicyRuleMatch]()
-    var cidx: int32 = 0
-    while cidx < len(commands):
+        commands = []
+        add(commands, commandTokens)
+    var matches: ExecPolicyRuleMatch[] = []
+    for cidx in 0..<len(commands):
         let cmd = commands[cidx]
         var matchedAny = false
-        var ridx: int32 = 0
-        while ridx < len(rules):
+        for ridx in 0..<len(rules):
             let rule = rules[ridx]
             let prefix = ruleMatchPrefix(rule, cmd)
             if len(prefix) > 0:
                 matchedAny = true
-                seqAdd(matches, ExecPolicyRuleMatch(isPolicy: true, decision: rule.decision, matchedPrefix: prefix, command: cmd))
-            ridx = ridx + 1
+                add(matches, ExecPolicyRuleMatch(isPolicy: true, decision: rule.decision, matchedPrefix: prefix, command: cmd))
         if ! matchedAny:
             let needs = requiresInitialApproval(approvalPolicy, sandboxMode, cmd, sandboxPermissions)
             var decision: str = "allow"
             if needs:
                 decision = "prompt"
-            seqAdd(matches, ExecPolicyRuleMatch(isPolicy: false, decision: decision, matchedPrefix: newSeq[str](), command: cmd))
-        cidx = cidx + 1
+            add(matches, ExecPolicyRuleMatch(isPolicy: false, decision: decision, matchedPrefix: [], command: cmd))
     var bestDecision = "allow"
     var bestRank: int32 = 0
-    var midx: int32 = 0
-    while midx < len(matches):
+    for midx in 0..<len(matches):
         let decision = normalizePolicy(matches[midx].decision)
         let rank = decisionRank(decision)
         if rank > bestRank:
             bestRank = rank
             bestDecision = decision
-        midx = midx + 1
     if bestDecision == "forbidden":
-        return ExecApprovalRequirement(kind: execReqForbidden, reason: EXEC_POLICY_FORBIDDEN_REASON, bypassSandbox: false, proposedExecpolicyAmendment: newSeq[str]())
+        return ExecApprovalRequirement(kind: execReqForbidden, reason: EXEC_POLICY_FORBIDDEN_REASON, bypassSandbox: false, proposedExecpolicyAmendment: [])
     if bestDecision == "prompt":
         let normalizedPolicy = normalizePolicy(trimLine(approvalPolicy))
         if normalizedPolicy == "never":
-            return ExecApprovalRequirement(kind: execReqForbidden, reason: EXEC_POLICY_PROMPT_CONFLICT_REASON, bypassSandbox: false, proposedExecpolicyAmendment: newSeq[str]())
-        let amendment = if execPolicyFeatureEnabled(): tryDeriveExecpolicyAmendmentForPrompt(matches) else: newSeq[str]()
+            return ExecApprovalRequirement(kind: execReqForbidden, reason: EXEC_POLICY_PROMPT_CONFLICT_REASON, bypassSandbox: false, proposedExecpolicyAmendment: [])
+        let amendment = if execPolicyFeatureEnabled(): tryDeriveExecpolicyAmendmentForPrompt(matches) else: []
         return ExecApprovalRequirement(kind: execReqNeedsApproval, reason: derivePromptReason(matches), bypassSandbox: false, proposedExecpolicyAmendment: amendment)
     let bypass = hasPolicyMatchWithDecision(matches, "allow")
-    let amendment = if execPolicyFeatureEnabled(): tryDeriveExecpolicyAmendmentForAllow(matches) else: newSeq[str]()
+    let amendment = if execPolicyFeatureEnabled(): tryDeriveExecpolicyAmendmentForAllow(matches) else: []
     return ExecApprovalRequirement(kind: execReqSkip, reason: "", bypassSandbox: bypass, proposedExecpolicyAmendment: amendment)

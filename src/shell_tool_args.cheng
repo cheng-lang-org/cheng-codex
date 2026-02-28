@@ -14,7 +14,7 @@ type
         hasLogin: bool
 
 fn jsonExtractStringArrayAfter(payload: str, key: str, startIdx: int32): str[] =
-    var outVal: str[] = newSeq[str]()
+    var outVal: str[] = []
     let keyIdx = jsonFindKeyAfter(payload, key, startIdx)
     if keyIdx < 0:
         return outVal
@@ -24,22 +24,28 @@ fn jsonExtractStringArrayAfter(payload: str, key: str, startIdx: int32): str[] =
     idx = jsonSkipSpaces(payload, idx + 1)
     if idx >= len(payload) || payload[idx] != '[':
         return outVal
-    idx = idx + 1
-    while idx < len(payload):
-        idx = jsonSkipSpaces(payload, idx)
-        if idx >= len(payload):
+    var cursor = idx + 1
+    for idx in cursor..<len(payload):
+        if idx < cursor:
+            continue
+        cursor = jsonSkipSpaces(payload, idx)
+        if cursor >= len(payload):
             break
-        let ch = payload[idx]
+        let ch = payload[cursor]
         if ch == ']':
             break
         if ch != '"':
             break
-        idx = idx + 1
         var value = ""
-        while idx < len(payload):
-            let c = payload[idx]
-            if c == '\\' && idx + 1 < len(payload):
-                let next = payload[idx + 1]
+        let valueStart = cursor + 1
+        var nextCursor = valueStart
+        var valueSkipUntil: int32 = valueStart - 1
+        for valueIdx in valueStart..<len(payload):
+            if valueIdx <= valueSkipUntil:
+                continue
+            let c = payload[valueIdx]
+            if c == '\\' && valueIdx + 1 < len(payload):
+                let next = payload[valueIdx + 1]
                 if next == 'n':
                     value = value + "\n"
                 elif next == 'r':
@@ -48,22 +54,30 @@ fn jsonExtractStringArrayAfter(payload: str, key: str, startIdx: int32): str[] =
                     value = value + "\t"
                 else:
                     value = value + $ next
-                idx = idx + 2
+                valueSkipUntil = valueIdx + 1
+                nextCursor = valueIdx + 2
                 continue
             if c == '"':
-                idx = idx + 1
+                nextCursor = valueIdx + 1
                 break
             value = value + $ c
-            idx = idx + 1
-        seqAdd(outVal, value)
-        while idx < len(payload):
-            let sep = payload[idx]
+            nextCursor = valueIdx + 1
+        add(outVal, value)
+        cursor = nextCursor
+        var sawSeparator = false
+        for sepIdx in cursor..<len(payload):
+            let sep = payload[sepIdx]
             if sep == ',':
-                idx = idx + 1
+                cursor = sepIdx + 1
+                sawSeparator = true
                 break
             if sep == ']':
+                cursor = sepIdx
+                sawSeparator = true
                 break
-            idx = idx + 1
+            cursor = sepIdx + 1
+        if ! sawSeparator:
+            break
     return outVal
 
 fn jsonExtractBool(payload: str, key: str, defaultValue: bool): bool =
@@ -84,7 +98,7 @@ fn jsonExtractBool(payload: str, key: str, defaultValue: bool): bool =
 
 fn parseShellToolArgs(arguments: str): ShellToolArgs =
     var outCommandText = ""
-    var outCommandTokens: str[] = newSeq[str]()
+    var outCommandTokens: str[] = []
     var outWorkdir = ""
     var outSandboxPermissions = ""
     var outJustification = ""
@@ -95,14 +109,12 @@ fn parseShellToolArgs(arguments: str): ShellToolArgs =
     if len(cmdTokens) > 0:
         outCommandTokens = cmdTokens
         var cmdText = ""
-        var i: int32 = 0
-        while i < len(cmdTokens):
+        for i in 0..<len(cmdTokens):
             let part = shellQuote(cmdTokens[i])
             if len(cmdText) == 0:
                 cmdText = part
             else:
                 cmdText = cmdText + " " + part
-            i = i + 1
         outCommandText = cmdText
     else:
         let cmdText = jsonExtractString(arguments, "command")
